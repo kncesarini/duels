@@ -8,21 +8,30 @@
 //! cargo run --release --example vs_random -- [games] [simulations-per-move] [seed]
 //! ```
 //!
-//! Two environment variables switch the experiment:
+//! Several environment variables switch the experiment:
 //!
 //! - `UNIFORM_ROLLOUT=1` replaces the biased playout policy with the plain
-//!   uniform-random one, to measure what the bias is worth.
+//!   uniform-random one, to measure what the bias is worth. `SMART_ROLLOUT=1`
+//!   instead selects [`RolloutWeights::SMART`], the per-card-aware policy
+//!   (takes precedence over `UNIFORM_ROLLOUT` if both are set).
 //! - `OPPONENT_SIMS=n` replaces the random opponent with a second `mcts-uct`
 //!   at `n` simulations per move. This is the important diagnostic: beating
 //!   uniform-random play proves little on its own, whereas a high-budget
 //!   search beating a low-budget one shows the tree statistics genuinely
 //!   improve with more samples (and an equal-budget match should land near
 //!   50%).
-//! - `OPPONENT_UNIFORM_ROLLOUT=1` and `CHANCE_ALPHA` /
-//!   `OPPONENT_CHANCE_ALPHA` vary the playout policy and the chance-node
-//!   widening exponent per side, so an `OPPONENT_SIMS` match at equal budget
-//!   becomes a controlled A/B of one design choice. `CHANCE_ALPHA=1` selects
-//!   the unbiased, never-re-selecting chance estimator.
+//! - `OPPONENT_UNIFORM_ROLLOUT=1` / `OPPONENT_SMART_ROLLOUT=1` and
+//!   `CHANCE_ALPHA` / `OPPONENT_CHANCE_ALPHA` vary the playout policy and the
+//!   chance-node widening exponent per side, so an `OPPONENT_SIMS` match at
+//!   equal budget becomes a controlled A/B of one design choice.
+//!   `CHANCE_ALPHA=1` selects the unbiased, never-re-selecting chance
+//!   estimator.
+//! - `TIME_MS=n` switches both sides from a `Budget::Nodes(sims)` budget to
+//!   `Budget::TimeMs(n)`, so a rollout policy that is slower per simulation
+//!   does not get an unfair number of simulations — the fair way to compare
+//!   two rollout policies is at equal *time*, not equal node count. See
+//!   `examples/rollout_bench.rs` for a dedicated throughput/head-to-head
+//!   harness that always compares at equal time.
 //!
 //! This is a measurement tool, not a CI gate: `cargo test` keeps a small,
 //! fast version of the same match (`beats_random_at_a_small_budget`).
@@ -40,12 +49,16 @@ fn main() {
     let sims: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(2_000);
     let base_seed: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
     let uniform = std::env::var("UNIFORM_ROLLOUT").is_ok();
+    let smart = std::env::var("SMART_ROLLOUT").is_ok();
     let opponent_sims: Option<u64> = std::env::var("OPPONENT_SIMS")
         .ok()
         .and_then(|v| v.parse().ok());
+    let time_ms: Option<u64> = std::env::var("TIME_MS").ok().and_then(|v| v.parse().ok());
 
-    let weights = |uniform: bool| {
-        if uniform {
+    let weights = |uniform: bool, smart: bool| {
+        if smart {
+            RolloutWeights::SMART
+        } else if uniform {
             RolloutWeights::UNIFORM
         } else {
             RolloutWeights::BIASED
@@ -66,7 +79,7 @@ fn main() {
     };
     let (c, alpha) = widening("CHANCE_ALPHA");
     let cfg = Config {
-        rollout: weights(uniform),
+        rollout: weights(uniform, smart),
         chance_widen_c: c,
         chance_widen_alpha: alpha,
         ..Config::default()
@@ -75,16 +88,24 @@ fn main() {
     // rule at equal budget.
     let (oc, oalpha) = widening("OPPONENT_CHANCE_ALPHA");
     let opponent_cfg = Config {
-        rollout: weights(std::env::var("OPPONENT_UNIFORM_ROLLOUT").is_ok()),
+        rollout: weights(
+            std::env::var("OPPONENT_UNIFORM_ROLLOUT").is_ok(),
+            std::env::var("OPPONENT_SMART_ROLLOUT").is_ok(),
+        ),
         chance_widen_c: oc,
         chance_widen_alpha: oalpha,
         ..Config::default()
     };
-    let budget = Budget::Nodes(sims);
+    let budget = match time_ms {
+        Some(ms) => Budget::TimeMs(ms),
+        None => Budget::Nodes(sims),
+    };
 
-    match opponent_sims {
-        None => println!("mcts-uct vs random: {games} games, {sims} simulations/move"),
-        Some(n) => println!("mcts-uct({sims}) vs mcts-uct({n}): {games} games"),
+    match (opponent_sims, time_ms) {
+        (None, None) => println!("mcts-uct vs random: {games} games, {sims} simulations/move"),
+        (None, Some(ms)) => println!("mcts-uct vs random: {games} games, {ms}ms/move"),
+        (Some(n), None) => println!("mcts-uct({sims}) vs mcts-uct({n}): {games} games"),
+        (Some(_), Some(ms)) => println!("mcts-uct({ms}ms) vs mcts-uct({ms}ms): {games} games"),
     }
     println!("config: {}", cfg.describe());
     if opponent_sims.is_some() {
@@ -122,7 +143,12 @@ fn main() {
                 opponent_cfg,
             )),
         };
-        let opponent_budget = Budget::Nodes(opponent_sims.unwrap_or(1));
+        let opponent_budget = match time_ms {
+            // Equal time, not equal node count, is the fair comparison
+            // between two rollout policies (see the module docs).
+            Some(ms) => Budget::TimeMs(ms),
+            None => Budget::Nodes(opponent_sims.unwrap_or(1)),
+        };
         let mut state = engine::new_game(seed);
         let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
 
