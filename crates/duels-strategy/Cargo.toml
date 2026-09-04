@@ -1,0 +1,22 @@
+[package]
+name = "duels-strategy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Pure win-condition read functions over a 7 Wonders Duel position: military/science/VP race state, stance, and action priors."
+
+[dependencies]
+duels-core = { path = "../duels-core" }
+
+[dev-dependencies]
+duels-agents-api = { path = "../duels-agents-api" }
+duels-agent-greedy = { path = "../agents/greedy" }
+duels-agent-random = { path = "../agents/random" }
+criterion = { workspace = true }
+proptest = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "action_prior"
+harness = false
