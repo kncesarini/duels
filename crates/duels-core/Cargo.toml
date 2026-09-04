@@ -9,3 +9,12 @@ description = "Core rules engine for 7 Wonders Duel: game state, actions, observ
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "apply_throughput"
+harness = false

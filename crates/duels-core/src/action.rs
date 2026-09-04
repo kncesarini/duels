@@ -1,15 +1,9 @@
-//! Player actions: the complete set of moves a player (human or [`Agent`]) can
-//! submit on their turn.
+//! Player actions: the complete set of moves a player (human or agent) can
+//! submit at a decision point.
 //!
-//! [`Agent`]: https://docs.rs/duels-agents-api (see `duels-agents-api` crate)
-//!
-//! M0 implements a first-pass `Action` enum covering the core decision
-//! points of the game: playing a card to build it, discarding a card for
-//! coins, using a card to build a wonder stage, and choosing a progress
-//! token when an effect grants one. Finer-grained variants (e.g. choosing
-//! which card to take from the discard pile via the Economy token effect,
-//! or resolving a Diplomacy-token skip) will be added in M1 alongside the
-//! rules engine logic that needs them.
+//! [`crate::engine::legal_actions`] is the canonical source of truth for which
+//! of these are available; an agent picks one of the actions it is handed and
+//! never has to validate legality itself.
 //!
 //! Adding a variant is expected to be backwards compatible for agents that
 //! match exhaustively with a wildcard arm; removing or renaming one is a
@@ -18,79 +12,129 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Identifier for an age card, matching the `id` field in `data/cards.json`.
-pub type CardId = String;
+use crate::data::{CardId, TokenId, WonderId};
+use crate::Player;
 
-/// Identifier for a wonder, matching the `id` field in `data/wonders.json`.
-pub type WonderId = String;
-
-/// Identifier for a progress token, matching the `id` field in
-/// `data/tokens.json`.
-pub type ProgressTokenId = String;
-
-/// A single legal move a player can make on their turn.
+/// Index of a card slot in the current age structure, `0..20`.
 ///
-/// This is intentionally minimal for M0. The rules engine landing in M1
-/// will grow `legal_actions(&GameState) -> Vec<Action>` to enumerate exactly
-/// which of these are available at any point, including the wonder-building
-/// cost check and chain-symbol free-build rule.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// See [`crate::layout`] for the geometry the index refers to.
+pub type Slot = u8;
+
+/// A single legal move at the current decision point.
+///
+/// Most of the game consists of [`Action::Build`], [`Action::Discard`] and
+/// [`Action::BuildWonder`]; the remaining variants resolve a *pending choice*
+/// created by an effect (a progress token from a science pair, the Great
+/// Library's token draw, the Mausoleum's free build, a destroy effect) or the
+/// start-of-age first-player decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    /// Construct the named card from the currently available age-card
-    /// structure, paying its cost (or building it for free via a chain
-    /// symbol).
-    PlayCard { card: CardId },
-    /// Discard the named card for coins instead of building it.
-    DiscardCardForCoins { card: CardId },
-    /// Use the named card to build one stage of the named wonder.
-    BuildWonder { wonder: WonderId, card: CardId },
-    /// Choose a progress token, e.g. after completing a pair of distinct
-    /// science symbols, or from a pool of tokens revealed by a card effect.
-    ChooseProgressToken { token: ProgressTokenId },
+    /// Take one of the four currently offered wonders during the initial
+    /// draft.
+    PickWonder {
+        /// The wonder to take.
+        wonder: WonderId,
+    },
+    /// Take the card in `slot` and construct it, paying its cost (or building
+    /// it for free via a chain symbol).
+    Build {
+        /// An accessible slot in the current age structure.
+        slot: Slot,
+    },
+    /// Take the card in `slot` and discard it for coins instead of building
+    /// it.
+    Discard {
+        /// An accessible slot in the current age structure.
+        slot: Slot,
+    },
+    /// Take the card in `slot` and spend it to construct one of your own
+    /// unbuilt wonders, paying the wonder's cost.
+    BuildWonder {
+        /// An accessible slot in the current age structure; the card itself is
+        /// consumed and its own effects never apply.
+        slot: Slot,
+        /// One of the acting player's four drafted, not-yet-built wonders.
+        wonder: WonderId,
+    },
+    /// Take one of the progress tokens still available on the board, after
+    /// completing a pair of identical scientific symbols.
+    ChooseProgressToken {
+        /// One of the tokens currently on the board.
+        token: TokenId,
+    },
+    /// Keep one of the three progress tokens drawn from the out-of-play pile
+    /// by The Great Library.
+    ChooseGreatLibraryToken {
+        /// One of the three drawn tokens.
+        token: TokenId,
+    },
+    /// Construct a card from the discard pile for free (The Mausoleum).
+    MausoleumBuild {
+        /// One of the cards currently in the discard pile.
+        card: CardId,
+    },
+    /// Discard one of the opponent's constructed buildings (Circus Maximus,
+    /// The Statue of Zeus).
+    DestroyOpponentCard {
+        /// One of the opponent's built cards of the required colour.
+        card: CardId,
+    },
+    /// Decide who takes the first turn of the new age. Only the militarily
+    /// weaker player is ever asked.
+    ChooseFirstPlayer {
+        /// The player who will act first.
+        player: Player,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn action_is_debug_clone_eq() {
-        let a = Action::PlayCard {
-            card: "card-001".to_string(),
-        };
-        let b = a.clone();
-        assert_eq!(a, b);
-        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    fn sample_actions() -> Vec<Action> {
+        let card = CardId::from_slug("lumber-yard").unwrap();
+        let wonder = WonderId::from_slug("the-pyramids").unwrap();
+        let token = TokenId::from_slug("law").unwrap();
+        vec![
+            Action::PickWonder { wonder },
+            Action::Build { slot: 19 },
+            Action::Discard { slot: 0 },
+            Action::BuildWonder { slot: 3, wonder },
+            Action::ChooseProgressToken { token },
+            Action::ChooseGreatLibraryToken { token },
+            Action::MausoleumBuild { card },
+            Action::DestroyOpponentCard { card },
+            Action::ChooseFirstPlayer {
+                player: Player::Two,
+            },
+        ]
     }
 
     #[test]
-    fn action_serializes_and_round_trips() {
-        let a = Action::PlayCard {
-            card: "card-001".to_string(),
-        };
-        let json = serde_json::to_string(&a).expect("Action should serialize");
-        assert!(json.contains("card-001"));
-
-        let round_tripped: Action = serde_json::from_str(&json).expect("Action should deserialize");
-        assert_eq!(a, round_tripped);
+    fn action_is_debug_clone_eq() {
+        for a in sample_actions() {
+            let b = a;
+            assert_eq!(a, b);
+            assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        }
     }
 
     #[test]
     fn all_variants_round_trip_through_json() {
-        let variants = vec![
-            Action::PlayCard { card: "c1".into() },
-            Action::DiscardCardForCoins { card: "c2".into() },
-            Action::BuildWonder {
-                wonder: "w1".into(),
-                card: "c3".into(),
-            },
-            Action::ChooseProgressToken { token: "t1".into() },
-        ];
-        for v in variants {
+        for v in sample_actions() {
             let json = serde_json::to_string(&v).unwrap();
             let back: Action = serde_json::from_str(&json).unwrap();
-            assert_eq!(v, back);
+            assert_eq!(v, back, "round trip failed for {json}");
         }
+    }
+
+    #[test]
+    fn ids_appear_as_readable_slugs_in_json() {
+        let json = serde_json::to_string(&Action::PickWonder {
+            wonder: WonderId::from_slug("the-pyramids").unwrap(),
+        })
+        .unwrap();
+        assert!(json.contains("the-pyramids"), "{json}");
     }
 }

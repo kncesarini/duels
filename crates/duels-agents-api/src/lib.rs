@@ -13,10 +13,17 @@
 //! (`CONTRACT_VERSION`) that future breaking changes to these types must
 //! bump.
 //!
-//! M0 scope: the trait and types only. Concrete agents (random, greedy,
+//! M1 scope: the trait and types only. Concrete agents (random, greedy,
 //! minimax/MCTS, RL-trained via the PyO3 bindings) land in later
 //! milestones, as does the tournament runner in `duels-arena` that drives
 //! `Agent` instances against each other.
+//!
+//! An agent that wants to search rather than react can turn the
+//! `Observation` it is handed into a concrete, playable world with
+//! `Observation::sample_state(&mut rng)`, which samples the hidden
+//! information uniformly from the pools the observation exposes. That is the
+//! only bridge from the public view back to a full state, and it never
+//! reveals what the *actual* game is hiding.
 
 use duels_core::{Action, Observation};
 use serde::{Deserialize, Serialize};
@@ -74,6 +81,7 @@ pub trait Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duels_core::engine;
 
     /// A trivial agent used only to prove the trait is object-safe /
     /// implementable and that the supporting types behave as expected.
@@ -89,21 +97,42 @@ mod tests {
         }
 
         fn choose(&mut self, _obs: &Observation, legal: &[Action], _budget: Budget) -> Action {
-            legal.first().cloned().expect("no legal actions available")
+            legal.first().copied().expect("no legal actions available")
         }
     }
 
     #[test]
     fn agent_trait_is_implementable_and_object_safe() {
         let mut agent: Box<dyn Agent> = Box::new(FirstLegalAgent);
-        let obs = Observation::default();
-        let legal = vec![Action::PlayCard {
-            card: "card-001".to_string(),
-        }];
+        let state = engine::new_game(1);
+        let obs = state.observation();
+        let legal = engine::legal_actions(&state);
 
         let chosen = agent.choose(&obs, &legal, Budget::Nodes(100));
         assert_eq!(chosen, legal[0]);
         assert_eq!(agent.spec().name, "first-legal");
+    }
+
+    /// The whole point of the contract: an agent can drive a game to
+    /// completion while only ever seeing `Observation`s.
+    #[test]
+    fn an_agent_can_play_a_whole_game_from_observations_alone() {
+        use rand::{rngs::StdRng, SeedableRng};
+
+        let mut agent = FirstLegalAgent;
+        let mut state = engine::new_game(7);
+        let mut rng = StdRng::seed_from_u64(7);
+        loop {
+            let legal = engine::legal_actions(&state);
+            if legal.is_empty() {
+                break;
+            }
+            let obs = state.observation();
+            let action = agent.choose(&obs, &legal, Budget::Nodes(1));
+            assert!(legal.contains(&action));
+            engine::apply(&mut state, action, &mut rng).expect("agent returned a legal action");
+        }
+        assert!(state.result().is_some());
     }
 
     #[test]

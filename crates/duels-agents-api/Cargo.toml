@@ -10,3 +10,6 @@ description = "The Agent trait contract that AI/bot players implement against du
 duels-core = { path = "../duels-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
