@@ -1,0 +1,283 @@
+{
+  "$schema_version": 1,
+  "wonders": [
+    {
+      "id": "circus-maximus",
+      "name": "Circus Maximus",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "glass": 1,
+          "wood": 1,
+          "stone": 2
+        }
+      },
+      "effects": [
+        {
+          "type": "destroy_opponent_building",
+          "building_type": "manufactured_good"
+        },
+        {
+          "type": "shield",
+          "quantity": 1
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "piraeus",
+      "name": "Piraeus",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "stone": 1,
+          "wood": 2
+        }
+      },
+      "effects": [
+        {
+          "type": "produce_resource_choice",
+          "resource_type": "manufactured_good"
+        },
+        {
+          "type": "play_again"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "the-appian-way",
+      "name": "The Appian Way",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "clay": 2,
+          "stone": 2
+        }
+      },
+      "effects": [
+        {
+          "type": "take_coins",
+          "amount": 3
+        },
+        {
+          "type": "opponent_loses_coins",
+          "amount": 3
+        },
+        {
+          "type": "play_again"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "the-colossus",
+      "name": "The Colossus",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "glass": 1,
+          "clay": 3
+        }
+      },
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "the-great-library",
+      "name": "The Great Library",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "glass": 1,
+          "wood": 3
+        }
+      },
+      "effects": [
+        {
+          "type": "choose_progress_token",
+          "from_pool_size": 3
+        },
+        {
+          "type": "victory_points",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "the-great-lighthouse",
+      "name": "The Great Lighthouse",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 2,
+          "stone": 1,
+          "wood": 1
+        }
+      },
+      "effects": [
+        {
+          "type": "produce_resource_choice",
+          "resource_type": "raw_material"
+        },
+        {
+          "type": "victory_points",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "the-hanging-gardens",
+      "name": "The Hanging Gardens",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "glass": 1,
+          "wood": 2
+        }
+      },
+      "effects": [
+        {
+          "type": "take_coins",
+          "amount": 6
+        },
+        {
+          "type": "play_again"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "the-mausoleum",
+      "name": "The Mausoleum",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "glass": 2,
+          "clay": 2
+        }
+      },
+      "effects": [
+        {
+          "type": "build_discarded_card_free"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "the-pyramids",
+      "name": "The Pyramids",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "stone": 3
+        }
+      },
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 9
+        }
+      ]
+    },
+    {
+      "id": "the-sphinx",
+      "name": "The Sphinx",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "glass": 2,
+          "clay": 1,
+          "stone": 1
+        }
+      },
+      "effects": [
+        {
+          "type": "play_again"
+        },
+        {
+          "type": "victory_points",
+          "amount": 6
+        }
+      ]
+    },
+    {
+      "id": "the-statue-of-zeus",
+      "name": "The Statue of Zeus",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 2,
+          "clay": 1,
+          "wood": 1,
+          "stone": 1
+        }
+      },
+      "effects": [
+        {
+          "type": "destroy_opponent_building",
+          "building_type": "raw_material"
+        },
+        {
+          "type": "shield",
+          "quantity": 1
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "the-temple-of-artemis",
+      "name": "The Temple of Artemis",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1,
+          "glass": 1,
+          "stone": 1,
+          "wood": 1
+        }
+      },
+      "effects": [
+        {
+          "type": "take_coins",
+          "amount": 12
+        },
+        {
+          "type": "play_again"
+        }
+      ]
+    }
+  ]
+}

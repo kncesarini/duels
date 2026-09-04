@@ -1,0 +1,1585 @@
+{
+  "$schema_version": 1,
+  "cards": [
+    {
+      "id": "lumber-yard",
+      "name": "Lumber Yard",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "wood",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "logging-camp",
+      "name": "Logging Camp",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 1,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "wood",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "clay-pool",
+      "name": "Clay Pool",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "clay",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "clay-pit",
+      "name": "Clay Pit",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 1,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "clay",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "quarry",
+      "name": "Quarry",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "stone",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "stone-pit",
+      "name": "Stone Pit",
+      "age": 1,
+      "type": "raw_material",
+      "cost": {
+        "coins": 1,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "stone",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "glassworks",
+      "name": "Glassworks",
+      "age": 1,
+      "type": "manufactured_good",
+      "cost": {
+        "coins": 1,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "glass",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "press",
+      "name": "Press",
+      "age": 1,
+      "type": "manufactured_good",
+      "cost": {
+        "coins": 1,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "papyrus",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "guard-tower",
+      "name": "Guard Tower",
+      "age": 1,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "stable",
+      "name": "Stable",
+      "age": 1,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "horse-breeders",
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "garrison",
+      "name": "Garrison",
+      "age": 1,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "barracks",
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "palisade",
+      "name": "Palisade",
+      "age": 1,
+      "type": "military",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "fortifications",
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "workshop",
+      "name": "Workshop",
+      "age": 1,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "pendulum"
+        },
+        {
+          "type": "victory_points",
+          "amount": 1
+        }
+      ]
+    },
+    {
+      "id": "apothecary",
+      "name": "Apothecary",
+      "age": 1,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "wheel"
+        },
+        {
+          "type": "victory_points",
+          "amount": 1
+        }
+      ]
+    },
+    {
+      "id": "scriptorium",
+      "name": "Scriptorium",
+      "age": 1,
+      "type": "scientific",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "library",
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "inkwell"
+        }
+      ]
+    },
+    {
+      "id": "pharmacist",
+      "name": "Pharmacist",
+      "age": 1,
+      "type": "scientific",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "dispensary",
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "mortar"
+        }
+      ]
+    },
+    {
+      "id": "theater",
+      "name": "Theater",
+      "age": 1,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "statue",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "altar",
+      "name": "Altar",
+      "age": 1,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "temple",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "baths",
+      "name": "Baths",
+      "age": 1,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "aqueduct",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "stone-reserve",
+      "name": "Stone Reserve",
+      "age": 1,
+      "type": "commercial",
+      "cost": {
+        "coins": 3,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "fixed_trade_cost",
+          "resource": "stone",
+          "cost_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "clay-reserve",
+      "name": "Clay Reserve",
+      "age": 1,
+      "type": "commercial",
+      "cost": {
+        "coins": 3,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "fixed_trade_cost",
+          "resource": "clay",
+          "cost_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "wood-reserve",
+      "name": "Wood Reserve",
+      "age": 1,
+      "type": "commercial",
+      "cost": {
+        "coins": 3,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "fixed_trade_cost",
+          "resource": "wood",
+          "cost_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "tavern",
+      "name": "Tavern",
+      "age": 1,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "lighthouse",
+      "effects": [
+        {
+          "type": "take_coins",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "sawmill",
+      "name": "Sawmill",
+      "age": 2,
+      "type": "raw_material",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "wood",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "brickyard",
+      "name": "Brickyard",
+      "age": 2,
+      "type": "raw_material",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "clay",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "shelf-quarry",
+      "name": "Shelf Quarry",
+      "age": 2,
+      "type": "raw_material",
+      "cost": {
+        "coins": 2,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "stone",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "glassblower",
+      "name": "Glassblower",
+      "age": 2,
+      "type": "manufactured_good",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "glass",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "drying-room",
+      "name": "Drying Room",
+      "age": 2,
+      "type": "manufactured_good",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource",
+          "resource": "papyrus",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "walls",
+      "name": "Walls",
+      "age": 2,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "horse-breeders",
+      "name": "Horse Breeders",
+      "age": 2,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "wood": 1
+        }
+      },
+      "chain_from": "stable",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "barracks",
+      "name": "Barracks",
+      "age": 2,
+      "type": "military",
+      "cost": {
+        "coins": 3,
+        "resources": {}
+      },
+      "chain_from": "garrison",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 1
+        }
+      ]
+    },
+    {
+      "id": "archery-range",
+      "name": "Archery Range",
+      "age": 2,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1,
+          "wood": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "siege-workshop",
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "parade-ground",
+      "name": "Parade Ground",
+      "age": 2,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "circus",
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "name": "Library",
+      "age": 2,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1,
+          "wood": 1,
+          "glass": 1
+        }
+      },
+      "chain_from": "scriptorium",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "inkwell"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "dispensary",
+      "name": "Dispensary",
+      "age": 2,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "stone": 1
+        }
+      },
+      "chain_from": "pharmacist",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "mortar"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "school",
+      "name": "School",
+      "age": 2,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 1,
+          "papyrus": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": "university",
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "wheel"
+        },
+        {
+          "type": "victory_points",
+          "amount": 1
+        }
+      ]
+    },
+    {
+      "id": "laboratory",
+      "name": "Laboratory",
+      "age": 2,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 1,
+          "glass": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": "observatory",
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "pendulum"
+        },
+        {
+          "type": "victory_points",
+          "amount": 1
+        }
+      ]
+    },
+    {
+      "id": "courthouse",
+      "name": "Courthouse",
+      "age": 2,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 2,
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 5
+        }
+      ]
+    },
+    {
+      "id": "statue",
+      "name": "Statue",
+      "age": 2,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2
+        }
+      },
+      "chain_from": "theater",
+      "chain_to": "gardens",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "temple",
+      "name": "Temple",
+      "age": 2,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": "altar",
+      "chain_to": "pantheon",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "aqueduct",
+      "name": "Aqueduct",
+      "age": 2,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 3
+        }
+      },
+      "chain_from": "baths",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 5
+        }
+      ]
+    },
+    {
+      "id": "rostrum",
+      "name": "Rostrum",
+      "age": 2,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1,
+          "wood": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": "senate",
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 4
+        }
+      ]
+    },
+    {
+      "id": "forum",
+      "name": "Forum",
+      "age": 2,
+      "type": "commercial",
+      "cost": {
+        "coins": 3,
+        "resources": {
+          "clay": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource_choice",
+          "resource_type": "manufactured_good"
+        }
+      ]
+    },
+    {
+      "id": "caravansery",
+      "name": "Caravansery",
+      "age": 2,
+      "type": "commercial",
+      "cost": {
+        "coins": 2,
+        "resources": {
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "produce_resource_choice",
+          "resource_type": "raw_material"
+        }
+      ]
+    },
+    {
+      "id": "customs-house",
+      "name": "Customs House",
+      "age": 2,
+      "type": "commercial",
+      "cost": {
+        "coins": 4,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "fixed_trade_cost",
+          "resource": "papyrus",
+          "cost_per_unit": 1
+        },
+        {
+          "type": "fixed_trade_cost",
+          "resource": "glass",
+          "cost_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "brewery",
+      "name": "Brewery",
+      "age": 2,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": "arena",
+      "effects": [
+        {
+          "type": "take_coins",
+          "amount": 6
+        }
+      ]
+    },
+    {
+      "id": "arsenal",
+      "name": "Arsenal",
+      "age": 3,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 3,
+          "wood": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 3
+        }
+      ]
+    },
+    {
+      "id": "pretorium",
+      "name": "Pretorium",
+      "age": 3,
+      "type": "military",
+      "cost": {
+        "coins": 8,
+        "resources": {}
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 3
+        }
+      ]
+    },
+    {
+      "id": "fortifications",
+      "name": "Fortifications",
+      "age": 3,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "clay": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": "palisade",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "siege-workshop",
+      "name": "Siege Workshop",
+      "age": 3,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 3,
+          "glass": 1
+        }
+      },
+      "chain_from": "archery-range",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "circus",
+      "name": "Circus",
+      "age": 3,
+      "type": "military",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "stone": 2
+        }
+      },
+      "chain_from": "parade-ground",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "shield",
+          "quantity": 2
+        }
+      ]
+    },
+    {
+      "id": "academy",
+      "name": "Academy",
+      "age": 3,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1,
+          "wood": 1,
+          "glass": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "sundial"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "study",
+      "name": "Study",
+      "age": 3,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 2,
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "sundial"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "university",
+      "name": "University",
+      "age": 3,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": "school",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "gyroscope"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "observatory",
+      "name": "Observatory",
+      "age": 3,
+      "type": "scientific",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 1,
+          "papyrus": 2
+        }
+      },
+      "chain_from": "laboratory",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "scientific_symbol",
+          "symbol": "gyroscope"
+        },
+        {
+          "type": "victory_points",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "palace",
+      "name": "Palace",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "stone": 1,
+          "wood": 1,
+          "glass": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 7
+        }
+      ]
+    },
+    {
+      "id": "town-hall",
+      "name": "Town Hall",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 3,
+          "wood": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 7
+        }
+      ]
+    },
+    {
+      "id": "obelisk",
+      "name": "Obelisk",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 5
+        }
+      ]
+    },
+    {
+      "id": "gardens",
+      "name": "Gardens",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "wood": 2
+        }
+      },
+      "chain_from": "statue",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 6
+        }
+      ]
+    },
+    {
+      "id": "pantheon",
+      "name": "Pantheon",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "wood": 1,
+          "papyrus": 2
+        }
+      },
+      "chain_from": "temple",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 6
+        }
+      ]
+    },
+    {
+      "id": "senate",
+      "name": "Senate",
+      "age": 3,
+      "type": "civilian",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "stone": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": "rostrum",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "victory_points",
+          "amount": 5
+        }
+      ]
+    },
+    {
+      "id": "chamber-of-commerce",
+      "name": "Chamber of Commerce",
+      "age": 3,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "papyrus": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "take_coins_per_owned_building",
+          "amount_per_unit": 3,
+          "building_type": "manufactured_good"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "port",
+      "name": "Port",
+      "age": 3,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 1,
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "take_coins_per_owned_building",
+          "amount_per_unit": 2,
+          "building_type": "raw_material"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "armory",
+      "name": "Armory",
+      "age": 3,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "take_coins_per_owned_building",
+          "amount_per_unit": 1,
+          "building_type": "military"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "lighthouse",
+      "name": "Lighthouse",
+      "age": 3,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "glass": 1
+        }
+      },
+      "chain_from": "tavern",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "take_coins_per_owned_building",
+          "amount_per_unit": 1,
+          "building_type": "commercial"
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "arena",
+      "name": "Arena",
+      "age": 3,
+      "type": "commercial",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "stone": 1,
+          "wood": 1
+        }
+      },
+      "chain_from": "brewery",
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "take_coins_per_constructed_wonder",
+          "amount_per_unit": 2
+        },
+        {
+          "type": "victory_points",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "merchants-guild",
+      "name": "Merchants Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "wood": 1,
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "coins_by_majority",
+          "compare": "commercial_buildings",
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "commercial_buildings",
+          "points_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "shipowners-guild",
+      "name": "Shipowners Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 1,
+          "stone": 1,
+          "glass": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "coins_by_majority",
+          "compare": "raw_and_manufactured_buildings",
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "raw_and_manufactured_buildings",
+          "points_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "builders-guild",
+      "name": "Builders Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "clay": 1,
+          "wood": 1,
+          "glass": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "points_by_majority",
+          "compare": "constructed_wonders",
+          "points_per_unit": 2
+        }
+      ]
+    },
+    {
+      "id": "magistrate-s-guild",
+      "name": "Magistrate's Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "wood": 2,
+          "clay": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "coins_by_majority",
+          "compare": "civilian_buildings",
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "civilian_buildings",
+          "points_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "scientists-guild",
+      "name": "Scientists Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "clay": 2,
+          "wood": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "coins_by_majority",
+          "compare": "scientific_buildings",
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "scientific_buildings",
+          "points_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "moneylenders-guild",
+      "name": "Moneylenders Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "wood": 2
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "points_by_majority",
+          "compare": "coins_div_3",
+          "points_per_unit": 1
+        }
+      ]
+    },
+    {
+      "id": "tacticians-guild",
+      "name": "Tacticians Guild",
+      "age": 3,
+      "type": "guild",
+      "cost": {
+        "coins": 0,
+        "resources": {
+          "stone": 2,
+          "clay": 1,
+          "papyrus": 1
+        }
+      },
+      "chain_from": null,
+      "chain_to": null,
+      "effects": [
+        {
+          "type": "coins_by_majority",
+          "compare": "military_buildings",
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "military_buildings",
+          "points_per_unit": 1
+        }
+      ]
+    }
+  ]
+}

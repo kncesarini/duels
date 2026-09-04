@@ -1,0 +1,12 @@
+[package]
+name = "duels-agents-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The Agent trait contract that AI/bot players implement against duels-core."
+
+[dependencies]
+duels-core = { path = "../duels-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

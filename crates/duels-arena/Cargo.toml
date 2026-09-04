@@ -1,0 +1,11 @@
+[package]
+name = "duels-arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Tournament runner: plays Agent implementations against each other and tracks Elo. Placeholder for M0."
+
+[dependencies]
+duels-core = { path = "../duels-core" }
+duels-agents-api = { path = "../duels-agents-api" }
