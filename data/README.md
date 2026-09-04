@@ -29,11 +29,24 @@ rulebook/cards or BoardGameGeek, especially:
   `sundial`, `gyroscope`, `balance`) — these are descriptive ids we chose,
   not official terminology, though the underlying 6-symbols-per-card-deck +
   1-from-the-Law-token structure is verified.
-- Guild card majority-comparison wording (`majority_reward` effects) —
-  verified against working game logic (it compares each guild's target
-  building-type count across *both* players and rewards the guild's owner
-  based on the higher of the two counts, not just their own count), but not
-  against the exact printed card text.
+- Guild card majority-comparison wording (`coins_by_majority` /
+  `points_by_majority` effects) — verified against working game logic (each
+  guild compares its target building-type count across *both* players and
+  rewards the guild's owner based on the higher of the two counts, not just
+  their own count), but not against the exact printed card text.
+
+  **Timing matters and is deliberately split into two effect types.** This
+  is a general 7 Wonders/Duel rule, not a guild-specific quirk: a card's
+  coin reward is paid out *once, immediately* when the card is built, using
+  the count at that instant; victory points are never tracked as a running
+  total during play and are instead computed *once, at final scoring*, from
+  the board as it exists at game end. For a guild built mid-Age III, that
+  means its coin payout can be "locked in" against a majority count that
+  later changes before the game ends, while its point payout always
+  reflects the final majority. Non-guild "coins per X owned" effects (see
+  `take_coins_per_owned_building` below) never carry a points component and
+  so don't have this split — it only arises for the 7 guild cards, which is
+  why they get their own two effect types instead of reusing that one.
 
 ## Files
 
@@ -107,7 +120,7 @@ across all four files. As of this writing the types in use are:
 `redirect_opponent_trade_payments`, `future_cost_rebate`,
 `construction_triggered_bonus`, `chain_build_triggered_bonus`,
 `take_coins_per_owned_building`, `take_coins_per_constructed_wonder`,
-`majority_reward`, `counts_as_scientific_symbol`, `destroy_opponent_building`,
+`coins_by_majority`, `points_by_majority`, `counts_as_scientific_symbol`, `destroy_opponent_building`,
 `build_discarded_card_free`, `choose_progress_token`, `play_again`. This
 vocabulary is descriptive, not yet consumed by any code (`duels-core::data`
 is a stub in M0) — M1's data-loading code is free to redesign this shape

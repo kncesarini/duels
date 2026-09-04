@@ -1412,9 +1412,13 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "coins_by_majority",
           "compare": "commercial_buildings",
-          "coins_per_unit": 1,
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "commercial_buildings",
           "points_per_unit": 1
         }
       ]
@@ -1437,9 +1441,13 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "coins_by_majority",
           "compare": "raw_and_manufactured_buildings",
-          "coins_per_unit": 1,
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "raw_and_manufactured_buildings",
           "points_per_unit": 1
         }
       ]
@@ -1462,9 +1470,8 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "points_by_majority",
           "compare": "constructed_wonders",
-          "coins_per_unit": 0,
           "points_per_unit": 2
         }
       ]
@@ -1486,9 +1493,13 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "coins_by_majority",
           "compare": "civilian_buildings",
-          "coins_per_unit": 1,
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "civilian_buildings",
           "points_per_unit": 1
         }
       ]
@@ -1509,9 +1520,13 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "coins_by_majority",
           "compare": "scientific_buildings",
-          "coins_per_unit": 1,
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "scientific_buildings",
           "points_per_unit": 1
         }
       ]
@@ -1532,9 +1547,8 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "points_by_majority",
           "compare": "coins_div_3",
-          "coins_per_unit": 0,
           "points_per_unit": 1
         }
       ]
@@ -1556,9 +1570,13 @@
       "chain_to": null,
       "effects": [
         {
-          "type": "majority_reward",
+          "type": "coins_by_majority",
           "compare": "military_buildings",
-          "coins_per_unit": 1,
+          "coins_per_unit": 1
+        },
+        {
+          "type": "points_by_majority",
+          "compare": "military_buildings",
           "points_per_unit": 1
         }
       ]
