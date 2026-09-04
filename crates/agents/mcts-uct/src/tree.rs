@@ -76,6 +76,12 @@ pub struct Config {
     /// How many simulations to run between wall-clock checks under
     /// [`duels_agents_api::Budget::TimeMs`].
     pub time_check_interval: u64,
+    /// How many independent root determinizations to search, each with its
+    /// own tree and its own `1/N` share of the budget, combining their root
+    /// visit counts to pick the move. `1` is plain single-determinization
+    /// search and is bit-for-bit the behaviour this crate had before the
+    /// option existed; see the crate docs for what larger values measure.
+    pub root_determinizations: usize,
 }
 
 impl Default for Config {
@@ -87,6 +93,7 @@ impl Default for Config {
             chance_widen_alpha: 0.5,
             max_rollout_plies: 2_000,
             time_check_interval: 64,
+            root_determinizations: 1,
         }
     }
 }
@@ -96,7 +103,7 @@ impl Config {
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2})",
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2});dets={}",
             self.exploration,
             w.build,
             w.wonder,
@@ -105,7 +112,8 @@ impl Config {
             w.new_symbol_mult,
             w.pair_complete_mult,
             self.chance_widen_c,
-            self.chance_widen_alpha
+            self.chance_widen_alpha,
+            self.root_determinizations.max(1),
         )
     }
 }
@@ -214,40 +222,18 @@ impl Tree {
         tree
     }
 
-    /// The root's most-visited child: the standard robust move-selection
-    /// rule, preferred over highest mean because a child with few visits has
-    /// a noisy mean.
-    pub fn best_action(&self) -> Option<Action> {
+    /// The root's statistics for `action`, or `None` if this tree never
+    /// expanded that action.
+    fn root_child(&self, action: Action) -> Option<&Node> {
         let Kind::Decision {
-            mover,
-            actions,
-            children,
-            ..
+            actions, children, ..
         } = &self.nodes[0].kind
         else {
             return None;
         };
-        let mut best: Option<Action> = None;
-        let mut best_visits = 0u32;
-        let mut best_score = f64::NEG_INFINITY;
-        for (i, &child) in children.iter().enumerate() {
-            if child == NO_NODE {
-                continue;
-            }
-            let visits = self.nodes[child as usize].visits;
-            let score = self.exploit(child, *mover);
-            // Most visits wins; ties break on value, which matters at the
-            // tiny budgets CI uses.
-            let better = best.is_none()
-                || visits > best_visits
-                || (visits == best_visits && score > best_score);
-            if better {
-                best = Some(actions[i]);
-                best_visits = visits;
-                best_score = score;
-            }
-        }
-        best.or_else(|| actions.first().copied())
+        let i = actions.iter().position(|&a| a == action)?;
+        let child = children[i];
+        (child != NO_NODE).then(|| &self.nodes[child as usize])
     }
 
     /// Exploitation term for `child` from `mover`'s perspective: the one and
@@ -509,6 +495,117 @@ impl Tree {
     }
 }
 
+/// The move an ensemble of root determinizations agrees on: the action with
+/// the most root visits *summed across the trees*, ties broken by the pooled
+/// value from the mover's perspective.
+///
+/// # Why visit counts
+///
+/// Summing visits is the ensemble form of the rule a single tree already
+/// uses. A tree's root visit count for an action is UCT's own verdict on it —
+/// the search spends visits where it thinks the value is, and the count is
+/// far less noisy than the mean — so pooling counts across `N` trees asks
+/// "which move did the searches collectively spend their time on", which is
+/// the same question one tree answers with `1/N` of the samples per tree.
+/// Pooling the *means* instead would weight a tree that barely looked at a
+/// move as heavily as one that concentrated on it.
+///
+/// # Single-tree equivalence
+///
+/// With one tree this reduces, term by term, to the pre-ensemble rule: the
+/// iteration order is that tree's own (shuffled) root action order, an action
+/// with no expanded child is skipped, `visits` is that child's visit count,
+/// the tie-break score is [`Tree::exploit`]'s flip of its mean, the
+/// comparison is "strictly more visits, or equal visits and a strictly better
+/// score", and the fallback when nothing was expanded is the first root
+/// action. That is why [`Tree::best_action`] is written in terms of this
+/// function instead of alongside it.
+///
+/// All trees in the ensemble are rooted at the same public position, so they
+/// share a mover and a root action set (in different orders); the first
+/// tree's order decides ties, which keeps the result reproducible.
+pub(crate) fn best_of(trees: &[Tree]) -> Option<Action> {
+    let first = trees.first()?;
+    let Kind::Decision { mover, actions, .. } = &first.nodes[0].kind else {
+        return None;
+    };
+    let mut best: Option<Action> = None;
+    let mut best_visits = 0u64;
+    let mut best_score = f64::NEG_INFINITY;
+    for &action in actions {
+        let mut visits = 0u64;
+        let mut value_sum = 0.0f64;
+        let mut expanded = false;
+        for tree in trees {
+            if let Some(child) = tree.root_child(action) {
+                expanded = true;
+                visits += u64::from(child.visits);
+                value_sum += child.value_sum;
+            }
+        }
+        if !expanded {
+            continue;
+        }
+        // Pooled mean, then the one perspective flip (see `Tree::exploit`).
+        let mean = if visits == 0 {
+            0.5
+        } else {
+            value_sum / visits as f64
+        };
+        let score = match mover {
+            Player::One => mean,
+            Player::Two => 1.0 - mean,
+        };
+        // Most visits wins; ties break on value, which matters at the tiny
+        // budgets CI uses.
+        let better =
+            best.is_none() || visits > best_visits || (visits == best_visits && score > best_score);
+        if better {
+            best = Some(action);
+            best_visits = visits;
+            best_score = score;
+        }
+    }
+    best.or_else(|| actions.first().copied())
+}
+
+/// The move-selection rule exactly as it read before [`best_of`] existed, kept
+/// so a test can assert the refactor is not merely equivalent in principle.
+///
+/// Copied verbatim from the pre-ensemble `Tree::best_action`; do not
+/// "simplify" it to call the new code, since that is the thing it exists to
+/// check.
+#[cfg(test)]
+pub(crate) fn legacy_best_action(tree: &Tree) -> Option<Action> {
+    let Kind::Decision {
+        mover,
+        actions,
+        children,
+        ..
+    } = &tree.nodes[0].kind
+    else {
+        return None;
+    };
+    let mut best: Option<Action> = None;
+    let mut best_visits = 0u32;
+    let mut best_score = f64::NEG_INFINITY;
+    for (i, &child) in children.iter().enumerate() {
+        if child == NO_NODE {
+            continue;
+        }
+        let visits = tree.nodes[child as usize].visits;
+        let score = tree.exploit(child, *mover);
+        let better =
+            best.is_none() || visits > best_visits || (visits == best_visits && score > best_score);
+        if better {
+            best = Some(actions[i]);
+            best_visits = visits;
+            best_score = score;
+        }
+    }
+    best.or_else(|| actions.first().copied())
+}
+
 /// What the next step of a simulation should do at the current node.
 enum Step {
     Terminal(f64),
@@ -727,6 +824,80 @@ mod tests {
             0.0
         );
         assert_eq!(value_of(GameResult::Draw), 0.5);
+    }
+
+    /// `best_of` over one tree must be the pre-ensemble rule, term for term,
+    /// on real search trees rather than only in the argument for it.
+    #[test]
+    fn best_of_one_tree_is_the_pre_ensemble_rule() {
+        for seed in 0..12u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let state = engine::new_game(seed);
+            let actions = engine::legal_actions(&state);
+            for sims in [1usize, 3, 17, 200] {
+                let mut tree = Tree::new(state, actions.clone(), Config::default(), &mut rng);
+                for _ in 0..sims {
+                    tree.simulate(&mut rng);
+                }
+                assert_eq!(
+                    best_of(std::slice::from_ref(&tree)),
+                    legacy_best_action(&tree),
+                    "seed {seed}, {sims} simulations"
+                );
+            }
+        }
+    }
+
+    /// The ensemble rule pools visits: a move two trees each visited a little
+    /// beats a move one tree visited more.
+    #[test]
+    fn best_of_sums_visits_across_trees() {
+        let a = Action::Discard { slot: 0 };
+        let b = Action::Discard { slot: 1 };
+        // Two hand-built trees over the same two root actions, in *different*
+        // orders, so the lookup is by action and not by index.
+        let build = |order: [Action; 2], stats: [(u32, f64); 2]| {
+            let mut rng = StdRng::seed_from_u64(1);
+            let mut tree = Tree::new(
+                engine::new_game(0),
+                vec![Action::Discard { slot: 0 }],
+                Config::default(),
+                &mut rng,
+            );
+            tree.nodes.clear();
+            let mut root = terminal(0.0);
+            root.kind = Kind::Decision {
+                mover: Player::One,
+                actions: order.to_vec(),
+                children: vec![NO_NODE; 2],
+                expanded: 2,
+            };
+            tree.nodes.push(root);
+            for (slot, (visits, value_sum)) in stats.into_iter().enumerate() {
+                let mut n = terminal(0.0);
+                n.visits = visits;
+                n.value_sum = value_sum;
+                let id = tree.push(n);
+                if let Kind::Decision { children, .. } = &mut tree.nodes[0].kind {
+                    children[slot] = id;
+                }
+            }
+            tree
+        };
+        // Tree one visits `a` 10 times, `b` 4. Tree two (reversed order)
+        // visits `b` 9 times, `a` 2. Pooled: a = 12, b = 13.
+        let t1 = build([a, b], [(10, 5.0), (4, 2.0)]);
+        let t2 = build([b, a], [(9, 4.0), (2, 1.0)]);
+        assert_eq!(best_of(std::slice::from_ref(&t1)), Some(a));
+        assert_eq!(best_of(std::slice::from_ref(&t2)), Some(b));
+        assert_eq!(best_of(&[t1, t2]), Some(b), "pooled visits favour b");
+
+        // An action no tree expanded is skipped, not returned with 0 visits.
+        let mut lonely = build([a, b], [(3, 1.0), (5, 2.0)]);
+        if let Kind::Decision { children, .. } = &mut lonely.nodes[0].kind {
+            children[1] = NO_NODE;
+        }
+        assert_eq!(best_of(std::slice::from_ref(&lonely)), Some(a));
     }
 
     /// Chance nodes must be resolved by probability, not by UCB1: with

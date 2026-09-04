@@ -22,6 +22,14 @@
 //!   the derived tally/victory-breakdown/race-exposure summary, to a JSON
 //!   results file.
 //!
+//! Two examples go beyond what the CLI reports:
+//!
+//! - `examples/ab_lab.rs`, the `duels-agent-alphabeta` tuning harness, which
+//!   also gives the two sides *different* budgets (`--budget-a`/`--budget-b`);
+//! - `examples/ensemble_lab.rs`, the root-determinization sweep behind both
+//!   search agents' ensembling docs, which reports each side's wall clock per
+//!   game and, with `--cost`, how much search a decision actually got.
+//!
 //! # Benchmarking on a quiet machine
 //!
 //! `Budget::TimeMs` runs are wall-clock based, so the number of simulations

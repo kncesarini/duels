@@ -32,12 +32,13 @@
 //!   `rollout_blend`/`blend`, `rollout_cap`/`cap-rollouts`,
 //!   `rollout_common_seed`/`crn`, `policy` (`uniform`/`biased`), `greedy`,
 //!   `metric` (`margin:<clamp>` or `outcome:<scale>`), `weights`
-//!   (`v1`/`default`/`score-only`), and the individual evaluation weights
-//!   `card`, `coin`, `breadth`, `shield`, `threat`.
+//!   (`v1`/`default`/`score-only`), the individual evaluation weights `card`,
+//!   `coin`, `breadth`, `shield`, `threat`, and the root-ensembling pair
+//!   `root_determinizations`/`dets` and `ensemble_exact_root`/`exact`.
 //! * `mcts-uct` -- every [`duels_agent_mcts_uct::Config`] field:
 //!   `exploration`/`c`, `rollout` (`uniform`/`biased`/`smart`),
 //!   `chance_widen_c`, `chance_widen_alpha`, `max_rollout_plies`,
-//!   `time_check_interval`.
+//!   `time_check_interval`, `root_determinizations`/`dets`.
 //! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
 //!   name (`military_position`, `military_endgame_urgency`,
 //!   `science_distinct_symbol`, `science_near_supremacy`,
@@ -152,6 +153,8 @@ pub fn parse_alphabeta_config(params: &str) -> Result<AlphaBetaConfig, String> {
             "rollout_blend" | "blend" => cfg.rollout_blend = parse_field(k, v)?,
             "rollout_cap" | "cap-rollouts" => cfg.rollout_cap = parse_field(k, v)?,
             "rollout_common_seed" | "crn" => cfg.rollout_common_seed = parse_field(k, v)?,
+            "root_determinizations" | "dets" => cfg.root_determinizations = parse_field(k, v)?,
+            "ensemble_exact_root" | "exact" => cfg.ensemble_exact_root = parse_field(k, v)?,
             "policy" => {
                 cfg.rollout_policy = match v {
                     "uniform" => playout::PolicyWeights::UNIFORM,
@@ -209,6 +212,7 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
             "chance_widen_alpha" => cfg.chance_widen_alpha = parse_field(k, v)?,
             "max_rollout_plies" => cfg.max_rollout_plies = parse_field(k, v)?,
             "time_check_interval" => cfg.time_check_interval = parse_field(k, v)?,
+            "root_determinizations" | "dets" => cfg.root_determinizations = parse_field(k, v)?,
             "rollout" => {
                 cfg.rollout = match v {
                     "uniform" => RolloutWeights::UNIFORM,
@@ -360,7 +364,7 @@ mod tests {
     fn mcts_config_parser_reads_every_supported_key() {
         let cfg = parse_mcts_config(
             "exploration=2.0,chance_widen_c=0.5,chance_widen_alpha=0.25,\
-             max_rollout_plies=100,time_check_interval=32,rollout=uniform",
+             max_rollout_plies=100,time_check_interval=32,rollout=uniform,dets=4",
         )
         .unwrap();
         assert_eq!(cfg.exploration, 2.0);
@@ -369,6 +373,40 @@ mod tests {
         assert_eq!(cfg.max_rollout_plies, 100);
         assert_eq!(cfg.time_check_interval, 32);
         assert_eq!(cfg.rollout, RolloutWeights::UNIFORM);
+        assert_eq!(cfg.root_determinizations, 4);
+    }
+
+    /// Root ensembling is the one knob whose *default* has to keep reading
+    /// `1`, since that is what makes the shipped agents the pre-ensembling
+    /// ones; the sweep behind those crates' docs is driven by these keys.
+    #[test]
+    fn root_ensembling_keys_reach_both_search_agents() {
+        assert_eq!(parse_mcts_config("").unwrap().root_determinizations, 1);
+        assert_eq!(
+            parse_mcts_config("root_determinizations=8")
+                .unwrap()
+                .root_determinizations,
+            8
+        );
+        let cfg = parse_alphabeta_config("").unwrap();
+        assert_eq!(cfg.root_determinizations, 1);
+        assert!(cfg.ensemble_exact_root);
+        let cfg = parse_alphabeta_config("dets=4,exact=false").unwrap();
+        assert_eq!(cfg.root_determinizations, 4);
+        assert!(!cfg.ensemble_exact_root);
+        // ... and they show up in the spec the results file records.
+        let agent = make_agent_from_spec("mcts-uct:dets=2", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("dets=2"),
+            "{}",
+            agent.spec().params
+        );
+        let agent = make_agent_from_spec("alphabeta:dets=2", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("dets=2"),
+            "{}",
+            agent.spec().params
+        );
     }
 
     #[test]
