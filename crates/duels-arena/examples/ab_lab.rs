@@ -1,12 +1,13 @@
 //! Tuning harness for `duels-agent-alphabeta`.
 //!
-//! Plays paired, seat-swapped matches between two agent *specifications*,
-//! where a specification is either a registered agent name or
-//! `alphabeta:key=value,...` naming an explicit
-//! [`duels_agent_alphabeta::Config`]. That is the thing the `duels-arena`
-//! CLI cannot do — it only knows agents by name — and it is what an ablation
-//! needs: every number quoted in the `duels-agent-alphabeta` docs was
-//! produced by this example.
+//! Plays paired, seat-swapped matches between two agent *specifications*
+//! (a bare registered name, or `name:key=value,...` naming an explicit
+//! `Config`/`Weights` — see [`duels_arena::agent_spec`], which this example's
+//! original spec-string parser was generalized into). What this harness adds
+//! on top of the plain `duels-arena match` CLI is `--stats`, a second pass
+//! that reports the depth and work the alpha-beta side actually reached, and
+//! per-side wall-clock accounting (`--budget-a`/`--budget-b`); every number
+//! quoted in the `duels-agent-alphabeta` docs was produced by this example.
 //!
 //! ```text
 //! cargo run --release -p duels-arena --example ab_lab -- \
@@ -20,22 +21,21 @@
 //! way to state a gap. `--stats 1` adds a short second pass reporting the
 //! depth and work the alpha-beta side actually reached.
 //!
-//! Configuration keys, all optional: `base` (`v1` or `default`), `depth`,
-//! `cap` (chance-outcome cap), `rollouts`, `cap-rollouts`, `blend`, `metric`
-//! (`margin:<clamp>` or `outcome:<scale>`), `policy` (`uniform`/`biased`),
-//! `greedy`, `crn`, `order` (`static`/`none`/`lookahead`), `tt`, `star1`,
-//! `weights` (`v1`/`default`/`score-only`), and the individual evaluation
-//! weights `card`, `coin`, `breadth`, `shield`, `threat`.
+//! See [`duels_arena::agent_spec`] for the full list of configuration keys
+//! `alphabeta:...` accepts.
 //!
 //! Games run in parallel across seeds, so a wall-clock budget is contended
 //! the same way for both sides but the absolute work per decision is lower
 //! than it would be in a serial run. Comparisons stay fair; absolute node
-//! counts do not transfer.
+//! counts do not transfer. See `duels_arena`'s crate docs ("Benchmarking on a
+//! quiet machine") for why a `time_ms` comparison additionally wants a quiet
+//! machine and one match running at a time.
 
 use std::collections::HashMap;
 
-use duels_agent_alphabeta::{eval, playout, AlphaBetaAgent, Config};
+use duels_agent_alphabeta::{AlphaBetaAgent, Config};
 use duels_agents_api::{Agent, Budget};
+use duels_arena::agent_spec::{make_agent_from_spec, parse_alphabeta_config};
 use duels_arena::match_runner::parse_budget;
 use duels_core::{engine, Player};
 use rand::{rngs::StdRng, SeedableRng};
@@ -43,78 +43,15 @@ use rayon::prelude::*;
 
 /// Build an agent from a specification string.
 fn make(spec: &str, seed: u64) -> Box<dyn Agent + Send> {
-    match spec.split_once(':') {
-        Some(("alphabeta", params)) => Box::new(AlphaBetaAgent::with_config(Config {
-            seed,
-            ..parse_config(params)
-        })),
-        _ => duels_arena::agent_registry::make_agent(spec, seed).unwrap(),
-    }
+    make_agent_from_spec(spec, seed).unwrap_or_else(|e| panic!("{e}"))
 }
 
-fn parse_config(params: &str) -> Config {
-    let mut cfg = Config::default();
-    let mut w = cfg.weights;
-    for kv in params.split(',').filter(|s| !s.is_empty()) {
-        let (k, v) = kv.split_once('=').expect("key=value");
-        match k {
-            "base" => match v {
-                "v1" => {
-                    cfg = Config::v1();
-                    w = cfg.weights;
-                }
-                "default" => {}
-                other => panic!("unknown base {other}"),
-            },
-            "depth" => cfg.max_depth = v.parse().unwrap(),
-            "cap" => cfg.chance_cap = v.parse().unwrap(),
-            "rollouts" => cfg.rollouts = v.parse().unwrap(),
-            "blend" => cfg.rollout_blend = v.parse().unwrap(),
-            "policy" => {
-                cfg.rollout_policy = match v {
-                    "uniform" => playout::PolicyWeights::UNIFORM,
-                    "biased" => playout::PolicyWeights::BIASED,
-                    other => panic!("unknown policy {other}"),
-                }
-            }
-            "order" => {
-                cfg.order_moves = v != "none";
-                cfg.order_lookahead = v == "lookahead";
-            }
-            "tt" => cfg.use_tt = v.parse().unwrap(),
-            "star1" => cfg.star1 = v.parse().unwrap(),
-            "weights" => {
-                w = match v {
-                    "score-only" => eval::Weights::SCORE_ONLY,
-                    "v1" => eval::Weights::V1,
-                    "default" => eval::Weights::DEFAULT,
-                    other => panic!("unknown weights {other}"),
-                }
-            }
-            "metric" => {
-                cfg.rollout_metric = match v.split_once(':') {
-                    Some(("margin", c)) => playout::Metric::Margin {
-                        clamp: c.parse().unwrap(),
-                    },
-                    Some(("outcome", c)) => playout::Metric::Outcome {
-                        scale: c.parse().unwrap(),
-                    },
-                    _ => panic!("metric=margin:<clamp> or metric=outcome:<scale>"),
-                }
-            }
-            "cap-rollouts" => cfg.rollout_cap = v.parse().unwrap(),
-            "crn" => cfg.rollout_common_seed = v.parse().unwrap(),
-            "greedy" => cfg.rollout_policy.greedy = v.parse().unwrap(),
-            "card" => w.card_in_city = v.parse().unwrap(),
-            "coin" => w.coin = v.parse().unwrap(),
-            "breadth" => w.resource_breadth = v.parse().unwrap(),
-            "shield" => w.shield = v.parse().unwrap(),
-            "threat" => w.capital_threat = v.parse().unwrap(),
-            other => panic!("unknown key {other}"),
-        }
-    }
-    cfg.weights = w;
-    cfg
+/// Parse an `alphabeta:key=value,...` specification's parameters into a
+/// concrete [`Config`] (with `seed` filled in) for [`stats`], which needs the
+/// real `AlphaBetaAgent` type rather than a boxed `Agent` trait object.
+fn parse_config(params: &str, seed: u64) -> Config {
+    let cfg = parse_alphabeta_config(params).unwrap_or_else(|e| panic!("{e}"));
+    Config { seed, ..cfg }
 }
 
 /// Play one game and return the winner, the move count and the per-agent
@@ -165,12 +102,9 @@ fn stats(spec: &str, opponent: &str, budget: Budget, seeds: u64, seed0: u64) {
     let mut max_depth = 0u8;
     for k in 0..seeds {
         let s = seed0 + k;
-        let cfg = Config {
-            seed: s,
-            ..parse_config(spec.split_once(':').map_or("", |(_, p)| p))
-        };
+        let cfg = parse_config(spec.split_once(':').map_or("", |(_, p)| p), s);
         let mut ab = AlphaBetaAgent::with_config(cfg);
-        let mut opp = duels_arena::agent_registry::make_agent(opponent, s ^ 0xBEEF).unwrap();
+        let mut opp = make(opponent, s ^ 0xBEEF);
         let mut state = engine::new_game(s);
         let mut rng = StdRng::seed_from_u64(s ^ 0x9E37);
         while !state.is_over() {
