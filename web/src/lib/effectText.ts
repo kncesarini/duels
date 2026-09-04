@@ -78,7 +78,7 @@ export function describeCardEffects(card: CardCatalogEntry, catalog?: Catalog): 
   }
   if (card.fixed_trade.length > 0) {
     lines.push(
-      `Buy ${card.fixed_trade.join(", ")} from your opponent for 1 coin each, no matter how much they produce.`,
+      `Buy ${card.fixed_trade.join(", ")} from the bank for 1 coin each, no matter how much your opponent produces.`,
     );
   }
   if (card.coins > 0) lines.push(`+${plural(card.coins, "coin")} when built.`);
