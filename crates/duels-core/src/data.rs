@@ -47,6 +47,8 @@ pub const NUM_SCIENCE: usize = 7;
 /// A tradeable resource. The first three are raw materials (brown), the last
 /// two are manufactured goods (grey).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Resource {
     /// Wood (raw material).
@@ -108,6 +110,8 @@ impl ResourceGroup {
 
 /// The seven card colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum CardType {
     /// Brown.
@@ -148,6 +152,8 @@ impl CardType {
 /// A scientific symbol. Six appear on green cards (twice each); `Balance` is
 /// the seventh, granted only by the Law progress token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Science {
     /// Mortar and pestle.
@@ -282,6 +288,25 @@ macro_rules! id_newtype {
                     }
                 }
                 d.deserialize_str(V)
+            }
+        }
+
+        // Wire format is the slug string (see `Serialize`/`Deserialize`
+        // above), not the `u8` this type is backed by, so `TS` cannot be
+        // derived: it would describe the in-memory repr, not the JSON shape.
+        // This mirrors how ts-rs itself hand-implements `TS` for opaque
+        // string-like types such as `uuid::Uuid` (`impl_primitives!`).
+        #[cfg(feature = "ts")]
+        impl ts_rs::TS for $name {
+            type WithoutGenerics = Self;
+            type OptionInnerType = Self;
+
+            fn name(_: &ts_rs::Config) -> String {
+                "string".to_owned()
+            }
+
+            fn inline(cfg: &ts_rs::Config) -> String {
+                <Self as ts_rs::TS>::name(cfg)
             }
         }
     };

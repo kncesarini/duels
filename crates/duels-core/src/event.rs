@@ -18,6 +18,8 @@ use crate::Player;
 
 /// Why a player's coin total changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum CoinReason {
     /// Paid the printed coin cost of a card or wonder to the bank.
@@ -44,6 +46,8 @@ pub enum CoinReason {
 
 /// One observable step of applying an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum Event {

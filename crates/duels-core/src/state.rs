@@ -64,6 +64,8 @@ pub const GUILDS_IN_PLAY: usize = 3;
 
 /// What kind of decision the game is waiting for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// The initial wonder draft: players alternate 1-2-1, then 1-2-1 with the
@@ -81,6 +83,8 @@ pub enum Phase {
 /// A choice an effect has created that must be resolved before the turn can
 /// pass. At most one is ever outstanding at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Pending {
     /// A pair of identical scientific symbols completed; take a progress

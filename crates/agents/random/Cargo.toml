@@ -1,0 +1,12 @@
+[package]
+name = "duels-agent-random"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The first concrete Agent: uniformly picks among the legal actions it is given."
+
+[dependencies]
+duels-core = { path = "../../duels-core" }
+duels-agents-api = { path = "../../duels-agents-api" }
+rand = { workspace = true }

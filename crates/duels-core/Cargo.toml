@@ -10,6 +10,15 @@ description = "Core rules engine for 7 Wonders Duel: game state, actions, observ
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
+ts-rs = { version = "12", optional = true }
+
+[features]
+# Derives `ts_rs::TS` on the wire types (Action, Observation, Event, ...) so
+# that `duels-server` and its `cargo test` codegen step can produce the
+# TypeScript bindings in `web/src/generated/`. Off by default so the pure
+# rules engine never pulls in a code-generation dependency; `duels-server`
+# turns it on.
+ts = ["dep:ts-rs"]
 
 [dev-dependencies]
 criterion = { workspace = true }
