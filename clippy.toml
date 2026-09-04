@@ -1,0 +1,22 @@
+# Workspace-wide clippy configuration.
+#
+# The rules engine (`duels-core`) and every future agent under `crates/agents/**`
+# must be deterministic and free of I/O: no wall-clock reads, no ambient
+# randomness. All randomness must enter through an explicitly passed
+# `&mut StdRng` (see `duels_core::engine::new_game`), so that a game is fully
+# reproducible from its seed and a search-based agent can clone and replay
+# states without side effects.
+#
+# `disallowed-methods` is enforced by the `clippy::disallowed_methods` lint,
+# which is denied at the crate level in `crates/duels-core/src/lib.rs` (and
+# should be denied the same way by future agent crates). Because clippy reads a
+# single `clippy.toml` per workspace, the ban is workspace-wide; the crates that
+# legitimately need wall-clock time (`duels-server`, `duels-arena`, benchmarks)
+# must `#[allow(clippy::disallowed_methods)]` at the specific call site and say
+# why.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "the rules engine must not read the wall clock; pass elapsed time in explicitly" },
+    { path = "std::time::SystemTime::now", reason = "the rules engine must not read the wall clock; pass elapsed time in explicitly" },
+    { path = "rand::thread_rng", reason = "all randomness must enter via an explicitly seeded StdRng parameter so games are reproducible" },
+    { path = "rand::random", reason = "all randomness must enter via an explicitly seeded StdRng parameter so games are reproducible" },
+]

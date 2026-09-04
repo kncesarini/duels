@@ -18,9 +18,10 @@ The resulting counts (23 Age I cards, 23 Age II cards, 20 Age III cards,
 official rulebook's stated component counts. That said: **this is still a
 best-effort transcription, not a guarantee of correctness.** It has not
 been checked card-by-card against a physical copy of the game or scans of
-the actual cards. Before any M1 rules-engine work relies on this data for
-legality checks or scoring, it should be spot-checked against the physical
-rulebook/cards or BoardGameGeek, especially:
+the actual cards. M1's rules engine now depends on it for legality checks
+and scoring (see "Verification status after M1" below), so a card-by-card
+spot check against the physical rulebook/cards or BoardGameGeek is still
+worth doing, especially:
 
 - Exact chain-symbol pairings (see "Chain symbols" below — the *pairing
   logic* is verified against working game code, but the *iconography names*
@@ -48,19 +49,51 @@ rulebook/cards or BoardGameGeek, especially:
   so don't have this split — it only arises for the 7 guild cards, which is
   why they get their own two effect types instead of reusing that one.
 
+## Verification status after M1
+
+M1's rules engine is the first real consumer of this data, and it exercises
+every field against actual game logic (see `docs/rules-spec.md`). Three
+findings worth recording:
+
+- **The data held up.** Every card cost, effect, chain link, guild
+  comparison, wonder effect and progress-token effect in these files
+  produced correct-looking behaviour when driven through the engine, and the
+  structural invariants the engine validates on load all pass: 23/23/20 age
+  cards plus 7 guilds, symmetric chain links from an earlier age, each of
+  the six card-borne science symbols on exactly two cards, majority effects
+  only on guilds, and the military track's 9 / 3 / 6 geometry with 0-2-5-10
+  scoring. `duels-core::data` fails loudly (a hard parse error, not a
+  silent skip) if an effect type it does not understand appears here, so
+  these files and the engine cannot drift apart unnoticed.
+- **One gap in the effect vocabulary.** `wonders.json` describes The Great
+  Library as `{"type": "choose_progress_token", "from_pool_size": 3}`,
+  which does not say *which* pool. Per the rulebook it draws 3 of the
+  **progress tokens set aside at the beginning of the game** — not from the
+  5 on the board. The engine implements the rulebook reading; the data's
+  wording should be tightened if anyone else consumes it.
+- **One wording ambiguity.** `military.json`'s notes describe the loot
+  tokens as covering position ranges ("magnitude 3-5", "6-8"). The engine
+  models them as single spaces at distance 3 and 6 that trigger the first
+  time the conflict pawn reaches or passes them, which is equivalent for
+  play but is the more precise statement.
+
 ## Files
 
 - `cards.json` — all 73 age cards: the 23 Age I, 23 Age II, and 20 Age III
-  non-guild cards, plus all 7 guild cards that exist in the base game (only
-  3 of the 7 are randomly selected into the Age III structure per game,
-  alongside 1 extra Age III slot removed with them — that per-game
-  random-selection logic is engine/setup behavior for M1, not data).
+  non-guild cards, plus all 7 guild cards that exist in the base game. Per
+  game, 3 cards are returned to the box unseen from each age deck; for Age
+  III that happens first (20 → 17) and then 3 of the 7 guilds are shuffled
+  in, giving exactly 20 dealt cards and exactly 3 guilds in play. That
+  per-game logic is engine/setup behavior (implemented in M1 — see
+  `docs/rules-spec.md` R-021), not data.
 - `wonders.json` — all 12 base-game wonders. 8 of the 12 are randomly
   drafted (4 offered to each player in turn) at the start of a game; that
   draft logic is also engine/setup behavior for M1, not data.
 - `tokens.json` — all 10 progress tokens. Only 5 of the 10 are randomly
-  made available in any single game (the other 5 are set aside entirely for
-  that game) — again, setup logic for M1.
+  made available on the board in any single game. The other 5 are set aside
+  and are out of play *except* as the pool The Great Library draws 3 from —
+  they are not returned to the box outright. Again, setup logic implemented
+  in M1, not data.
 - `military.json` — the military conflict track and its 4 fixed-position
   military tokens, plus the end-of-game military scoring table used when
   neither player reaches instant military supremacy.
