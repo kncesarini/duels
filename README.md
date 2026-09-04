@@ -5,12 +5,13 @@ Agora, no Pantheon), built as: a Rust rules engine, an `Agent` trait for
 AI/bot players (hand-written or RL-trained via future PyO3 bindings), a
 server-authoritative game server, and a TypeScript/React web client.
 
-## Status: M1 (rules engine)
+## Status: M2 (playable slice)
 
-`duels-core` is now a complete, tested implementation of the base game.
-Everything downstream — the server, the arena, AI agents, the web client —
-reads state from it and submits `Action`s back; nothing else implements rules
-logic.
+A person can now play a full game of 7 Wonders Duel end to end in a browser,
+human vs. the random bot or hot-seat (two humans, one tab). `duels-core`
+(M1) is a complete, tested implementation of the base game; everything
+downstream — the server, agents, the web client — reads state from it and
+submits `Action`s back, never implementing rules logic itself.
 
 - **Cargo workspace** (`cargo build` / `cargo test` from repo root):
   - `crates/duels-core` — **the rules engine**: static data loading, setup,
@@ -20,14 +21,26 @@ logic.
     `rand::rngs::StdRng`.
   - `crates/duels-agents-api` — the `Agent` trait contract that AI/bot
     players implement against (`CONTRACT_VERSION = 2`).
+  - `crates/agents/random` — `RandomAgent`, the first concrete `Agent`:
+    uniformly picks among the actions it's offered.
   - `crates/duels-arena` — placeholder binary; the future tournament/Elo
     runner for pitting agents against each other.
-  - `crates/duels-server` — placeholder binary; the future
-    server-authoritative WebSocket game server.
-- **CI** (`.github/workflows/ci.yml`): `fmt` + `clippy` + `test`, gated
-  behind a single required `gate` check on PRs to `main`. A workspace
-  `clippy.toml` bans `Instant::now`, `SystemTime::now`, `rand::thread_rng`
-  and `rand::random` so the engine cannot quietly become non-deterministic.
+  - `crates/duels-server` — the server-authoritative game server: a
+    room-based REST + WebSocket API (`axum`) that drives games with
+    `duels-core`'s engine as the sole source of truth for legality and
+    scoring, and exports its wire types to TypeScript (`ts-rs`) for `web/`.
+- **`web/`** — the React/Vite/Zustand/Tailwind client. Talks to
+  `duels-server` only over the generated wire types; renders every rule the
+  engine exposes (structure, both cities, the military track, the wonder
+  draft, every pending-choice modal, final scoring) without reimplementing
+  any of it.
+- **CI** (`.github/workflows/ci.yml`): `fmt` + `clippy` + `test` (Rust) and
+  path-filtered `web` (typecheck/lint/vitest/build + a TypeScript-bindings
+  drift check) and `e2e` (Playwright, plays a full game through the
+  rendered UI) jobs, gated behind a single required `gate` check on PRs to
+  `main`. A workspace `clippy.toml` bans `Instant::now`, `SystemTime::now`,
+  `rand::thread_rng` and `rand::random` so the engine cannot quietly become
+  non-deterministic.
 - **Game data** (`data/`): all 73 base-game age cards, 12 wonders, 10
   progress tokens, and the military track/tokens, as structured JSON,
   embedded with `include_str!` and validated on load. See `data/README.md`
@@ -109,13 +122,22 @@ crates/
     benches/                apply/legal_actions throughput
   duels-agents-api/         Agent trait, AgentSpec, Budget
   duels-arena/              tournament/Elo runner (placeholder)
-  duels-server/             WebSocket game server (placeholder)
+  duels-server/             room-based REST + WebSocket game server
+    src/protocol.rs          the wire contract (ts-rs-derived TypeScript bindings)
+    src/room.rs               room/seat model and the apply-then-drive-agents game loop
+    src/catalog.rs            static card/wonder/token/military reference data
+  agents/
+    random/                 RandomAgent: uniformly picks among legal actions
+web/                        Vite + React 18 + TypeScript + Zustand + Tailwind client
+  src/generated/            TypeScript bindings generated from duels-core/duels-server
+  e2e/                      Playwright spec: full game through the rendered UI
 data/                       cards.json, wonders.json, tokens.json, military.json + README
 docs/
   rules-spec.md             numbered rules (R-xxx) -> covering tests, perf, open questions
   agent-contract.md         Agent/Observation/Action contract + versioning
   adr/                      architecture decision records
-.github/workflows/ci.yml    fmt + clippy + test, gated behind `gate`
+.github/workflows/ci.yml    fmt + clippy + test + web + e2e, gated behind `gate`
+docker-compose.yml          `docker compose up` runs the server and the web client
 CODEOWNERS                  mandatory review on docs/, .github/, data/
 ```
 
@@ -132,3 +154,26 @@ cargo bench -p duels-core      # engine throughput
 Measured on an Apple Silicon development machine: one `apply` is ~16 ns, a
 `GameState` copy ~0.9 ns, and a complete game (setup plus ~70 decisions)
 ~21 µs. See `docs/rules-spec.md` for the full table.
+
+## Playing it
+
+```
+docker compose up --build
+# open http://localhost:5173
+```
+
+or without Docker, in two terminals:
+
+```
+cargo run -p duels-server            # http://localhost:8080
+npm --prefix web install && npm --prefix web run dev   # http://localhost:5173
+```
+
+`web/`'s TypeScript types are generated, not hand-written — regenerate them
+after changing a wire type in `duels-core` or `duels-server` and commit the
+result:
+
+```
+cargo test -p duels-server           # also exercises duels-core's `ts` feature
+git status web/src/generated         # should be clean if nothing drifted
+```

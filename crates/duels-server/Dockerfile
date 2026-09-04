@@ -4,6 +4,7 @@ FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY data ./data
 RUN cargo build --release -p duels-server
 
 FROM debian:bookworm-slim
