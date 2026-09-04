@@ -41,6 +41,14 @@
 //! `alpha = 1.0` and a large `c` this degenerates to the unbiased,
 //! fully-faithful estimator; the default `alpha = 0.5` trades a little bias
 //! for a much deeper tree.
+//!
+//! # Strategy priors ([`PriorMode`])
+//!
+//! Optionally, a decision node's actions are ranked by
+//! [`duels_strategy::action_prior`] the first time the node is expanded, so
+//! that UCT spends its first visits on the moves a win-condition read says
+//! matter. See [`PriorMode`] for the cost model and where the ranking is
+//! computed (exactly once per expanded node, never per simulation).
 
 use duels_core::engine::{self, Outcome};
 use duels_core::{Action, GameResult, GameState, Player};
@@ -56,6 +64,81 @@ pub(crate) type NodeId = u32;
 
 /// "No child here yet."
 pub(crate) const NO_NODE: NodeId = NodeId::MAX;
+
+/// How, if at all, [`duels_strategy`]'s policy layer steers the tree.
+///
+/// # Where the cost goes
+///
+/// A [`duels_strategy::Stance`] plus a full slate of
+/// [`duels_strategy::action_prior`] values costs a meaningful fraction of one
+/// playout (about 29% of a rollout on the machine `duels-strategy`'s
+/// `action_prior` bench was run on). That is far too expensive to recompute on
+/// every simulation that passes through a node, and cheap enough to pay once
+/// per node.
+///
+/// So it is paid **once per decision node, on that node's first expansion**,
+/// which is a strictly smaller set than "once per node": a node created by a
+/// simulation and never revisited is a playout target only, and never pays.
+/// The tree's `expand` is the one call site, and the `expanded == 0` guard
+/// is what makes it once. Nothing in the simulation loop recomputes anything.
+///
+/// The tree's own `rankings` counter records the consultations so the claim
+/// can be checked
+/// instead of believed. Measured on a real mid-game position, a 2000-simulation
+/// search allocates 2788 nodes and consults the strategy layer **583 times** —
+/// 0.29 per simulation, because only the fifth of nodes that get revisited ever
+/// expand. At 29% of a rollout each that predicts about 8% overhead, which is
+/// what the arena measures end to end.
+///
+/// The two non-trivial modes are nested, not alternatives: `ProgressiveBias`
+/// is `ExpansionOrder` plus a decaying selection term, so an ablation between
+/// them measures the selection term on its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PriorMode {
+    /// Don't consult the strategy layer at all. Bit-for-bit the agent this
+    /// crate shipped before priors existed — same RNG stream, same expansion
+    /// order, same UCB1 scores; see
+    /// `tests::prior_none_is_the_pre_prior_agent_move_for_move`.
+    None,
+    /// Rank a decision node's actions by [`duels_strategy::action_prior`] on
+    /// first expansion, highest first, so the moves a win-condition read
+    /// favours are expanded — and their subtrees grown — before the rest.
+    /// UCB1 itself is untouched: once every child exists this is exactly the
+    /// same search, only reached from a different order.
+    ///
+    /// Ties keep the shuffled order the node was built with, so a position
+    /// where the prior says nothing is still unbiased.
+    ExpansionOrder,
+    /// [`PriorMode::ExpansionOrder`], plus a `weight * prior / (visits + 1)`
+    /// term added to each child's UCB1 score, where `prior` is the node's
+    /// prior slate normalised to sum to one. The term dominates at the first
+    /// visit and decays as real statistics accumulate, so it biases *which*
+    /// moves get the early samples without changing what the search converges
+    /// to.
+    ProgressiveBias {
+        /// Multiplier on the decaying prior term.
+        weight: f64,
+    },
+}
+
+impl PriorMode {
+    /// Whether this mode needs a node's priors kept after ordering.
+    #[inline]
+    fn keeps_priors(&self) -> bool {
+        matches!(self, PriorMode::ProgressiveBias { .. })
+    }
+
+    /// A compact, stable description for [`Config::describe`].
+    fn describe(&self) -> String {
+        match self {
+            PriorMode::None => "none".to_string(),
+            PriorMode::ExpansionOrder => "expansion_order".to_string(),
+            PriorMode::ProgressiveBias { weight } => {
+                format!("progressive_bias({weight:.3})")
+            }
+        }
+    }
+}
 
 /// Tuning knobs for the search.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,6 +165,10 @@ pub struct Config {
     /// search and is bit-for-bit the behaviour this crate had before the
     /// option existed; see the crate docs for what larger values measure.
     pub root_determinizations: usize,
+    /// Whether, and how, [`duels_strategy`]'s policy layer steers the tree.
+    /// [`PriorMode::None`] is bit-for-bit the behaviour this crate had before
+    /// the option existed.
+    pub prior: PriorMode,
 }
 
 impl Default for Config {
@@ -94,6 +181,7 @@ impl Default for Config {
             max_rollout_plies: 2_000,
             time_check_interval: 64,
             root_determinizations: 1,
+            prior: PriorMode::None,
         }
     }
 }
@@ -103,7 +191,7 @@ impl Config {
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2});dets={}",
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={}",
             self.exploration,
             w.build,
             w.wonder,
@@ -114,6 +202,7 @@ impl Config {
             self.chance_widen_c,
             self.chance_widen_alpha,
             self.root_determinizations.max(1),
+            self.prior.describe(),
         )
     }
 }
@@ -143,6 +232,14 @@ pub(crate) enum Kind {
         children: Vec<NodeId>,
         /// How many of `children` have been created, always a prefix.
         expanded: usize,
+        /// `priors[i]` is the normalised [`duels_strategy::action_prior`] of
+        /// `actions[i]`, computed once on this node's first expansion.
+        ///
+        /// Empty unless [`Config::prior`] is a mode that reads priors during
+        /// *selection* ([`PriorMode::ProgressiveBias`]) — the ordering modes
+        /// consume the ranking as they sort and keep nothing, so a node costs
+        /// one `Vec` header and no elements.
+        priors: Vec<f32>,
     },
     /// `action` has been chosen and its randomness must be resolved.
     Chance {
@@ -204,6 +301,15 @@ pub(crate) struct Tree {
     buf: Vec<Action>,
     /// Total playouts performed.
     pub simulations: u64,
+    /// How many times the strategy layer was consulted — one
+    /// [`duels_strategy::Stance`] plus one slate of priors per increment.
+    ///
+    /// Exists to make [`PriorMode`]'s central cost claim *checkable* rather
+    /// than merely asserted in prose: it must equal the number of decision
+    /// nodes that were actually expanded and had a choice to make, and it must
+    /// stay far below [`Tree::simulations`]. See
+    /// `tests::the_prior_is_computed_once_per_expanded_node_not_per_simulation`.
+    pub rankings: u64,
 }
 
 impl Tree {
@@ -216,6 +322,7 @@ impl Tree {
             path: Vec::with_capacity(64),
             buf: Vec::with_capacity(32),
             simulations: 0,
+            rankings: 0,
         };
         let root = decision_node(state, actions, rng);
         tree.nodes.push(root);
@@ -311,9 +418,85 @@ impl Tree {
         self.push(node)
     }
 
+    /// Rank decision node `id`'s actions by [`duels_strategy::action_prior`],
+    /// highest first, and (for [`PriorMode::ProgressiveBias`]) keep the
+    /// normalised weights alongside them.
+    ///
+    /// **Called exactly once per node**, from [`Tree::expand`] under an
+    /// `expanded == 0` guard — which is both what makes the reordering sound
+    /// (no child exists yet, so nothing is invalidated by permuting `actions`)
+    /// and what bounds the cost to one [`duels_strategy::Stance`] per expanded
+    /// node rather than one per simulation.
+    ///
+    /// Consumes no randomness: the sort is stable, so the shuffle
+    /// [`decision_node`] already applied survives as the tie-break among
+    /// equally-rated moves.
+    fn rank_by_prior(&mut self, id: NodeId) {
+        let state = self.nodes[id as usize].state;
+        let mut actions = match &mut self.nodes[id as usize].kind {
+            Kind::Decision {
+                actions, expanded, ..
+            } => {
+                debug_assert_eq!(*expanded, 0, "a node was ranked after it was expanded");
+                std::mem::take(actions)
+            }
+            _ => return,
+        };
+
+        // One stance for the node, then one `action_prior` per legal move
+        // against it — the split the strategy layer is designed around.
+        self.rankings += 1;
+        let stance = duels_strategy::stance(&state, state.current_player());
+        let mut scored: Vec<(f64, Action)> = actions
+            .iter()
+            .map(|&a| (duels_strategy::action_prior(&state, a, &stance), a))
+            .collect();
+        // Descending, stably. `total_cmp` orders every f64 including the NaN
+        // a weight should never be, so the sort can never panic.
+        scored.sort_by(|x, y| y.0.total_cmp(&x.0));
+
+        actions.clear();
+        actions.extend(scored.iter().map(|&(_, a)| a));
+
+        let priors = if self.cfg.prior.keeps_priors() {
+            // Normalised so the selection term is on a scale that does not
+            // move with the number of legal actions or the raw weights.
+            let total: f64 = scored.iter().map(|&(w, _)| w).sum();
+            let scale = if total > 0.0 { 1.0 / total } else { 0.0 };
+            scored.iter().map(|&(w, _)| (w * scale) as f32).collect()
+        } else {
+            Vec::new()
+        };
+
+        match &mut self.nodes[id as usize].kind {
+            Kind::Decision {
+                actions: slot,
+                priors: pslot,
+                ..
+            } => {
+                *slot = actions;
+                *pslot = priors;
+            }
+            _ => unreachable!("the kind was a decision a moment ago"),
+        }
+    }
+
     /// Create the next unexpanded child of decision node `id`, or `None` if
     /// they are all expanded.
     fn expand(&mut self, id: NodeId, rng: &mut StdRng) -> Option<NodeId> {
+        // The node's first expansion is where the strategy layer is consulted
+        // — once, for the whole node — and `PriorMode::None` never gets here.
+        // A node with one legal action is skipped: ranking a single move can
+        // change neither the expansion order nor a selection between children
+        // there is only one of, so paying for a `Stance` would be pure loss,
+        // and forced nodes (a pending effect choice with one answer) are
+        // common enough to be worth the test.
+        if self.cfg.prior != PriorMode::None
+            && matches!(&self.nodes[id as usize].kind, Kind::Decision { expanded, actions, .. }
+                if *expanded == 0 && actions.len() > 1)
+        {
+            self.rank_by_prior(id);
+        }
         let (state, action, slot) = match &self.nodes[id as usize].kind {
             Kind::Decision {
                 actions, expanded, ..
@@ -339,27 +522,43 @@ impl Tree {
     }
 
     /// UCB1 selection among the expanded children of a fully expanded
-    /// decision node.
+    /// decision node, plus the [`PriorMode::ProgressiveBias`] term when that
+    /// mode is on.
     fn select_ucb1(&self, id: NodeId) -> NodeId {
-        let (mover, children) = match &self.nodes[id as usize].kind {
+        let (mover, children, priors) = match &self.nodes[id as usize].kind {
             Kind::Decision {
-                mover, children, ..
-            } => (*mover, children),
+                mover,
+                children,
+                priors,
+                ..
+            } => (*mover, children, priors),
             _ => unreachable!("select_ucb1 called on a non-decision node"),
         };
         let parent_visits = self.nodes[id as usize].visits.max(1);
+        // Read once, outside the loop: `PriorMode::None` pays one branch per
+        // selection and touches nothing else.
+        let bias = match self.cfg.prior {
+            PriorMode::ProgressiveBias { weight } => weight,
+            _ => 0.0,
+        };
         let mut best = NO_NODE;
         let mut best_score = f64::NEG_INFINITY;
-        for &child in children {
+        for (i, &child) in children.iter().enumerate() {
             if child == NO_NODE {
                 continue;
             }
-            let score = ucb1(
+            let child_visits = self.nodes[child as usize].visits;
+            let mut score = ucb1(
                 self.exploit(child, mover),
-                self.nodes[child as usize].visits,
+                child_visits,
                 parent_visits,
                 self.cfg.exploration,
             );
+            if bias != 0.0 {
+                if let Some(&p) = priors.get(i) {
+                    score += bias * f64::from(p) / f64::from(child_visits + 1);
+                }
+            }
             if score > best_score {
                 best_score = score;
                 best = child;
@@ -569,6 +768,124 @@ pub(crate) fn best_of(trees: &[Tree]) -> Option<Action> {
     best.or_else(|| actions.first().copied())
 }
 
+/// The three search functions exactly as they read before [`PriorMode`]
+/// existed, kept so a test can assert that [`PriorMode::None`] is not merely
+/// *intended* to change nothing.
+///
+/// Copied verbatim from the pre-prior `Tree::expand`, `Tree::select_ucb1` and
+/// `Tree::simulate`; do not "simplify" any of them to call the new code, since
+/// that is the thing they exist to check. The only edit is the one the type
+/// system forces: the new `priors` field is named in the pattern that
+/// constructs a decision node's children, and never read.
+#[cfg(test)]
+impl Tree {
+    fn legacy_expand(&mut self, id: NodeId, rng: &mut StdRng) -> Option<NodeId> {
+        let (state, action, slot) = match &self.nodes[id as usize].kind {
+            Kind::Decision {
+                actions, expanded, ..
+            } => {
+                if *expanded >= actions.len() {
+                    return None;
+                }
+                (self.nodes[id as usize].state, actions[*expanded], *expanded)
+            }
+            _ => return None,
+        };
+        let child = self.child_after(state, action, rng);
+        match &mut self.nodes[id as usize].kind {
+            Kind::Decision {
+                children, expanded, ..
+            } => {
+                children[slot] = child;
+                *expanded = slot + 1;
+            }
+            _ => unreachable!("expand called on a non-decision node"),
+        }
+        Some(child)
+    }
+
+    fn legacy_select_ucb1(&self, id: NodeId) -> NodeId {
+        let (mover, children) = match &self.nodes[id as usize].kind {
+            Kind::Decision {
+                mover, children, ..
+            } => (*mover, children),
+            _ => unreachable!("select_ucb1 called on a non-decision node"),
+        };
+        let parent_visits = self.nodes[id as usize].visits.max(1);
+        let mut best = NO_NODE;
+        let mut best_score = f64::NEG_INFINITY;
+        for &child in children {
+            if child == NO_NODE {
+                continue;
+            }
+            let score = ucb1(
+                self.exploit(child, mover),
+                self.nodes[child as usize].visits,
+                parent_visits,
+                self.cfg.exploration,
+            );
+            if score > best_score {
+                best_score = score;
+                best = child;
+            }
+        }
+        debug_assert_ne!(best, NO_NODE);
+        best
+    }
+
+    pub(crate) fn legacy_simulate(&mut self, rng: &mut StdRng) {
+        self.path.clear();
+        let mut node: NodeId = 0;
+        self.path.push(node);
+        let mut fresh = false;
+        let value;
+
+        loop {
+            let step = match &self.nodes[node as usize].kind {
+                Kind::Terminal { value } => Step::Terminal(*value),
+                Kind::Chance { .. } => Step::Chance,
+                Kind::Decision { .. } => Step::Decision,
+            };
+            match step {
+                Step::Terminal(v) => {
+                    value = v;
+                    break;
+                }
+                Step::Chance => {
+                    node = self.resolve_chance(node, rng);
+                    self.path.push(node);
+                }
+                Step::Decision if fresh => {
+                    let mut state = self.nodes[node as usize].state;
+                    let result = rollout::play_out(
+                        &mut state,
+                        &self.cfg.rollout,
+                        &mut self.buf,
+                        rng,
+                        self.cfg.max_rollout_plies,
+                    );
+                    value = value_of(result);
+                    break;
+                }
+                Step::Decision => match self.legacy_expand(node, rng) {
+                    Some(child) => {
+                        node = child;
+                        self.path.push(node);
+                        fresh = true;
+                    }
+                    None => {
+                        node = self.legacy_select_ucb1(node);
+                        self.path.push(node);
+                    }
+                },
+            }
+        }
+
+        self.simulations += 1;
+        backpropagate(&mut self.nodes, &self.path, value);
+    }
+}
+
 /// The move-selection rule exactly as it read before [`best_of`] existed, kept
 /// so a test can assert the refactor is not merely equivalent in principle.
 ///
@@ -615,6 +932,11 @@ enum Step {
 
 /// A decision node for `state` over `actions`, shuffled once so that
 /// expansion order carries no systematic bias.
+///
+/// The shuffle happens for every [`PriorMode`], and consumes the same
+/// randomness in every one: under a prior mode it becomes the tie-break among
+/// equally-rated moves (see [`Tree::rank_by_prior`]), which is what keeps a
+/// prior that says nothing from silently reintroducing an ordering bias.
 fn decision_node(state: GameState, mut actions: Vec<Action>, rng: &mut StdRng) -> Node {
     actions.shuffle(rng);
     let children = vec![NO_NODE; actions.len()];
@@ -627,6 +949,7 @@ fn decision_node(state: GameState, mut actions: Vec<Action>, rng: &mut StdRng) -
             actions,
             children,
             expanded: 0,
+            priors: Vec::new(),
         },
     }
 }
@@ -664,6 +987,7 @@ mod tests {
             actions: vec![Action::Discard { slot: 0 }; n],
             children: vec![NO_NODE; n],
             expanded: 0,
+            priors: Vec::new(),
         };
         node
     }
@@ -871,6 +1195,7 @@ mod tests {
                 actions: order.to_vec(),
                 children: vec![NO_NODE; 2],
                 expanded: 2,
+                priors: Vec::new(),
             };
             tree.nodes.push(root);
             for (slot, (visits, value_sum)) in stats.into_iter().enumerate() {
@@ -898,6 +1223,337 @@ mod tests {
             children[1] = NO_NODE;
         }
         assert_eq!(best_of(std::slice::from_ref(&lonely)), Some(a));
+    }
+
+    /// The strongest form of the [`PriorMode::None`] guarantee: not "the same
+    /// move" but *the same tree*, node for node, against the verbatim
+    /// pre-prior `simulate`.
+    ///
+    /// Both trees are grown from the same seed over the same position, so
+    /// every node's kind, visit count, value sum, action order and child
+    /// wiring has to agree exactly — which also proves the prior path
+    /// consumes no randomness, since a single extra RNG draw would desynchronise
+    /// every chance node below it.
+    #[test]
+    fn prior_none_grows_the_same_tree_as_the_pre_prior_search() {
+        for seed in 0..10u64 {
+            let state = engine::new_game(seed);
+            let actions = engine::legal_actions(&state);
+            let cfg = Config {
+                prior: PriorMode::None,
+                ..Config::default()
+            };
+
+            let mut rng_new = StdRng::seed_from_u64(seed ^ 0xABCD);
+            let mut new = Tree::new(state, actions.clone(), cfg, &mut rng_new);
+            let mut rng_old = StdRng::seed_from_u64(seed ^ 0xABCD);
+            let mut old = Tree::new(state, actions.clone(), cfg, &mut rng_old);
+
+            for _ in 0..500 {
+                new.simulate(&mut rng_new);
+                old.legacy_simulate(&mut rng_old);
+            }
+
+            assert_eq!(new.nodes.len(), old.nodes.len(), "seed {seed}: tree size");
+            assert_eq!(new.simulations, old.simulations);
+            for (i, (a, b)) in new.nodes.iter().zip(old.nodes.iter()).enumerate() {
+                assert_eq!(a.visits, b.visits, "seed {seed}, node {i}: visits");
+                assert_eq!(a.value_sum, b.value_sum, "seed {seed}, node {i}: value");
+                match (&a.kind, &b.kind) {
+                    (Kind::Terminal { value: x }, Kind::Terminal { value: y }) => {
+                        assert_eq!(x, y, "seed {seed}, node {i}")
+                    }
+                    (
+                        Kind::Decision {
+                            mover: m1,
+                            actions: a1,
+                            children: c1,
+                            expanded: e1,
+                            ..
+                        },
+                        Kind::Decision {
+                            mover: m2,
+                            actions: a2,
+                            children: c2,
+                            expanded: e2,
+                            ..
+                        },
+                    ) => {
+                        assert_eq!(m1, m2, "seed {seed}, node {i}: mover");
+                        assert_eq!(a1, a2, "seed {seed}, node {i}: action order");
+                        assert_eq!(c1, c2, "seed {seed}, node {i}: children");
+                        assert_eq!(e1, e2, "seed {seed}, node {i}: expanded");
+                    }
+                    (
+                        Kind::Chance {
+                            action: x1,
+                            children: k1,
+                        },
+                        Kind::Chance {
+                            action: x2,
+                            children: k2,
+                        },
+                    ) => {
+                        assert_eq!(x1, x2, "seed {seed}, node {i}: chance action");
+                        assert_eq!(k1.len(), k2.len(), "seed {seed}, node {i}: outcomes");
+                        for (u, v) in k1.iter().zip(k2.iter()) {
+                            assert_eq!(u.outcome, v.outcome);
+                            assert_eq!(u.prob, v.prob);
+                            assert_eq!(u.node, v.node);
+                        }
+                    }
+                    _ => panic!("seed {seed}, node {i}: different node kinds"),
+                }
+            }
+        }
+    }
+
+    /// A real mid-game turn with a full slate of legal moves, so a ranking
+    /// test is about a branchy position rather than the four-way wonder draft.
+    fn mid_game(seed: u64) -> (GameState, Vec<Action>) {
+        let mut state = engine::new_game(seed);
+        let mut rng = StdRng::seed_from_u64(seed ^ 0x4242);
+        for step in 0.. {
+            let legal = engine::legal_actions(&state);
+            assert!(!legal.is_empty(), "seed {seed} ended before a branchy turn");
+            if step >= 12 && legal.len() >= 6 {
+                return (state, legal);
+            }
+            let a = legal[rng.gen_range(0..legal.len())];
+            engine::apply_quiet(&mut state, a, &mut rng).expect("a legal action");
+        }
+        unreachable!()
+    }
+
+    /// A prior mode reorders a node's actions into descending prior, and does
+    /// it exactly once — on the first expansion, when no child exists yet.
+    #[test]
+    fn a_prior_mode_orders_a_node_by_descending_prior_once() {
+        let mut reordered = 0u32;
+        for seed in 0..8u64 {
+            let (state, actions) = mid_game(seed);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    prior: PriorMode::ExpansionOrder,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+
+            // Before any expansion the order is the shuffle's.
+            let shuffled = match &tree.nodes[0].kind {
+                Kind::Decision { actions, .. } => actions.clone(),
+                _ => panic!("the root is a decision"),
+            };
+
+            tree.simulate(&mut rng);
+            let ranked = match &tree.nodes[0].kind {
+                Kind::Decision {
+                    actions, expanded, ..
+                } => {
+                    assert_eq!(*expanded, 1, "one child after one simulation");
+                    actions.clone()
+                }
+                _ => panic!("the root is a decision"),
+            };
+            if ranked != shuffled {
+                reordered += 1;
+            }
+
+            // The order is exactly `action_prior` descending, over exactly the
+            // same set of moves.
+            let s = duels_strategy::stance(&state, state.current_player());
+            let weights: Vec<f64> = ranked
+                .iter()
+                .map(|&a| duels_strategy::action_prior(&state, a, &s))
+                .collect();
+            for w in weights.windows(2) {
+                assert!(w[0] >= w[1], "seed {seed} not descending: {weights:?}");
+            }
+            assert_eq!(
+                ranked.len(),
+                shuffled.len(),
+                "the ranking changed the count"
+            );
+            for a in &shuffled {
+                assert!(ranked.contains(a), "the ranking lost {a:?}");
+            }
+
+            // And it is not redone: run the root out past fully expanded, then
+            // check the order still matches the first ranking.
+            for _ in 0..(ranked.len() as u32 + 20) {
+                tree.simulate(&mut rng);
+            }
+            match &tree.nodes[0].kind {
+                Kind::Decision {
+                    actions, expanded, ..
+                } => {
+                    assert_eq!(*actions, ranked, "seed {seed}: the node was re-ranked");
+                    assert_eq!(*expanded, ranked.len(), "seed {seed}: root never filled");
+                }
+                _ => panic!("the root is a decision"),
+            }
+        }
+        assert!(
+            reordered >= 4,
+            "the ranking moved nothing in {} of 8 positions; it is not doing anything",
+            8 - reordered
+        );
+    }
+
+    /// The cost claim [`PriorMode`] is designed around, asserted rather than
+    /// argued: the strategy layer is consulted **exactly once per expanded
+    /// decision node that had a choice to make** — not once per simulation,
+    /// not once per node created, and never twice for the same node.
+    #[test]
+    fn the_prior_is_computed_once_per_expanded_node_not_per_simulation() {
+        for prior in [
+            PriorMode::ExpansionOrder,
+            PriorMode::ProgressiveBias { weight: 5.0 },
+        ] {
+            let (state, actions) = mid_game(3);
+            let mut rng = StdRng::seed_from_u64(3);
+            let mut tree = Tree::new(
+                state,
+                actions,
+                Config {
+                    prior,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            const SIMS: u64 = 2_000;
+            for _ in 0..SIMS {
+                tree.simulate(&mut rng);
+            }
+
+            // The set that should have paid, counted independently of the
+            // counter by walking the finished arena.
+            let expected = tree
+                .nodes
+                .iter()
+                .filter(|n| {
+                    matches!(&n.kind, Kind::Decision { expanded, actions, .. }
+                        if *expanded > 0 && actions.len() > 1)
+                })
+                .count() as u64;
+            assert_eq!(
+                tree.rankings, expected,
+                "{prior:?}: {} stance computations for {expected} expanded nodes",
+                tree.rankings
+            );
+            assert_eq!(tree.simulations, SIMS);
+            // The whole point of paying per node: it must be a small fraction
+            // of the simulations, or the cost model in `PriorMode` is wrong.
+            assert!(
+                tree.rankings * 2 < SIMS,
+                "{prior:?}: {} rankings against {SIMS} simulations is not \
+                 'once per node'",
+                tree.rankings
+            );
+            println!(
+                "{prior:?}: {} rankings / {SIMS} simulations over {} nodes",
+                tree.rankings,
+                tree.nodes.len()
+            );
+        }
+    }
+
+    /// `ProgressiveBias` keeps a normalised prior per child; the ordering
+    /// modes keep nothing, which is what makes them free per node after the
+    /// first expansion.
+    #[test]
+    fn only_progressive_bias_retains_the_prior_slate() {
+        let state = engine::new_game(6);
+        let actions = engine::legal_actions(&state);
+        for (prior, keeps) in [
+            (PriorMode::None, false),
+            (PriorMode::ExpansionOrder, false),
+            (PriorMode::ProgressiveBias { weight: 2.0 }, true),
+        ] {
+            let mut rng = StdRng::seed_from_u64(6);
+            let mut tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    prior,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            tree.simulate(&mut rng);
+            match &tree.nodes[0].kind {
+                Kind::Decision {
+                    priors, actions, ..
+                } => {
+                    if keeps {
+                        assert_eq!(priors.len(), actions.len(), "{prior:?}");
+                        let total: f32 = priors.iter().sum();
+                        assert!((total - 1.0).abs() < 1e-4, "{prior:?} sum {total}");
+                        assert!(priors.iter().all(|&p| p > 0.0), "{prior:?}");
+                    } else {
+                        assert!(priors.is_empty(), "{prior:?} kept {} priors", priors.len());
+                    }
+                }
+                _ => panic!("the root is a decision"),
+            }
+        }
+    }
+
+    /// The progressive-bias term is exactly `weight * prior / (visits + 1)` on
+    /// top of UCB1, and it decays: with equal statistics it picks the
+    /// highest-prior child, and a large visit count washes it out.
+    #[test]
+    fn progressive_bias_adds_a_decaying_term_to_ucb1() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut tree = Tree::new(
+            engine::new_game(0),
+            vec![Action::Discard { slot: 0 }],
+            Config {
+                prior: PriorMode::ProgressiveBias { weight: 10.0 },
+                ..Config::default()
+            },
+            &mut rng,
+        );
+        tree.nodes.clear();
+        tree.nodes.push(decision(Player::One, 3));
+        for _ in 0..3 {
+            let mut n = terminal(0.0);
+            n.visits = 9;
+            n.value_sum = 4.5; // every child a dead-even 0.5
+            let id = tree.push(n);
+            if let Kind::Decision {
+                children, expanded, ..
+            } = &mut tree.nodes[0].kind
+            {
+                children[*expanded] = id;
+                *expanded += 1;
+            }
+        }
+        tree.nodes[0].visits = 27;
+        if let Kind::Decision { priors, .. } = &mut tree.nodes[0].kind {
+            *priors = vec![0.2, 0.5, 0.3];
+        }
+        // Identical exploitation and identical bonuses, so only the bias term
+        // separates them: 10 * 0.5 / 10 for child 2 is the largest.
+        assert_eq!(tree.select_ucb1(0), 2);
+
+        // Same priors, but child 1 is now much better on the statistics that
+        // matter: 0.9 vs 0.5 dwarfs a bias term divided by 10.
+        tree.nodes[1].value_sum = 8.1;
+        assert_eq!(tree.select_ucb1(0), 1);
+
+        // With the weight at zero it is plain UCB1 again, and the shipped
+        // `None` mode ignores the slate entirely even when one is present.
+        tree.nodes[1].value_sum = 4.5;
+        tree.cfg.prior = PriorMode::ProgressiveBias { weight: 0.0 };
+        let unbiased = tree.select_ucb1(0);
+        tree.cfg.prior = PriorMode::None;
+        assert_eq!(tree.select_ucb1(0), unbiased);
+        assert_eq!(unbiased, 1, "ties go to the first child scanned");
     }
 
     /// Chance nodes must be resolved by probability, not by UCB1: with
