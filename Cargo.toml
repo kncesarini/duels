@@ -8,6 +8,7 @@ members = [
     "crates/agents/random",
     "crates/agents/greedy",
     "crates/agents/mcts-uct",
+    "crates/agents/alphabeta",
 ]
 
 [workspace.package]
