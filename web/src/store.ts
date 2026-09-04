@@ -8,7 +8,7 @@ import type { Action } from "./generated/Action";
 import type { Catalog } from "./generated/Catalog";
 import type { Event } from "./generated/Event";
 import type { StatePayload } from "./generated/StatePayload";
-import { connectRoomSocket, createRoom, fetchCatalog, sendAction } from "./lib/api";
+import { connectRoomSocket, createRoom, fetchAgents, fetchCatalog, sendAction } from "./lib/api";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "closed" | "error";
 
@@ -18,6 +18,12 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 interface GameStore {
   catalog: Catalog | null;
   catalogError: string | null;
+
+  /** Agent names `POST /rooms` will accept, from `GET /agents`. `["random"]`
+   * until `loadAgents` resolves, so the opponent picker always has at least
+   * the one opponent the e2e suite (and every existing save) relies on. */
+  agents: string[];
+  agentsError: string | null;
 
   roomId: string | null;
   mode: "bot" | "hotseat" | null;
@@ -35,7 +41,8 @@ interface GameStore {
   pending: boolean;
 
   loadCatalog: () => Promise<void>;
-  startVsBot: (seed?: number) => Promise<void>;
+  loadAgents: () => Promise<void>;
+  startVsBot: (seed?: number, agent?: string) => Promise<void>;
   startHotSeat: (seed?: number) => Promise<void>;
   submitAction: (action: Action) => void;
   leaveGame: () => void;
@@ -142,6 +149,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   catalog: null,
   catalogError: null,
 
+  agents: ["random"],
+  agentsError: null,
+
   roomId: null,
   mode: null,
   status: "idle",
@@ -160,11 +170,22 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
   },
 
-  startVsBot: async (seed) => {
+  loadAgents: async () => {
+    try {
+      const agents = await fetchAgents();
+      set({ agents: agents.length > 0 ? agents : ["random"], agentsError: null });
+    } catch (e) {
+      // Keep the `["random"]` default so the picker still works if `GET
+      // /agents` is unreachable; just surface the error alongside it.
+      set({ agentsError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  startVsBot: async (seed, agent = "random") => {
     set({ status: "connecting", errorMessage: null });
     try {
       const res = await createRoom({
-        seats: [{ kind: "human" }, { kind: "agent", name: "random" }],
+        seats: [{ kind: "human" }, { kind: "agent", name: agent }],
         seed: seed ?? null,
       });
       connect(res.room_id, "bot");

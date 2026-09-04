@@ -27,7 +27,8 @@ use ts_rs::TS;
 use duels_core::data::{CardId, TokenId, WonderId};
 
 /// One seat of a room: a human at a browser, or a named `Agent`
-/// implementation (currently only `"random"`, from `duels-agent-random`).
+/// implementation. See `room::KNOWN_AGENTS` (served over `GET /agents`) for
+/// the names this build of the server accepts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -36,8 +37,8 @@ pub enum SeatSpec {
     Human,
     /// Controlled by a `duels-agents-api::Agent`, driven server-side.
     Agent {
-        /// The agent's name, as reported by `Agent::spec().name`. Only
-        /// `"random"` exists in M2.
+        /// The agent's name, as reported by `Agent::spec().name`. Must be
+        /// one of `room::KNOWN_AGENTS`.
         name: String,
     },
 }

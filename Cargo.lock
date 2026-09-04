@@ -451,6 +451,9 @@ name = "duels-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "duels-agent-alphabeta",
+ "duels-agent-greedy",
+ "duels-agent-mcts-uct",
  "duels-agent-random",
  "duels-agents-api",
  "duels-core",
