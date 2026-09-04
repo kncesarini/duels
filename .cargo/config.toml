@@ -11,3 +11,9 @@
 # drift (see the `web` CI job in `.github/workflows/ci.yml`).
 [env]
 TS_RS_EXPORT_DIR = { value = "web/src/generated", relative = true }
+# `serde_json` encodes a `u64` as a plain JSON number, which a `bigint`
+# cannot round-trip through `JSON.stringify`/`JSON.parse` (there is no bigint
+# literal in JSON). The only `u64` on the wire is `CreateRoomRequest::seed`,
+# used only as a casual reproducibility knob, so `number` (safe up to 2^53)
+# is the correct binding here, not ts-rs's default `bigint`.
+TS_RS_LARGE_INT = "number"

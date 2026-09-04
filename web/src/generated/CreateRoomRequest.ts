@@ -13,4 +13,4 @@ seats: [SeatSpec, SeatSpec],
 /**
  * The RNG seed to build the game from. Random if omitted.
  */
-seed: bigint | null, };
+seed: number | null, };
