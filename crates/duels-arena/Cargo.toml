@@ -4,8 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "Tournament runner: plays Agent implementations against each other and tracks Elo. Placeholder for M0."
+description = "Tournament runner: plays Agent implementations against each other, tracks Elo, and runs SPRT."
 
 [dependencies]
 duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
+duels-agent-random = { path = "../agents/random" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+rayon = "1"
