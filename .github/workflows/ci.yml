@@ -47,4 +47,4 @@ jobs:
     needs: [fmt, clippy, test]
     steps:
       - name: All checks passed
-        run: echo "gate: fmt, clippy, and test all passed"
+        run: echo "All required checks passed"
