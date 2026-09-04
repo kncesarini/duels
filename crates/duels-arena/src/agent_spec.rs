@@ -38,7 +38,8 @@
 //! * `mcts-uct` -- every [`duels_agent_mcts_uct::Config`] field:
 //!   `exploration`/`c`, `rollout` (`uniform`/`biased`/`smart`),
 //!   `chance_widen_c`, `chance_widen_alpha`, `max_rollout_plies`,
-//!   `time_check_interval`, `root_determinizations`/`dets`.
+//!   `time_check_interval`, `root_determinizations`/`dets`, and `prior`
+//!   (`none`, `expansion_order`, or `progressive_bias:<weight>`).
 //! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
 //!   name (`military_position`, `military_endgame_urgency`,
 //!   `science_distinct_symbol`, `science_near_supremacy`,
@@ -66,7 +67,7 @@
 use duels_agent_alphabeta::{eval, playout, AlphaBetaAgent, Config as AlphaBetaConfig};
 use duels_agent_greedy::{EvalWeights as GreedyWeights, GreedyAgent};
 use duels_agent_greedy_ev::{EvalWeights as GreedyEvWeights, GreedyEvAgent};
-use duels_agent_mcts_uct::{Config as MctsConfig, MctsAgent, RolloutWeights};
+use duels_agent_mcts_uct::{Config as MctsConfig, MctsAgent, PriorMode, RolloutWeights};
 use duels_agents_api::Agent;
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
@@ -219,6 +220,34 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
                     "biased" => RolloutWeights::BIASED,
                     "smart" => RolloutWeights::SMART,
                     other => return Err(format!("mcts-uct: unknown rollout \"{other}\"")),
+                };
+            }
+            "prior" => {
+                // `progressive_bias` carries a weight, spelled with a colon
+                // (`prior=progressive_bias:1.5`) so it survives the `,`/`=`
+                // splitting, exactly as `alphabeta`'s `metric` key does. A
+                // bare `progressive_bias` takes the mode's default weight.
+                cfg.prior = match v.split_once(':') {
+                    Some(("progressive_bias" | "bias", w)) => PriorMode::ProgressiveBias {
+                        weight: parse_field("prior", w)?,
+                    },
+                    None => match v {
+                        "none" | "off" => PriorMode::None,
+                        "expansion_order" | "order" => PriorMode::ExpansionOrder,
+                        "progressive_bias" | "bias" => PriorMode::ProgressiveBias { weight: 1.0 },
+                        other => {
+                            return Err(format!(
+                                "mcts-uct: unknown prior \"{other}\" (expected \"none\", \
+                                 \"expansion_order\", or \"progressive_bias[:<weight>]\")"
+                            ))
+                        }
+                    },
+                    Some((other, _)) => {
+                        return Err(format!(
+                            "mcts-uct: prior \"{other}\" takes no weight (only \
+                             \"progressive_bias:<weight>\" does)"
+                        ))
+                    }
                 };
             }
             other => return Err(format!("mcts-uct: unknown key \"{other}\"")),
@@ -374,6 +403,50 @@ mod tests {
         assert_eq!(cfg.time_check_interval, 32);
         assert_eq!(cfg.rollout, RolloutWeights::UNIFORM);
         assert_eq!(cfg.root_determinizations, 4);
+    }
+
+    #[test]
+    fn the_prior_key_reaches_every_mode_and_shows_up_in_the_spec() {
+        assert_eq!(
+            parse_mcts_config("prior=none").unwrap().prior,
+            PriorMode::None
+        );
+        assert_eq!(
+            parse_mcts_config("prior=expansion_order").unwrap().prior,
+            PriorMode::ExpansionOrder
+        );
+        assert_eq!(
+            parse_mcts_config("prior=order").unwrap().prior,
+            PriorMode::ExpansionOrder
+        );
+        assert_eq!(
+            parse_mcts_config("prior=progressive_bias:2.5")
+                .unwrap()
+                .prior,
+            PriorMode::ProgressiveBias { weight: 2.5 }
+        );
+        assert_eq!(
+            parse_mcts_config("prior=bias:0.5").unwrap().prior,
+            PriorMode::ProgressiveBias { weight: 0.5 }
+        );
+        assert_eq!(
+            parse_mcts_config("prior=progressive_bias").unwrap().prior,
+            PriorMode::ProgressiveBias { weight: 1.0 }
+        );
+        // Unknown modes, and a weight on a mode that takes none, are errors
+        // rather than a silently-wrong benchmark.
+        assert!(parse_mcts_config("prior=sideways").is_err());
+        assert!(parse_mcts_config("prior=expansion_order:2").is_err());
+        assert!(parse_mcts_config("prior=bias:not_a_number").is_err());
+
+        // ... and the mode reaches the spec a results file records, so a run
+        // can be told apart from its baseline after the fact.
+        let agent = make_agent_from_spec("mcts-uct:prior=expansion_order", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("prior=expansion_order"),
+            "{}",
+            agent.spec().params
+        );
     }
 
     /// Root ensembling is the one knob whose *default* has to keep reading

@@ -130,6 +130,168 @@
 //!     --a mcts-uct:dets=4 --b mcts-uct:dets=1 --games 400 --budget nodes:2000
 //! ```
 //!
+//! # Strategy priors (`Config::prior`)
+//!
+//! [`Config::prior`] lets `duels-strategy`'s policy layer steer this tree.
+//! On a decision node's **first expansion**, one
+//! [`duels_strategy::Stance`] is computed for that node and its actions are
+//! ranked by [`duels_strategy::action_prior`], highest first
+//! ([`PriorMode::ExpansionOrder`]); [`PriorMode::ProgressiveBias`] also keeps
+//! the normalised weights and adds `weight × prior / (visits + 1)` to each
+//! child's UCB1 score. [`PriorMode::None`], the default, is bit-for-bit the
+//! agent that existed before the option (see
+//! `tests::prior_none_is_the_pre_prior_agent_move_for_move` and
+//! `tree::tests::prior_none_grows_the_same_tree_as_the_pre_prior_search`,
+//! which check the *move* and the *whole arena* against verbatim copies of the
+//! pre-prior `expand`/`select_ucb1`/`simulate`).
+//!
+//! The design is shaped by one measured cost: a stance plus a full slate of
+//! priors is roughly 29% of a rollout, which is unaffordable per *simulation*
+//! and affordable per *node*. So it is paid once, on first expansion, under an
+//! `expanded == 0` guard — never for a node a simulation only ever played out
+//! from, and never for a node with a single legal action. The tree counts its
+//! own consultations so that is checkable: on a real mid-game position a
+//! 2000-simulation search allocates 2788 nodes and consults the strategy layer
+//! 583 times, 0.29 per simulation, because only about a fifth of the nodes it
+//! creates are ever revisited and expanded. At a fixed `Nodes`
+//! budget that comes to **+6-8% wall clock**: 1265 vs 1195 ms/game over 40
+//! paired games and 688 vs 636 ms/game over another 100, both at
+//! `Nodes(2000)`, and the same ratio falls out of the budget-equivalence runs
+//! below, where the half-budget prior side costs 0.537 of its opponent's time
+//! against a no-prior control's 0.500. That overhead is the whole story of the
+//! `TimeMs` row.
+//!
+//! ## What it measures: a gain too small to accept, and it does not reproduce
+//!
+//! `ExpansionOrder` against `None`, paired and seat-swapped through
+//! `duels-arena match`, at `Nodes(2000)` over four **disjoint** seed ranges of
+//! 400 games each. A node budget is not a wall-clock quantity, so none of this
+//! is load-sensitive — which matters, because these ran on a machine whose
+//! load average wandered between 6 and 150.
+//!
+//! | seed range | score for `ExpansionOrder` |
+//! |---|---|
+//! | `1..200` | 52.8% +/- 2.5 |
+//! | `5001..5200` | 53.9% +/- 2.5 |
+//! | `10001..10200` | 48.3% +/- 2.5 |
+//! | `15001..15200` | 51.9% +/- 2.5 |
+//! | **pooled, 1600 games** | **51.7% +/- 1.25**, Elo **+11.7** [-5.3, +28.8] |
+//!
+//! The bar this work was set — 55% at `Nodes(2000)`, reproduced on a second
+//! seed range — is **not met**, and the reason is written across the table:
+//! the first two ranges look like a 53% effect, the third is a *loss*. SPRT
+//! (`elo0 = 0` vs `elo1 = 20`, `alpha = beta = 0.05`) still reads `Continue`
+//! after 1600 games, and the Elo interval still contains zero. The honest
+//! summary is "somewhere between nothing and +25 Elo, for +6-8% time".
+//!
+//! Hold *time* fixed instead and that trade goes underwater, which is what a
+//! 6-8% throughput cost against a sub-noise gain has to do. `TimeMs(20)`, 200
+//! games per seed range, run one match at a time on a four-thread pool with the
+//! machine's load average between 8 and 12 (see `duels-arena`'s "Benchmarking
+//! on a quiet machine"):
+//!
+//! | seed range | score for `ExpansionOrder` |
+//! |---|---|
+//! | `1..100` | 47.5% +/- 3.5 |
+//! | `5001..5100` | 43.0% +/- 3.5 |
+//! | **pooled, 400 games** | **45.3% +/- 2.5**, Elo **-33.0** [-67.2, +1.1] |
+//! | `None` vs `None` (control, 200 games) | 51.3% +/- 3.5 |
+//!
+//! The control is the yardstick that says the 45.3% is about the technique and
+//! not about the harness: the identical configuration against itself scores
+//! 51.3%, a third of a standard error from even. The `TimeMs` bar for this work
+//! was 53%; the measurement is not merely short of it but on the wrong side of
+//! 50, consistently, across both ranges.
+//!
+//! ## The mechanism it was built for does fire, loudly
+//!
+//! What the win rate hides, the victory-kind breakdown shows. The strategy
+//! layer exists to make a search see races that close three moves out, and it
+//! demonstrably does — the prior converts wins that were being banked at
+//! scoring into wins taken outright on the conflict track:
+//!
+//! | opponent (200 games, `Nodes(2000)`) | wins by military supremacy, `None` -> `ExpansionOrder` |
+//! |---|---|
+//! | `random` | 13 -> **52** |
+//! | `greedy` | 72 -> **147** |
+//! | `greedy-ev` | 58 -> **141** |
+//! | itself (1600 games, pooled) | 120 -> **165** |
+//!
+//! Against `greedy` the prior-enabled agent takes 147 of its 200 wins by
+//! military supremacy where the baseline took 72 — and both win 200 of 200, so
+//! none of that reaches the scoreboard. In the self-play match the military
+//! split is `165-120` over the 285 games decided that way (57.9% +/- 2.9), and
+//! that +45 is essentially the *entire* +54 win margin: the prior is not
+//! playing better points, it is closing more military races.
+//!
+//! That is the finding worth keeping. `duels-strategy` does what it was built
+//! to do; what it does not do is convert into net wins, because the games it
+//! now takes on the track were largely games it was already winning on points.
+//!
+//! ## Progressive bias is worse than plain ordering
+//!
+//! Measured, not assumed. A weight sweep on a *separate* tuning seed range
+//! (`20001..20051`, 100 games each vs `None`) read 53.5 / 57.0 / 50.0 / 53.0 /
+//! 40.0% at `weight` 2 / 5 / 10 / 20 / 40 — noise at +/- 5.0 apart from the
+//! collapse at 40. The apparent best, `weight = 5`, then failed to transfer to
+//! the evaluation ranges: 49.5% and 46.0% over 400 games each, pooled **47.75%
+//! +/- 1.77**, Elo -15.6, and SPRT `AcceptH0` — the one decisive SPRT verdict
+//! in this whole investigation, and it is against. Head to head with
+//! `ExpansionOrder` over 400 games it scores 48.5%.
+//!
+//! Reading: at a UCB1 exploration constant of 1.0 the bias term is either too
+//! small to matter or large enough to override the exploration bonus at
+//! exactly the nodes that most need it, and there is no window in between.
+//! Ordering, which never overrides anything and only decides which move gets
+//! the first look, does not have that failure mode.
+//!
+//! ## Budget equivalence: the prior buys no search
+//!
+//! The cleanest way to size a search improvement is to ask how much budget it
+//! is worth. Against `None` at `Nodes(2000)`, over 400 games each:
+//!
+//! | half-budget side | score vs `None` at `Nodes(2000)` |
+//! |---|---|
+//! | `ExpansionOrder` at `Nodes(1000)` | 38.8% +/- 2.4 |
+//! | `None` at `Nodes(1000)` (control) | 40.0% +/- 2.4 |
+//!
+//! Halving the node budget costs about 10 points of score (roughly 70 Elo), and
+//! the prior recovers **none** of it — 38.8% against a 40.0% control is, if
+//! anything, slightly the wrong way. So the +11.7 Elo the pooled self-play
+//! measurement suggests is worth well under a fifth of a budget doubling, and
+//! at half budget it is worth nothing at all.
+//!
+//! ## Ladder sanity: nothing regressed, and the gap to `alphabeta` did not move
+//!
+//! 200 games each at `Nodes(2000)`, `ExpansionOrder` / `None`:
+//!
+//! | opponent | `ExpansionOrder` | `None` |
+//! |---|---|---|
+//! | `random` | 200/200 | 200/200 |
+//! | `greedy` | 200/200 | 200/200 |
+//! | `greedy-ev` | 200/200 | 199/200 |
+//! | `alphabeta` | 79.5% (+234 Elo) | 78.5% (+226 Elo) |
+//!
+//! Nothing broke, and the one row with room to move — `alphabeta` — did not.
+//!
+//! ## Verdict
+//!
+//! [`PriorMode::None`] stays the default. The change ships as an opt-in
+//! [`Config`] option because the evidence does not support making it standard:
+//! a +11.7 Elo point estimate whose interval contains zero, which reversed sign
+//! on one of four seed ranges, and which turns into a measured -33 Elo once the
+//! 6-8% throughput cost has to be paid out of a wall clock, is not a champion.
+//! It is kept, tested and documented because the victory-kind data is a real
+//! result about the strategy layer rather than about this agent, and because
+//! the next question — does the same prior pay at a budget where the search is
+//! too shallow to find the race by itself? — is one command away:
+//!
+//! ```text
+//! cargo run --release -p duels-arena -- match \
+//!     --agent-a mcts-uct:prior=expansion_order --agent-b mcts-uct:prior=none \
+//!     --games 400 --budget nodes:2000 --sprt-elo0 0 --sprt-elo1 20
+//! ```
+//!
 //! The value convention (every node accumulates the result from
 //! [`duels_core::Player::One`]'s perspective; the zero-sum flip happens once,
 //! at selection) and the widening rule are documented in the `tree` module.
@@ -161,7 +323,7 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 pub use rollout::RolloutWeights;
-pub use tree::Config;
+pub use tree::{Config, PriorMode};
 
 /// Monte Carlo Tree Search with UCT selection and explicit chance nodes.
 #[derive(Debug)]
@@ -485,11 +647,12 @@ mod tests {
 
     /// `choose` exactly as it read before root ensembling existed: one
     /// determinization, one tree, the whole node budget, the pre-ensemble
-    /// move-selection rule.
+    /// move-selection rule — and, since it drives `tree::Tree::legacy_simulate`
+    /// rather than the current `simulate`, the pre-*prior* search as well.
     ///
-    /// This is the reference the `root_determinizations = 1` path is checked
-    /// against. It is a copy on purpose — a test that called the new code
-    /// would prove nothing.
+    /// This is the reference both the `root_determinizations = 1` path and the
+    /// [`PriorMode::None`] path are checked against. It is a copy on purpose —
+    /// a test that called the new code would prove nothing.
     fn legacy_choose(
         rng: &mut StdRng,
         cfg: Config,
@@ -511,7 +674,7 @@ mod tests {
         }
         let mut tree = tree::Tree::new(root, actions, cfg, rng);
         for _ in 0..nodes.max(1) {
-            tree.simulate(rng);
+            tree.legacy_simulate(rng);
         }
         let chosen = tree::legacy_best_action(&tree).unwrap_or(legal[0]);
         if legal.contains(&chosen) {
@@ -566,6 +729,122 @@ mod tests {
             }
             assert!(decisions > 20, "the game was too short to prove much");
         }
+    }
+
+    /// The equivalence that makes the prior option safe to add, and the twin
+    /// of the test above: with [`PriorMode::None`] the agent is move-for-move
+    /// the agent this crate shipped before priors existed, driven by the
+    /// verbatim pre-prior `expand`/`select_ucb1`/`simulate` in `tree.rs`.
+    ///
+    /// Whole games again, so the two RNG streams have to stay in step across
+    /// dozens of `choose` calls — the prior path consumes no randomness, and
+    /// this is what says so over a long run rather than at one position.
+    #[test]
+    fn prior_none_is_the_pre_prior_agent_move_for_move() {
+        for seed in 0..8u64 {
+            let cfg = Config {
+                prior: PriorMode::None,
+                ..Config::default()
+            };
+            let mut agent = MctsAgent::with_config(seed, cfg);
+            let mut legacy_rng = StdRng::seed_from_u64(seed);
+
+            let mut state = engine::new_game(seed ^ 0xC0FF_EE00);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+            let mut decisions = 0u32;
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let budget = 24 + u64::from(decisions % 7);
+                let got = agent.choose(&obs, &legal, Budget::Nodes(budget));
+                let want = legacy_choose(&mut legacy_rng, cfg, &obs, &legal, budget);
+                assert_eq!(
+                    got, want,
+                    "seed {seed}, decision {decisions}: PriorMode::None changed the move"
+                );
+                engine::apply(&mut state, got, &mut rng).expect("a legal action");
+                decisions += 1;
+                assert!(decisions < 5_000);
+            }
+            assert!(decisions > 20, "the game was too short to prove much");
+        }
+    }
+
+    /// A prior mode must not change *what* the agent is allowed to do: full
+    /// seeded games from both seats, every mode, no panic and no illegal move.
+    #[test]
+    fn every_prior_mode_plays_full_games_without_incident() {
+        for (i, prior) in [
+            PriorMode::None,
+            PriorMode::ExpansionOrder,
+            PriorMode::ProgressiveBias { weight: 1.0 },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut wins = 0u32;
+            for seed in 0..6u64 {
+                let seat = if seed % 2 == 0 {
+                    Player::One
+                } else {
+                    Player::Two
+                };
+                let mut mcts = MctsAgent::with_config(
+                    seed ^ 0x0BAD_1DEA,
+                    Config {
+                        prior,
+                        ..Config::default()
+                    },
+                );
+                let mut opponent = RandomAgent::new(seed ^ 0x5EED_5EED);
+                let mut state = engine::new_game(seed + 500 * i as u64);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+                loop {
+                    let legal = engine::legal_actions(&state);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    let obs = state.observation();
+                    let action = if state.current_player() == seat {
+                        mcts.choose(&obs, &legal, CI_BUDGET)
+                    } else {
+                        opponent.choose(&obs, &legal, CI_BUDGET)
+                    };
+                    assert!(legal.contains(&action), "{prior:?} returned {action:?}");
+                    engine::apply(&mut state, action, &mut rng).expect("a legal action");
+                }
+                let result = state.result().expect("a finished game has a result");
+                if result.winner() == Some(seat) {
+                    wins += 1;
+                }
+                assert!(mcts.total_simulations() > 0);
+            }
+            println!("{prior:?}: {wins}/6 against random at {CI_BUDGET:?}");
+        }
+    }
+
+    /// The spec string a results file records has to name the mode, or an
+    /// arena run cannot be told apart from the baseline after the fact.
+    #[test]
+    fn the_spec_reports_the_prior_mode() {
+        let describe = |prior| {
+            MctsAgent::with_config(
+                1,
+                Config {
+                    prior,
+                    ..Config::default()
+                },
+            )
+            .spec()
+            .params
+        };
+        assert!(describe(PriorMode::None).contains("prior=none"));
+        assert!(describe(PriorMode::ExpansionOrder).contains("prior=expansion_order"));
+        assert!(describe(PriorMode::ProgressiveBias { weight: 1.5 })
+            .contains("prior=progressive_bias(1.500)"));
     }
 
     /// A node budget is partitioned, not multiplied: `N` trees share the

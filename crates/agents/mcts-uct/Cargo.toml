@@ -9,6 +9,7 @@ description = "Monte Carlo Tree Search (UCT) with explicit chance nodes over the
 [dependencies]
 duels-core = { path = "../../duels-core" }
 duels-agents-api = { path = "../../duels-agents-api" }
+duels-strategy = { path = "../../duels-strategy" }
 rand = { workspace = true }
 
 [dev-dependencies]

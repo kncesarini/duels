@@ -80,11 +80,29 @@
 //! ([`duels_core::engine::hidden_info`], mirrored allocation-free by
 //! [`Board`]).
 //!
-//! # Not wired into anything
+//! # Who uses this
 //!
-//! Deliberately. No agent crate depends on this yet, and `duels-core` never
-//! will — the rules engine stays free of strategy. Turning these reads into
-//! tree priors and a rollout policy is separate, later work.
+//! `duels-core` never will — the rules engine stays free of strategy.
+//!
+//! `duels-agent-mcts-uct` does, behind an **opt-in, non-default** knob
+//! (`Config::prior`): on a decision node's first expansion it computes one
+//! [`fn@stance`] and one [`action_prior`] per legal move, and expands the
+//! highest-rated moves first. That crate's docs carry the full measurement.
+//! The short version, because it is the honest verdict on this layer as a tree
+//! prior: over 1600 paired self-play games at `Nodes(2000)` the prior-steered
+//! search scores 51.7% +/- 1.25 (Elo +11.7, interval containing zero) — a gain
+//! too small to accept, which reversed sign on one of four seed ranges, and
+//! which becomes a 45.3% *loss* once the 6-8% these reads cost has to come out
+//! of a wall-clock budget rather than out of nothing.
+//!
+//! What *did* reproduce, in every range and against every ladder opponent, is
+//! the mechanism: the prior-steered agent takes far more of its wins by
+//! military supremacy (147 of 200 against `greedy`, where the unsteered search
+//! took 72). So these reads do see the races they were written to see. They
+//! just do not, at that budget, convert into wins the search was not already
+//! getting on points.
+//!
+//! Turning them into a *rollout* policy remains separate, later work.
 //!
 //! # Example
 //!
