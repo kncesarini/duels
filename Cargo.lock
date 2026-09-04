@@ -345,6 +345,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "duels-agent-greedy"
+version = "0.1.0"
+dependencies = [
+ "duels-agent-random",
+ "duels-agents-api",
+ "duels-core",
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "duels-agent-random"
 version = "0.1.0"
 dependencies = [
