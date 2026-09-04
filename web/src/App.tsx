@@ -6,10 +6,12 @@ import Game from "./components/Game";
 export default function App() {
   const roomId = useGameStore((s) => s.roomId);
   const loadCatalog = useGameStore((s) => s.loadCatalog);
+  const loadAgents = useGameStore((s) => s.loadAgents);
 
   useEffect(() => {
     void loadCatalog();
-  }, [loadCatalog]);
+    void loadAgents();
+  }, [loadCatalog, loadAgents]);
 
   return (
     <div className="min-h-screen">

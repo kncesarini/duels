@@ -35,6 +35,15 @@ export function fetchCatalog(): Promise<Catalog> {
   return fetch(`${API_BASE}/catalog`).then((r) => asJson<Catalog>(r));
 }
 
+/** Every agent name `POST /rooms` will accept for an agent seat, in the
+ * order the opponent picker should offer them (`"random"` first). Backed by
+ * `duels-server`'s `room::KNOWN_AGENTS` so the UI never hand-maintains its
+ * own copy that could drift from what the server actually knows how to
+ * construct. */
+export function fetchAgents(): Promise<string[]> {
+  return fetch(`${API_BASE}/agents`).then((r) => asJson<string[]>(r));
+}
+
 export function createRoom(req: CreateRoomRequest): Promise<CreateRoomResponse> {
   return fetch(`${API_BASE}/rooms`, {
     method: "POST",

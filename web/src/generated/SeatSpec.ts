@@ -2,11 +2,12 @@
 
 /**
  * One seat of a room: a human at a browser, or a named `Agent`
- * implementation (currently only `"random"`, from `duels-agent-random`).
+ * implementation. See `room::KNOWN_AGENTS` (served over `GET /agents`) for
+ * the names this build of the server accepts.
  */
 export type SeatSpec = { "kind": "human" } | { "kind": "agent", 
 /**
- * The agent's name, as reported by `Agent::spec().name`. Only
- * `"random"` exists in M2.
+ * The agent's name, as reported by `Agent::spec().name`. Must be
+ * one of `room::KNOWN_AGENTS`.
  */
 name: string, };

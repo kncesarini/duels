@@ -39,6 +39,7 @@ pub fn app() -> Router {
 pub fn app_with_rooms(rooms: Arc<Rooms>) -> Router {
     Router::new()
         .route("/catalog", get(rest::get_catalog))
+        .route("/agents", get(rest::get_agents))
         .route("/rooms", post(rest::create_room))
         .route("/rooms/:id", get(rest::get_room))
         .route("/rooms/:id/ws", get(ws::room_ws))
