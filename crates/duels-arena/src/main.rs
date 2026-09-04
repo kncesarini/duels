@@ -9,16 +9,33 @@
 //! `--games N` is the total number of individual games to play; internally
 //! this is `ceil(N/2)` paired seeds (see `match_runner::play_paired_match`),
 //! so an odd `N` is rounded up to the next even number. Prints win/loss/draw
-//! counts, a logistic-Elo estimate (see `elo`), and an SPRT verdict (see
-//! `sprt`) for agent A vs agent B, and writes every game's record as JSON to
-//! `--out` (default: `arena/results/<a>-vs-<b>-seed<seed>-n<games>.json`).
+//! counts, a breakdown of *how* each side's wins were achieved (military /
+//! scientific / civilian / tiebreak, see `match_runner::VictoryBreakdown`), a
+//! "race exposure" count (how many games saw either player come within one
+//! step of an instant win, regardless of who won — see
+//! `match_runner::RaceExposure`), a logistic-Elo estimate (see `elo`), and an
+//! SPRT verdict (see `sprt`) for agent A vs agent B. Writes every game's
+//! record plus that same derived summary as JSON to `--out` (default:
+//! `arena/results/<a>-vs-<b>-seed<seed>-n<games>.json`, see `results_io`).
+//!
+//! `--agent-a`/`--agent-b` accept a bare agent name (looked up in
+//! `agent_registry`) or a `name:key=value,...` specification string that
+//! builds one specific agent's own `Config`/`Weights` type (see
+//! `agent_spec`), e.g. `--agent-a mcts-uct:exploration=1.2`.
+//!
+//! # A note on `time_ms` budgets
+//!
+//! See the crate-level docs (`lib.rs`) for why a `--budget time_ms:<n>` run
+//! should be measured on an otherwise-quiet machine, one match at a time.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use duels_arena::agent_registry::KNOWN_AGENTS;
 use duels_arena::elo::fit_elo;
-use duels_arena::match_runner::{parse_budget, play_paired_match, tally};
+use duels_arena::match_runner::{
+    parse_budget, play_paired_match, race_exposure, tally, victory_breakdown, VictoryBreakdown,
+};
 use duels_arena::results_io::write_results;
 use duels_arena::sprt::{sprt, SprtParams};
 
@@ -49,13 +66,20 @@ fn run(args: &[String]) -> Result<(), String> {
 fn print_usage() {
     println!(
         "duels-arena: tournament runner and statistical comparison for Agent implementations\n\n\
-         USAGE:\n    duels-arena match --agent-a <NAME> --agent-b <NAME> --games <N> \\\n        \
+         USAGE:\n    duels-arena match --agent-a <SPEC> --agent-b <SPEC> --games <N> \\\n        \
          --budget <nodes:N|time_ms:N> --seed <N> [--out <PATH>]\n        \
          [--sprt-elo0 <F>] [--sprt-elo1 <F>] [--alpha <F>] [--beta <F>]\n\n\
          Known agents: {}\n\n\
+         <SPEC> is a bare agent name, or \"name:key=value,...\" naming one\n\
+         agent's own Config/Weights explicitly (e.g. \"mcts-uct:exploration=1.2\"\n\
+         or \"alphabeta:max_depth=10\") -- see duels_arena::agent_spec.\n\n\
          --games N is the number of individual games; internally this is\n\
          ceil(N/2) paired seeds (agent A and agent B each play both seats\n\
-         for every seed), so an odd N is rounded up.\n",
+         for every seed), so an odd N is rounded up.\n\n\
+         A time_ms budget is wall-clock based and therefore sensitive to\n\
+         load from other processes on the same machine -- see the\n\
+         \"quiet machine\" note in duels_arena's crate docs before trusting a\n\
+         small-sample time_ms comparison.\n",
         KNOWN_AGENTS.join(", ")
     );
 }
@@ -103,6 +127,19 @@ impl Flags {
                 .map_err(|_| format!("invalid value for --{name}: \"{v}\"")),
         }
     }
+}
+
+/// Render one side's [`VictoryBreakdown`] as `"N wins (military M, scientific
+/// M, civilian M, tiebreak M)"`, for the human-readable CLI summary.
+fn describe_victory_breakdown(vb: &VictoryBreakdown) -> String {
+    format!(
+        "{} wins (military {}, scientific {}, civilian {}, tiebreak {})",
+        vb.total(),
+        vb.military_supremacy,
+        vb.scientific_supremacy,
+        vb.civilian_victory,
+        vb.civilian_tiebreak,
+    )
 }
 
 fn run_match(args: &[String]) -> Result<(), String> {
@@ -155,6 +192,25 @@ fn run_match(args: &[String]) -> Result<(), String> {
         total_moves as f64 / t.total() as f64,
         total_wall_ms as f64 / t.total() as f64,
         total_wall_ms
+    );
+
+    let vb = victory_breakdown(&records);
+    println!(
+        "victory kinds: {agent_a} {}   {agent_b} {}",
+        describe_victory_breakdown(&vb.a),
+        describe_victory_breakdown(&vb.b),
+    );
+
+    let re = race_exposure(&records);
+    println!(
+        "race exposure: military (pawn >= distance 6) in {}/{} games ({:.0}%)   \
+         scientific (>= 5 distinct symbols) in {}/{} games ({:.0}%)",
+        re.military_games,
+        re.total_games,
+        100.0 * re.military_games as f64 / re.total_games as f64,
+        re.science_games,
+        re.total_games,
+        100.0 * re.science_games as f64 / re.total_games as f64,
     );
 
     let elo_estimate = fit_elo(t.a_wins, t.b_wins, t.draws);
