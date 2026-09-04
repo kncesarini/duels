@@ -2,3 +2,7 @@
 **/target
 Cargo.lock.bak
 .DS_Store
+
+# duels-arena's generated per-run results files (see crates/duels-arena);
+# arena/.gitkeep keeps the directory itself tracked.
+/arena/results/
