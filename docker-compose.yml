@@ -1,0 +1,18 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: crates/duels-server/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - DUELS_SERVER_ADDR=0.0.0.0:8080
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "5173:4173"
+    depends_on:
+      - server

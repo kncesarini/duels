@@ -20,6 +20,20 @@ test("plays a full game against the random bot from the home screen to game over
   // The game screen (and its first server-pushed state) has loaded.
   await expect(page.getByTestId("nav-leave-game")).toBeVisible({ timeout: 15_000 });
 
+  // A short per-attempt timeout, wrapped in try/catch: a click that races a
+  // WebSocket-driven re-render (the target legitimately disappears because
+  // that exact move is what just got applied) should not burn the whole
+  // test budget - just re-evaluate the board on the next loop iteration.
+  async function tryClick(locator: ReturnType<typeof page.locator>): Promise<boolean> {
+    if (!(await locator.isVisible().catch(() => false))) return false;
+    try {
+      await locator.click({ timeout: 5_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   const maxSteps = 600;
   for (let i = 0; i < maxSteps; i++) {
     if (await page.getByTestId("leave-game").isVisible()) {
@@ -30,25 +44,19 @@ test("plays a full game against the random bot from the home screen to game over
     // a slot just clicked, or a pending-effect choice (progress token, the
     // Great Library, a destroy effect, the Mausoleum, or who begins the
     // next age). Every button in it except the close (X) is a legal action.
-    const modalButton = page.locator('[data-testid="modal"] button:not([data-testid="modal-close"])').first();
-    if (await modalButton.isVisible()) {
-      await modalButton.click();
+    if (await tryClick(page.locator('[data-testid="modal"] button:not([data-testid="modal-close"])').first())) {
       await page.waitForTimeout(30);
       continue;
     }
 
     // The wonder draft: pick whichever offered wonder is still pickable.
-    const offeredWonder = page.locator('[data-testid^="wonder-"]:not([disabled])').first();
-    if (await offeredWonder.isVisible()) {
-      await offeredWonder.click();
+    if (await tryClick(page.locator('[data-testid^="wonder-"]:not([disabled])').first())) {
       continue;
     }
 
     // An ordinary turn: click an accessible (highlighted, enabled) card in
     // the structure, which opens the action menu handled above.
-    const accessibleSlot = page.locator('[data-testid^="slot-"] button:not([disabled])').first();
-    if (await accessibleSlot.isVisible()) {
-      await accessibleSlot.click();
+    if (await tryClick(page.locator('[data-testid^="slot-"] button:not([disabled])').first())) {
       continue;
     }
 

@@ -22,7 +22,7 @@ export function CardChip({ card, onClick, disabled, highlight, title }: CardChip
       className={[
         "relative flex h-28 w-20 flex-col justify-between rounded-md border-2 p-1 text-[10px] leading-tight shadow-sm transition",
         CARD_TYPE_COLOR[card.kind],
-        clickable ? "cursor-pointer hover:scale-105 hover:shadow-md" : "cursor-default",
+        clickable ? "cursor-pointer hover:brightness-110 hover:shadow-md" : "cursor-default",
         highlight ? "ring-4 ring-yellow-300" : "",
         disabled ? "opacity-40" : "",
       ].join(" ")}
@@ -92,7 +92,7 @@ export function WonderChip({
       data-testid={`wonder-${wonder.id}`}
       className={[
         "flex h-24 w-32 flex-col justify-between rounded-md border-2 border-indigo-950 bg-indigo-800 p-1.5 text-[10px] leading-tight text-indigo-50 shadow-sm transition",
-        clickable ? "cursor-pointer hover:scale-105 hover:shadow-md" : "cursor-default",
+        clickable ? "cursor-pointer hover:brightness-110 hover:shadow-md" : "cursor-default",
         built ? "opacity-50 saturate-50" : "",
         disabled && !built ? "opacity-40" : "",
       ].join(" ")}
@@ -144,7 +144,7 @@ export function TokenChip({
       data-testid={`token-${token.id}`}
       className={[
         "flex h-16 w-16 flex-col items-center justify-center rounded-full border-2 border-teal-950 bg-teal-600 p-1 text-center text-[9px] leading-tight text-teal-50 shadow-sm transition",
-        clickable ? "cursor-pointer hover:scale-105 hover:shadow-md" : "cursor-default",
+        clickable ? "cursor-pointer hover:brightness-110 hover:shadow-md" : "cursor-default",
         disabled ? "opacity-40" : "",
       ].join(" ")}
     >
