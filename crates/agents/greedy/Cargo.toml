@@ -1,0 +1,15 @@
+[package]
+name = "duels-agent-greedy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A 1-ply heuristic Agent: simulates each legal action once and picks the one that scores best under a hand-crafted position evaluation."
+
+[dependencies]
+duels-core = { path = "../../duels-core" }
+duels-agents-api = { path = "../../duels-agents-api" }
+rand = { workspace = true }
+
+[dev-dependencies]
+duels-agent-random = { path = "../random" }

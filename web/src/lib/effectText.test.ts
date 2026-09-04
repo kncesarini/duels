@@ -103,6 +103,17 @@ describe("describeCardEffects", () => {
     const lines = describeCardEffects(card, catalog);
     expect(lines.some((l) => l.includes("Theater"))).toBe(true);
   });
+
+  it("describes a trading post (fixed_trade) as buying from the bank, never the opponent", () => {
+    // Stone/Clay/Wood Reserve and Customs House fix the price regardless of
+    // the opponent's production; the coins are a flat bank payment, not a
+    // transfer to the opponent, so the text must never say "from your
+    // opponent" or otherwise imply their coins go to the opponent.
+    const card: CardCatalogEntry = { ...baseCard, fixed_trade: ["stone"] };
+    const lines = describeCardEffects(card);
+    expect(lines.some((l) => /buy stone from the bank for 1 coin each/i.test(l))).toBe(true);
+    expect(lines.some((l) => /from your opponent/i.test(l))).toBe(false);
+  });
 });
 
 const baseToken: TokenCatalogEntry = {

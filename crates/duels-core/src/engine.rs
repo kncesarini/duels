@@ -675,6 +675,27 @@ pub fn apply_with_outcome(
     Ok(log.into_events())
 }
 
+/// [`apply_with_outcome`] without recording events and without re-checking
+/// legality, for search hot loops.
+///
+/// A search agent expanding a chance node already has `action` from
+/// [`legal_actions`] and `outcome` from [`chance_outcomes`]; re-deriving the
+/// legal move list to validate the action and allocating an event log for a
+/// node it is about to throw away is pure overhead (together they dominate
+/// the cost of a search node). Errors are still reported, because forcing an
+/// outcome can fail for reasons the caller cannot check cheaply.
+///
+/// Applying an illegal action leaves the state in an unspecified — though
+/// still memory-safe — condition, exactly as with [`apply_unchecked`].
+pub fn apply_with_outcome_unchecked(
+    state: &mut GameState,
+    action: Action,
+    outcome: &Outcome,
+) -> Result<(), IllegalAction> {
+    let mut log = EventLog::discarding();
+    apply_inner(state, action, &mut Chance::Forced(outcome), &mut log, false)
+}
+
 fn illegal(action: Action, reason: &'static str) -> IllegalAction {
     IllegalAction { action, reason }
 }
@@ -2066,6 +2087,35 @@ mod tests {
         assert_eq!(seen & forced.out_of_game_mask(), 0);
     }
 
+    /// The search-path fast variant must be indistinguishable from
+    /// [`apply_with_outcome`] in its effect on the state; it only skips the
+    /// event log and the legality re-check.
+    #[test]
+    fn apply_with_outcome_unchecked_matches_apply_with_outcome() {
+        let mut rng = rng();
+        for seed in 0..6u64 {
+            let mut st = new_game(seed);
+            for _ in 0..60 {
+                let actions = legal_actions(&st);
+                if actions.is_empty() {
+                    break;
+                }
+                for &a in actions.iter().take(3) {
+                    for (outcome, _) in chance_outcomes(&st, a).into_iter().take(4) {
+                        let mut slow = st;
+                        let mut fast = st;
+                        let slow_res = apply_with_outcome(&mut slow, a, &outcome);
+                        let fast_res = apply_with_outcome_unchecked(&mut fast, a, &outcome);
+                        assert_eq!(slow_res.is_ok(), fast_res.is_ok());
+                        assert_eq!(slow, fast, "seed {seed}, action {a:?}");
+                    }
+                }
+                let a = actions[(seed as usize + st.turn() as usize) % actions.len()];
+                apply(&mut st, a, &mut rng).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn illegal_actions_are_rejected_without_changing_the_state() {
         let st = new_game(1);
@@ -2141,6 +2191,34 @@ mod tests {
         apply(&mut st, Action::Build { slot: 14 }, &mut rng).unwrap();
         assert_eq!(st.player(Player::One).coins(), 8);
         assert_eq!(st.player(Player::Two).coins(), 0);
+    }
+
+    /// A trading post's coins go to the bank, not the opponent — this is the
+    /// bug a playtester reported when the UI text for Stone/Clay/Wood Reserve
+    /// wrongly implied "buy from your opponent". Player Two produces stone
+    /// (so an open-market price would be inflated by their production) but
+    /// holds no Economy token, so none of Player One's trade payment should
+    /// ever reach them: the coins are simply spent, same as any other cost.
+    #[test]
+    fn a_trading_post_pays_the_bank_not_the_opponent() {
+        let mut st = StateBuilder::new()
+            .age(2)
+            .open_slots(&[(18, "aqueduct")]) // 3 stone
+            .built(Player::One, &["stone-reserve"])
+            .built(Player::Two, &["shelf-quarry"]) // produces 2 stone
+            .coins(Player::One, 10)
+            .coins(Player::Two, 5)
+            .build();
+        let mut rng = rng();
+        apply(&mut st, Action::Build { slot: 18 }, &mut rng).unwrap();
+        // Stone Reserve fixes the price at 1/unit regardless of Player Two's
+        // production: 3 coins total, all to the bank.
+        assert_eq!(st.player(Player::One).coins(), 7);
+        assert_eq!(
+            st.player(Player::Two).coins(),
+            5,
+            "a trading post's payment never reaches the opponent without Economy"
+        );
     }
 
     #[test]
