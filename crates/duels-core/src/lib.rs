@@ -85,6 +85,8 @@ pub use state::GameState;
 /// [`GameState::conflict`] means the pawn has been pushed towards
 /// [`Player::Two`]'s capital, i.e. [`Player::One`] is militarily ahead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Player {
     /// The first seat.

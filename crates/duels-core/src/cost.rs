@@ -226,6 +226,16 @@ pub fn accessible_slot_costs(state: &GameState) -> Vec<SlotCost> {
         .collect()
 }
 
+/// Coins `player` receives for discarding a card right now: `2 + their own
+/// commercial (yellow) cards`. Shared by [`crate::engine::apply`] and by
+/// callers (a server, a UI) that want to display the reward before the
+/// player commits to [`crate::Action::Discard`], so the two never drift.
+pub fn discard_reward(state: &GameState, player: Player) -> u16 {
+    2 + state
+        .player(player)
+        .count(data::CountTarget::Cards(CardType::Commercial))
+}
+
 /// Whether `player`'s trade payments are redirected to their opponent.
 pub(crate) fn opponent_has_economy(state: &GameState, player: Player) -> bool {
     state

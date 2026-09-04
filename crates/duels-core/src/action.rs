@@ -28,6 +28,8 @@ pub type Slot = u8;
 /// Library's token draw, the Mausoleum's free build, a destroy effect) or the
 /// start-of-age first-player decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(tag = "type")]
 pub enum Action {
     /// Take one of the four currently offered wonders during the initial

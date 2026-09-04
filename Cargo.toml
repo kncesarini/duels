@@ -5,6 +5,7 @@ members = [
     "crates/duels-agents-api",
     "crates/duels-arena",
     "crates/duels-server",
+    "crates/agents/random",
 ]
 
 [workspace.package]

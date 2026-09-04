@@ -1,0 +1,13 @@
+# Workspace-wide cargo configuration.
+#
+# `TS_RS_EXPORT_DIR` tells `ts-rs` (see `crates/duels-core`'s `ts` feature and
+# `crates/duels-server`) where to write the TypeScript bindings generated
+# from `#[ts(export)]` types. `relative = true` resolves it against this
+# file's directory (the workspace root), regardless of which crate's tests
+# actually run the generation.
+#
+# Regenerate with `cargo test --features ts -p duels-core && cargo test -p
+# duels-server`, then `git diff --exit-code web/src/generated` to check for
+# drift (see the `web` CI job in `.github/workflows/ci.yml`).
+[env]
+TS_RS_EXPORT_DIR = { value = "web/src/generated", relative = true }

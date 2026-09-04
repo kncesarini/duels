@@ -32,6 +32,8 @@ use crate::Player;
 
 /// How a game was won.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum VictoryKind {
     /// The conflict pawn reached the loser's capital.
@@ -46,6 +48,8 @@ pub enum VictoryKind {
 
 /// The outcome of a finished game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GameResult {
     /// One player won.
@@ -85,6 +89,8 @@ impl GameResult {
 
 /// One player's victory points, per category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct Breakdown {
     /// Blue cards.
     pub civilian: u16,

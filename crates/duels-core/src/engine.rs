@@ -730,9 +730,7 @@ fn apply_inner(
             let card = take_card(state, slot, p, log);
             state.add_to_discard(card);
             log.push(|| Event::CardDiscarded { player: p, card });
-            let gained = 2 + state
-                .player(p)
-                .count(data::CountTarget::Cards(CardType::Commercial));
+            let gained = cost::discard_reward(state, p);
             gain(state, p, gained, CoinReason::DiscardedCard, log);
             finish_turn(state, log);
         }

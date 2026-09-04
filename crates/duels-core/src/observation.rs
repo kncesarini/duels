@@ -48,6 +48,8 @@ use crate::Player;
 
 /// What is publicly known about one slot of the age structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SlotView {
     /// The card has been taken.
@@ -75,6 +77,8 @@ impl SlotView {
 
 /// One player's city, as everyone sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct PublicPlayer {
     /// Coins in the treasury.
     pub coins: u16,
@@ -97,6 +101,8 @@ pub struct PublicPlayer {
 
 /// The complete public view of a game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(export))]
 pub struct Observation {
     /// What kind of decision is pending.
     pub phase: Phase,
