@@ -154,6 +154,16 @@ fn plays_complete_games_under_a_time_budget() {
     assert_eq!(wins + losses + draws, 4);
 }
 
+/// The pre-rework configuration — a static evaluation at the horizon, no
+/// playouts — must still work. It is what the before/after measurements are
+/// taken against, so it has to keep playing legal, terminating games.
+#[test]
+fn the_static_evaluation_configuration_still_beats_a_random_player() {
+    let (wins, losses, draws) = run_match(300..308, Budget::Nodes(2_000), Config::v1());
+    assert_eq!(wins + losses + draws, 8);
+    assert!(wins >= 6, "only won {wins}/8 with the v1 configuration");
+}
+
 /// Every optimisation switched off must still produce a working agent — if
 /// this fails but the default configuration passes, the bug is in the
 /// pruning or the table rather than in the search.
@@ -170,7 +180,11 @@ fn plays_complete_games_with_every_optimisation_disabled() {
     assert!(wins >= 6, "only won {wins}/8 with pruning disabled");
 }
 
-/// The reported sanity benchmark. Not a CI gate: it takes tens of seconds.
+/// The reported sanity benchmark. Not a CI gate: it takes several minutes.
+///
+/// The bar is high because the measured result is 50/50 at every one of these
+/// budgets; a couple of losses is bad luck on a loaded box, a handful is a
+/// regression.
 #[test]
 #[ignore = "benchmark; run with --release -- --ignored --nocapture"]
 fn benchmark_against_random() {
@@ -180,6 +194,16 @@ fn benchmark_against_random() {
         Budget::TimeMs(200),
     ] {
         let (wins, _, _) = run_match(1_000..1_050, budget, Config::default());
-        assert!(wins >= 36, "only won {wins}/50 at {budget:?}");
+        assert!(wins >= 47, "only won {wins}/50 at {budget:?}");
     }
+}
+
+/// The same 50 games with the pre-rework configuration, for a like-for-like
+/// before/after. `Config::v1` is the static-evaluation agent; it won 82% here
+/// at `Nodes(2_000)`, which is what the crate docs used to quote.
+#[test]
+#[ignore = "benchmark; run with --release -- --ignored --nocapture"]
+fn benchmark_the_static_evaluation_configuration_against_random() {
+    let (wins, _, _) = run_match(1_000..1_050, Budget::Nodes(2_000), Config::v1());
+    assert!(wins >= 36, "only won {wins}/50 with the v1 configuration");
 }
