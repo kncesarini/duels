@@ -25,13 +25,45 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Construct the `Agent` for an agent seat. The only name M2 knows is
-/// `"random"`; unknown names are rejected when the room is created rather
-/// than silently falling back to something.
+/// Every agent name this server knows how to construct, in the order the
+/// web client's opponent picker should offer them (weakest/cheapest first).
+/// `GET /agents` serves this list so the UI never hand-maintains its own
+/// copy. Mirrors `duels-arena`'s `agent_registry::KNOWN_AGENTS`.
+pub const KNOWN_AGENTS: &[&str] = &["random", "greedy", "alphabeta", "mcts-uct"];
+
+/// Construct the `Agent` for an agent seat. Unknown names are rejected when
+/// the room is created rather than silently falling back to something.
+///
+/// Mirrors `duels-arena`'s `agent_registry::make_agent`: add one match arm
+/// (and a `KNOWN_AGENTS` entry) per new agent crate as it lands.
 pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String> {
     match name {
         "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
-        other => Err(format!("unknown agent \"{other}\"")),
+        "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
+        "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
+        "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
+        other => Err(format!(
+            "unknown agent \"{other}\" (known agents: {})",
+            KNOWN_AGENTS.join(", ")
+        )),
+    }
+}
+
+/// The [`Budget`] an agent seat gets per move in a live, human-facing room.
+///
+/// `random` and `greedy` ignore whatever `Budget` they are handed (random
+/// picks uniformly, greedy is a fixed 1-ply heuristic), so `Nodes(1)` is a
+/// fine, instant default for both. `alphabeta` and `mcts-uct` are real
+/// anytime searches that get meaningfully stronger with more time (see their
+/// crate-level docs: e.g. alphabeta measures 82%/96%/96% win rate against
+/// `random` at `Nodes(2_000)`/`Nodes(20_000)`/`TimeMs(200)` respectively) -
+/// `TimeMs(1_000)` is chosen here as a "feels responsive but plays well"
+/// budget for an interactive game against a human, not the (often larger)
+/// budgets `duels-arena` uses to benchmark agents against each other.
+fn interactive_budget(name: &str) -> Budget {
+    match name {
+        "alphabeta" | "mcts-uct" => Budget::TimeMs(1_000),
+        _ => Budget::Nodes(1),
     }
 }
 
@@ -42,6 +74,9 @@ struct RoomInner {
     state: GameState,
     rng: StdRng,
     agents: [Option<Box<dyn Agent + Send>>; 2],
+    /// Per-seat `Budget` for agent seats, chosen once at room creation by
+    /// [`interactive_budget`] (irrelevant, but harmless, for human seats).
+    budgets: [Budget; 2],
 }
 
 /// One room: two seats playing a single game, plus a broadcast channel every
@@ -58,19 +93,26 @@ impl Room {
         let state = engine::new_game(seed);
         let rng = StdRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
         let mut agents: [Option<Box<dyn Agent + Send>>; 2] = [None, None];
+        let mut budgets = [Budget::Nodes(1), Budget::Nodes(1)];
         for (i, seat) in seats.iter().enumerate() {
             if let SeatSpec::Agent { name } = seat {
                 // Give each agent seat its own stream, derived from the game
                 // seed, so two agent seats in one room don't play identically.
                 let agent_seed = seed ^ (0xD1B5_4A32_D192_ED03u64.wrapping_mul(i as u64 + 1));
                 agents[i] = Some(make_agent(name, agent_seed)?);
+                budgets[i] = interactive_budget(name);
             }
         }
         let (tx, _rx) = broadcast::channel(64);
         Ok(Arc::new(Self {
             id,
             seats,
-            inner: AsyncMutex::new(RoomInner { state, rng, agents }),
+            inner: AsyncMutex::new(RoomInner {
+                state,
+                rng,
+                agents,
+                budgets,
+            }),
             tx,
         }))
     }
@@ -157,8 +199,9 @@ async fn drive_agents(inner: &mut RoomInner) -> Vec<Event> {
             break;
         };
         let obs = inner.state.observation();
+        let budget = inner.budgets[idx];
         let (agent, action) = tokio::task::spawn_blocking(move || {
-            let action = agent.choose(&obs, &legal, Budget::Nodes(1));
+            let action = agent.choose(&obs, &legal, budget);
             (agent, action)
         })
         .await

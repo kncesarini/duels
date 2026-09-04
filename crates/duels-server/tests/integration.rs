@@ -139,6 +139,100 @@ async fn creating_a_room_with_an_unknown_agent_is_rejected() {
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
+/// Smoke-tests every non-`random` agent `room::KNOWN_AGENTS` lists: creates a
+/// human-vs-agent room and drives a handful of human decisions ("always pick
+/// `legal[0]`"), checking that the agent seat actually replies with a fresh
+/// `State` broadcast each time rather than erroring or hanging. Doesn't play
+/// to completion (unlike the `random` test above) since `alphabeta` and
+/// `mcts-uct` run a real, if bounded, search per move under the server's
+/// interactive `Budget` and this only needs to prove the wiring works.
+#[tokio::test]
+async fn every_known_agent_besides_random_can_play_a_few_turns() {
+    for name in duels_server::room::KNOWN_AGENTS
+        .iter()
+        .filter(|n| **n != "random")
+    {
+        let addr = spawn_server().await;
+        let base = format!("http://{addr}");
+        let client = reqwest::Client::new();
+
+        let create: CreateRoomResponse = client
+            .post(format!("{base}/rooms"))
+            .json(&CreateRoomRequest {
+                seats: [
+                    SeatSpec::Human,
+                    SeatSpec::Agent {
+                        name: name.to_string(),
+                    },
+                ],
+                seed: Some(7),
+            })
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST /rooms for agent {name}: {e}"))
+            .json()
+            .await
+            .expect("decode CreateRoomResponse");
+
+        let ws_url = format!("ws://{addr}/rooms/{}/ws", create.room_id);
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .unwrap_or_else(|e| panic!("connect to {ws_url}: {e}"));
+
+        for decision in 0..6u32 {
+            let Some(msg) = ws.next().await else {
+                panic!("agent {name}: websocket closed after {decision} decisions");
+            };
+            let msg = msg.unwrap_or_else(|e| panic!("agent {name}: websocket error: {e}"));
+            let WsMessage::Text(text) = msg else {
+                continue;
+            };
+            let server_msg: ServerMessage = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("agent {name}: bad ServerMessage json: {e}\n{text}"));
+            let ServerMessage::State(state) = server_msg else {
+                panic!("agent {name}: unexpected Error message: {text}");
+            };
+
+            if state.observation.result.is_some() {
+                break; // a short game (unlikely within 6 decisions) is fine too
+            }
+            let Some(action) = state.legal_actions.first().copied() else {
+                continue;
+            };
+            let request = ClientMessage::Action { action };
+            ws.send(WsMessage::Text(
+                serde_json::to_string(&request).expect("serialize ClientMessage"),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("agent {name}: send action: {e}"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn get_agents_lists_random_first_and_every_known_agent() {
+    let addr = spawn_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+
+    let agents: Vec<String> = client
+        .get(format!("{base}/agents"))
+        .send()
+        .await
+        .expect("GET /agents")
+        .json()
+        .await
+        .expect("decode agent list");
+
+    assert_eq!(agents.first().map(String::as_str), Some("random"));
+    for name in duels_server::room::KNOWN_AGENTS {
+        assert!(
+            agents.iter().any(|a| a == name),
+            "GET /agents missing {name}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn get_catalog_covers_every_card_wonder_and_token() {
     let addr = spawn_server().await;

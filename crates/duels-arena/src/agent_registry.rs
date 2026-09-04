@@ -9,7 +9,7 @@ use duels_agents_api::Agent;
 
 /// Every agent name this build of `duels-arena` knows how to construct, for
 /// `--help` text and error messages.
-pub const KNOWN_AGENTS: &[&str] = &["random", "greedy", "alphabeta", "mcts-uct"];
+pub const KNOWN_AGENTS: &[&str] = &["random", "greedy", "greedy-ev", "alphabeta", "mcts-uct"];
 
 /// Construct the named `Agent`, seeded from `seed`.
 ///
@@ -19,6 +19,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
     match name {
         "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
         "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
+        "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         other => Err(format!(
@@ -36,6 +37,12 @@ mod tests {
     fn random_is_registered() {
         let agent = make_agent("random", 1).expect("random should be a known agent");
         assert_eq!(agent.spec().name, "random");
+    }
+
+    #[test]
+    fn greedy_ev_is_registered() {
+        let agent = make_agent("greedy-ev", 1).expect("greedy-ev should be a known agent");
+        assert_eq!(agent.spec().name, "greedy-ev");
     }
 
     #[test]
