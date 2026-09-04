@@ -69,7 +69,7 @@ const CHECK_MASK: u64 = 0x3F;
 /// every 64th node overshoots a wall-clock budget by more than half again.
 const CHECK_MASK_ROLLOUT: u64 = 0x0;
 
-mod clock {
+pub(crate) mod clock {
     //! The one place in this crate that reads a clock.
     //!
     //! The workspace `clippy.toml` bans wall-clock reads so that the rules
@@ -149,6 +149,24 @@ pub struct Searcher<'a> {
     /// round, which is what makes the leaf value a pure function of its
     /// position (see [`playout`]).
     round_salt: u64,
+    /// Every root move's value from the most recent round, in the order that
+    /// round searched them. See [`Searcher::root_values`].
+    root: Vec<(Action, f64)>,
+    /// Search every root move on a full window instead of raising `alpha` as
+    /// better moves are found.
+    ///
+    /// Root alpha-beta is pure profit when only the *best* move matters: a
+    /// move that fails low is known to be no better than the best so far, and
+    /// the bound it returns is all the search needs. An ensemble of
+    /// determinizations needs more than that, because it averages each move's
+    /// value across the searches. A root move that fails low returns a value
+    /// `v <= alpha` which is an *upper* bound on its true value — so it is
+    /// reported somewhere between what it is worth and what the best move is
+    /// worth, flattering exactly the moves one determinization thought were
+    /// bad. Averaging those would blunt the very distinction the ensemble
+    /// exists to draw. Only [`Config::root_determinizations`] `> 1` turns
+    /// this on, so a single determinization keeps the pruning it always had.
+    root_full_window: bool,
 }
 
 impl<'a> Searcher<'a> {
@@ -185,6 +203,8 @@ impl<'a> Searcher<'a> {
             },
             rollouts: cfg.rollouts,
             round_salt: 0x5EED,
+            root: Vec::new(),
+            root_full_window: cfg.root_determinizations.max(1) > 1 && cfg.ensemble_exact_root,
         }
     }
 
@@ -242,6 +262,10 @@ impl<'a> Searcher<'a> {
             nodes: 0,
             samples: self.rollouts,
         };
+        // Keeps `root_values`'s invariant true from the first instant: the
+        // best move is always the first strict maximum of the reported list.
+        self.root.clear();
+        self.root.push((moves[0], V_MIN));
 
         let mut depth = 1u8;
         loop {
@@ -261,7 +285,19 @@ impl<'a> Searcher<'a> {
                     iter_best = action;
                 }
                 // The root is always a max node: `me` is the player to move.
-                window.alpha = window.alpha.max(v);
+                if !self.root_full_window {
+                    window.alpha = window.alpha.max(v);
+                }
+            }
+
+            // Only the newest round's opinions, complete or not: values from
+            // different depths (or different sample counts) are not
+            // comparable, so a merge with the previous round's list would
+            // break the invariant that `root`'s first strict maximum is
+            // `result.best`.
+            if !scored.is_empty() {
+                self.root.clear();
+                self.root.extend_from_slice(&scored);
             }
 
             if self.aborted {
@@ -312,7 +348,36 @@ impl<'a> Searcher<'a> {
         }
 
         result.nodes = self.nodes;
+        debug_assert_eq!(
+            best_of(std::slice::from_ref(&self.root)).map(|(a, _)| a),
+            Some(result.best),
+            "root_values disagrees with the chosen move"
+        );
         result
+    }
+
+    /// Every root move's value as of the most recent round of the search,
+    /// in the order that round searched them.
+    ///
+    /// This is what an ensemble of determinizations averages over. Two
+    /// properties make it usable for that, and both are asserted rather than
+    /// assumed (see [`best_of`] and the `root_values_agree_with_the_chosen_move`
+    /// test):
+    ///
+    /// - it is one round's opinions, never a mix of depths or sample counts;
+    /// - [`best_of`] over it alone returns exactly [`SearchResult::best`], so
+    ///   an ensemble of one is the plain search.
+    ///
+    /// The accompanying *value* can differ from [`SearchResult::value`] after
+    /// an aborted round: the search keeps the last completed round's value
+    /// when the part-finished round agreed with it about the move, while this
+    /// list always speaks for the newest round.
+    ///
+    /// The values are exact only when [`Searcher`] was built for an ensemble
+    /// (see the `root_full_window` field); with root alpha-beta on, a move
+    /// that failed low carries an upper bound instead.
+    pub fn root_values(&self) -> &[(Action, f64)] {
+        &self.root
     }
 
     /// Nodes visited so far.
@@ -594,6 +659,74 @@ impl<'a> Searcher<'a> {
             self.bufs[i] = buf;
         }
     }
+}
+
+/// The move an ensemble of root determinizations agrees on, and its value:
+/// the action with the best value *averaged over the searches that scored
+/// it*.
+///
+/// Each element of `runs` is one search's [`Searcher::root_values`].
+///
+/// # Why the mean
+///
+/// Each run is an unbiased-ish estimate of the move's value in one world
+/// drawn from the posterior over hidden information, so the mean over runs
+/// estimates the move's value under that posterior — which is what a player
+/// who does not know the deal actually wants to maximise. The obvious
+/// alternatives are worse here: a max over runs picks the move that is best
+/// in the *luckiest* world (exactly the overfitting root determinization is
+/// supposed to cure), and a min is a paranoid worst-case rule for a game
+/// whose hidden information is nobody's private knowledge. A vote over each
+/// run's chosen move throws away the margins, which in a game scored by
+/// victory points is most of the signal.
+///
+/// A move missing from some runs is averaged over the runs that did score it;
+/// with a budget tight enough to abort a run's first round part-way that is
+/// not merely theoretical, and it is the reason a run's move ordering is
+/// best-first (the moves that get scored are the plausible ones).
+///
+/// # Single-run equivalence
+///
+/// With one run this is the first strict maximum of that run's value list,
+/// which is exactly how [`Searcher::think`] picks [`SearchResult::best`] —
+/// term for term, ties included, since the iteration order is the run's own.
+/// Ties across runs are broken by the first run's order for the same reason:
+/// reproducibility.
+pub fn best_of(runs: &[Vec<(Action, f64)>]) -> Option<(Action, f64)> {
+    // Every move any run scored, in order of first appearance: the first
+    // run's own order, then anything a later run reached and it did not.
+    let mut candidates: Vec<Action> = Vec::with_capacity(runs.first().map_or(0, Vec::len));
+    for run in runs {
+        for &(action, _) in run {
+            if !candidates.contains(&action) {
+                candidates.push(action);
+            }
+        }
+    }
+
+    let mut best: Option<(Action, f64)> = None;
+    for action in candidates {
+        let mut sum = 0.0;
+        let mut count = 0u32;
+        for run in runs {
+            if let Some(&(_, v)) = run.iter().find(|(a, _)| *a == action) {
+                sum += v;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        let mean = sum / f64::from(count);
+        let better = match best {
+            None => true,
+            Some((_, incumbent)) => mean > incumbent,
+        };
+        if better {
+            best = Some((action, mean));
+        }
+    }
+    best
 }
 
 /// The static evaluation of `state` for `me` under `cfg`'s weights.
@@ -1148,6 +1281,163 @@ mod tests {
                 assert!(legal.contains(&r.best), "{:?} is not legal", r.best);
             }
         }
+    }
+
+    /// The property the whole ensemble rests on: the values `root_values`
+    /// reports are the ones the search actually chose between, so
+    /// [`best_of`] over a single search reproduces its own move.
+    ///
+    /// The budgets deliberately include ones far too small to finish a round,
+    /// because a part-finished round is where a naive implementation (merging
+    /// a partial list into the previous depth's) breaks the invariant.
+    #[test]
+    fn root_values_agree_with_the_chosen_move() {
+        for (i, st) in positions().iter().enumerate() {
+            let legal = engine::legal_actions(st);
+            for budget in [
+                Budget::Nodes(1),
+                Budget::Nodes(3),
+                Budget::Nodes(29),
+                Budget::Nodes(200),
+                Budget::Nodes(2_000),
+            ] {
+                // The playout leaf is in the list because it is what makes a
+                // round expensive enough to abort part-way; `cfg()`'s static
+                // leaf with an unbounded budget is what exercises a search
+                // that finishes every round.
+                for base in [cfg(), rollout_cfg()] {
+                    let c = Config {
+                        max_depth: 2,
+                        ..base
+                    };
+                    let mut tt = Table::with_bits(14);
+                    let mut s = Searcher::new(st.current_player(), &c, &mut tt, budget);
+                    let r = s.think(st, &legal);
+                    let root = s.root_values().to_vec();
+                    assert!(!root.is_empty(), "position {i} reported no root values");
+                    for (a, _) in &root {
+                        assert!(legal.contains(a), "position {i}: {a:?} is not legal");
+                    }
+                    let (best, _) = best_of(std::slice::from_ref(&root)).expect("a non-empty list");
+                    assert_eq!(
+                        best, r.best,
+                        "position {i} at {budget:?}: root_values says {best:?}, \
+                         the search said {:?}",
+                        r.best
+                    );
+                }
+            }
+        }
+
+        // And once with a budget that finishes every round, so the invariant
+        // is not only tested where a round aborted.
+        let st = &positions()[5];
+        let legal = engine::legal_actions(st);
+        let c = Config {
+            max_depth: 2,
+            ..cfg()
+        };
+        let mut tt = Table::with_bits(14);
+        let mut s = Searcher::new(st.current_player(), &c, &mut tt, Budget::Nodes(u64::MAX));
+        let r = s.think(st, &legal);
+        assert_eq!(r.depth, c.max_depth, "the search did not complete");
+        let root = s.root_values().to_vec();
+        let (best, value) = best_of(std::slice::from_ref(&root)).expect("a non-empty list");
+        assert_eq!(best, r.best);
+        assert!(
+            (value - r.value).abs() < 1e-9,
+            "a completed search must report its own value: {value} vs {}",
+            r.value
+        );
+    }
+
+    /// The exact-root switch is what makes the averaged values values rather
+    /// than bounds, so it has to actually change the reported list — and it
+    /// must not change the search's own answer.
+    #[test]
+    fn a_full_root_window_reports_exact_values_for_every_move() {
+        let st = &positions()[3];
+        let legal = engine::legal_actions(st);
+        let base = Config {
+            max_depth: 2,
+            root_determinizations: 4,
+            ..cfg()
+        };
+
+        let values = |exact: bool| {
+            let c = Config {
+                ensemble_exact_root: exact,
+                ..base.clone()
+            };
+            let mut tt = Table::with_bits(14);
+            let mut s = Searcher::new(st.current_player(), &c, &mut tt, Budget::Nodes(u64::MAX));
+            let r = s.think(st, &legal);
+            (r, s.root_values().to_vec())
+        };
+        let (exact_result, exact) = values(true);
+        let (pruned_result, pruned) = values(false);
+
+        // Same tree, same best move and value; the *other* moves' values
+        // differ, and only ever by being bounded above the truth — a root
+        // move that fails low returns an upper bound on what it is worth,
+        // which is what makes the pruned list unfit to average.
+        assert_eq!(exact_result.best, pruned_result.best);
+        assert!((exact_result.value - pruned_result.value).abs() < 1e-9);
+        let mut saw_a_bound = false;
+        for (a, v) in &pruned {
+            let e = exact
+                .iter()
+                .find(|(b, _)| b == a)
+                .expect("the same move list")
+                .1;
+            assert!(
+                v >= &(e - 1e-9),
+                "root pruning reported {v} for {a:?}, below the exact {e}"
+            );
+            if *v > e + 1e-9 {
+                saw_a_bound = true;
+            }
+        }
+        assert!(
+            saw_a_bound,
+            "root pruning did not bound anything, so the switch is untested"
+        );
+        // A reference check that the exact values really are the tree's:
+        // every one of them must match the naive expectimax.
+        for (a, v) in &exact {
+            let want = reference_child(st, st.current_player(), *a, 1, 1, &base);
+            assert!(
+                (v - want).abs() < 1e-6,
+                "exact root value for {a:?} was {v}, reference says {want}"
+            );
+        }
+    }
+
+    /// The combination rule itself: a mean over runs, a single run reduced to
+    /// the run's own first strict maximum, and a move only some runs scored
+    /// averaged over the runs that did.
+    #[test]
+    fn best_of_averages_each_move_over_the_runs_that_scored_it() {
+        let a = Action::Build { slot: 0 };
+        let b = Action::Build { slot: 1 };
+        let c = Action::Discard { slot: 2 };
+
+        // One run: the first strict maximum, ties going to the earlier entry.
+        assert_eq!(best_of(&[vec![(a, 1.0), (b, 2.0)]]), Some((b, 2.0)));
+        assert_eq!(best_of(&[vec![(a, 2.0), (b, 2.0)]]), Some((a, 2.0)));
+        assert_eq!(best_of(&[vec![]]), None);
+        assert_eq!(best_of(&[]), None);
+
+        // Two runs: `a` is brilliant in one world and terrible in the other,
+        // `b` is solid in both. The mean prefers the solid move, which is the
+        // whole point of ensembling.
+        let runs = vec![vec![(a, 10.0), (b, 3.0)], vec![(a, -10.0), (b, 3.0)]];
+        assert_eq!(best_of(&runs), Some((b, 3.0)));
+
+        // A move only the second run reached is still a candidate, averaged
+        // over that one run.
+        let runs = vec![vec![(a, 1.0)], vec![(a, 1.0), (c, 5.0)]];
+        assert_eq!(best_of(&runs), Some((c, 5.0)));
     }
 
     #[test]
