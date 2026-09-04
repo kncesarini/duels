@@ -19,7 +19,7 @@ export default function DiscardModal({ discard, catalog, onClose }: DiscardModal
           {discard.map((id) => {
             const card = cardById(catalog, id);
             if (!card) return null;
-            return <CardChip key={id} card={card} />;
+            return <CardChip key={id} card={card} catalog={catalog} />;
           })}
         </div>
       )}

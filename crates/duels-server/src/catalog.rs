@@ -17,10 +17,28 @@ use crate::protocol::{
 
 fn count_target_label(t: CountTarget) -> String {
     match t {
-        CountTarget::Cards(kind) => format!("{kind:?} cards"),
+        CountTarget::Cards(kind) => format!("{} cards", card_type_label(kind)),
         CountTarget::RawAndManufactured => "raw material + manufactured good cards".to_string(),
         CountTarget::Wonders => "constructed wonders".to_string(),
         CountTarget::CoinsDiv3 => "coins (rounded down to the nearest 3)".to_string(),
+    }
+}
+
+/// A human-readable, space-separated name for a card colour, for use inside
+/// a sentence (e.g. "5 coins per *raw material* card"). `CardType`'s
+/// `Debug` output (`RawMaterial`, `ManufacturedGood`) is fine as an
+/// internal identifier but reads as a run-together enum name to a player,
+/// which is exactly the kind of unclear wording this catalog is meant to
+/// avoid.
+fn card_type_label(kind: data::CardType) -> &'static str {
+    match kind {
+        data::CardType::RawMaterial => "raw material",
+        data::CardType::ManufacturedGood => "manufactured good",
+        data::CardType::Civilian => "civilian",
+        data::CardType::Scientific => "scientific",
+        data::CardType::Commercial => "commercial",
+        data::CardType::Military => "military",
+        data::CardType::Guild => "guild",
     }
 }
 

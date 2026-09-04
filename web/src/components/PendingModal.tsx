@@ -92,7 +92,7 @@ export default function PendingModal({ observation, catalog, legal, onSubmit }: 
           {options.map((a) => {
             const card = cardById(catalog, a.card);
             if (!card) return null;
-            return <CardChip key={a.card} card={card} onClick={() => onSubmit(a)} />;
+            return <CardChip key={a.card} card={card} catalog={catalog} onClick={() => onSubmit(a)} />;
           })}
         </div>
       </Modal>
@@ -107,7 +107,7 @@ export default function PendingModal({ observation, catalog, legal, onSubmit }: 
           {options.map((a) => {
             const card = cardById(catalog, a.card);
             if (!card) return null;
-            return <CardChip key={a.card} card={card} onClick={() => onSubmit(a)} />;
+            return <CardChip key={a.card} card={card} catalog={catalog} onClick={() => onSubmit(a)} />;
           })}
         </div>
       </Modal>

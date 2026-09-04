@@ -133,7 +133,7 @@ export default function PlayerPanel({ label, player, catalog, active, militaryLe
               <div className="flex flex-wrap gap-1.5">
                 {ids.map((id) => {
                   const card = cardById(catalog, id);
-                  return card ? <CardChip key={id} card={card} /> : null;
+                  return card ? <CardChip key={id} card={card} catalog={catalog} /> : null;
                 })}
               </div>
             </div>

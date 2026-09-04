@@ -63,6 +63,7 @@ export default function Structure({ observation, catalog, actionableSlots, onSlo
                 return (
                   <CardChip
                     card={card}
+                    catalog={catalog}
                     onClick={clickable ? () => onSlotClick(i) : undefined}
                     highlight={clickable}
                   />
