@@ -9,7 +9,7 @@ use duels_agents_api::Agent;
 
 /// Every agent name this build of `duels-arena` knows how to construct, for
 /// `--help` text and error messages.
-pub const KNOWN_AGENTS: &[&str] = &["random"];
+pub const KNOWN_AGENTS: &[&str] = &["random", "greedy", "alphabeta", "mcts-uct"];
 
 /// Construct the named `Agent`, seeded from `seed`.
 ///
@@ -18,6 +18,9 @@ pub const KNOWN_AGENTS: &[&str] = &["random"];
 pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String> {
     match name {
         "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
+        "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
+        "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
+        "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         other => Err(format!(
             "unknown agent \"{other}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")

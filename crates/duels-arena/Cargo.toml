@@ -10,6 +10,9 @@ description = "Tournament runner: plays Agent implementations against each other
 duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
 duels-agent-random = { path = "../agents/random" }
+duels-agent-greedy = { path = "../agents/greedy" }
+duels-agent-alphabeta = { path = "../agents/alphabeta" }
+duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
