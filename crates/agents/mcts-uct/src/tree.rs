@@ -96,8 +96,16 @@ impl Config {
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={});chance=progressive-widening(c={:.2},alpha={:.2})",
-            self.exploration, w.build, w.wonder, w.discard, self.chance_widen_c, self.chance_widen_alpha
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2})",
+            self.exploration,
+            w.build,
+            w.wonder,
+            w.discard,
+            w.chain_free_mult,
+            w.new_symbol_mult,
+            w.pair_complete_mult,
+            self.chance_widen_c,
+            self.chance_widen_alpha
         )
     }
 }
