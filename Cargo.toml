@@ -7,6 +7,7 @@ members = [
     "crates/duels-server",
     "crates/agents/random",
     "crates/agents/greedy",
+    "crates/agents/greedy-ev",
     "crates/agents/mcts-uct",
     "crates/agents/alphabeta",
 ]

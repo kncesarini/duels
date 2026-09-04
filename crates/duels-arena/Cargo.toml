@@ -11,6 +11,7 @@ duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
 duels-agent-random = { path = "../agents/random" }
 duels-agent-greedy = { path = "../agents/greedy" }
+duels-agent-greedy-ev = { path = "../agents/greedy-ev" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 serde = { workspace = true }

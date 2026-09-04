@@ -390,6 +390,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "duels-agent-greedy-ev"
+version = "0.1.0"
+dependencies = [
+ "duels-agent-greedy",
+ "duels-agent-random",
+ "duels-agents-api",
+ "duels-core",
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "duels-agent-mcts-uct"
 version = "0.1.0"
 dependencies = [
@@ -424,6 +435,7 @@ version = "0.1.0"
 dependencies = [
  "duels-agent-alphabeta",
  "duels-agent-greedy",
+ "duels-agent-greedy-ev",
  "duels-agent-mcts-uct",
  "duels-agent-random",
  "duels-agents-api",
