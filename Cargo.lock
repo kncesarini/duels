@@ -422,6 +422,9 @@ dependencies = [
 name = "duels-arena"
 version = "0.1.0"
 dependencies = [
+ "duels-agent-alphabeta",
+ "duels-agent-greedy",
+ "duels-agent-mcts-uct",
  "duels-agent-random",
  "duels-agents-api",
  "duels-core",
