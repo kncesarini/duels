@@ -21,6 +21,12 @@
 //!   probability-weighted mean of its children's values. Nothing is resampled
 //!   and no RNG is involved.
 //!
+//! - A **horizon leaf** is scored by [`leaf_value`]: a few playouts to the end
+//!   of the game, blended with [`eval`]'s static form. That choice, and the
+//!   fact that spare budget goes into more playouts rather than another ply,
+//!   is the single biggest determinant of this agent's strength; see
+//!   [`Searcher::think`] and the [`playout`] module.
+//!
 //! # Pruning
 //!
 //! Decision nodes are plain fail-soft alpha-beta. Chance nodes use Star1:
@@ -28,13 +34,16 @@
 //! children bounds the node's final value, which both lets a chance node give
 //! up early and lets it hand each child a narrowed window. Both are
 //! value-preserving, which [`tests::pruning_agrees_with_unpruned_expectimax`]
-//! checks against a deliberately naive reference implementation.
+//! checks against a deliberately naive reference implementation — with and
+//! without the playout leaf, since the property only holds if a leaf value is
+//! a pure function of its position.
 
 use duels_core::engine::{self, Outcome};
 use duels_core::{Action, GameResult, GameState, Player};
 
 use crate::eval;
 use crate::order;
+use crate::playout;
 use crate::tt::{Bound, Table};
 use crate::Config;
 
@@ -54,6 +63,11 @@ pub const V_MIN: f64 = -V_MAX;
 /// enough that a node budget is not overshot by much, large enough that the
 /// clock read a time budget needs is amortised away.
 const CHECK_MASK: u64 = 0x3F;
+
+/// The same, when the leaves run playouts: every node. A leaf then costs tens
+/// of engine plies per playout, which dwarfs a clock read, and checking only
+/// every 64th node overshoots a wall-clock budget by more than half again.
+const CHECK_MASK_ROLLOUT: u64 = 0x0;
 
 mod clock {
     //! The one place in this crate that reads a clock.
@@ -105,6 +119,9 @@ pub struct SearchResult {
     pub depth: u8,
     /// Decision nodes visited.
     pub nodes: u64,
+    /// Playouts per leaf in the last iteration that ran; `0` when the leaves
+    /// were scored by the static evaluation alone.
+    pub samples: u32,
 }
 
 /// One root search over one determinized state.
@@ -119,6 +136,19 @@ pub struct Searcher<'a> {
     /// One reusable move buffer per ply, so the hot loop does not allocate a
     /// `Vec<Action>` per node.
     bufs: Vec<Vec<Action>>,
+    /// Scratch move list for playouts at the leaves.
+    pbuf: Vec<Action>,
+    /// How often to re-check the budget, in nodes; see [`CHECK_MASK`].
+    check_mask: u64,
+    /// Playouts per leaf for the iteration currently running. Starts at
+    /// `cfg.rollouts` and doubles once the depth ceiling is reached.
+    rollouts: u32,
+    /// Playout seed for the round currently running, used only when
+    /// [`Config::rollout_common_seed`] is set. Advanced once per round, so
+    /// each round's estimate is an independent sample, but constant *within* a
+    /// round, which is what makes the leaf value a pure function of its
+    /// position (see [`playout`]).
+    round_salt: u64,
 }
 
 impl<'a> Searcher<'a> {
@@ -147,14 +177,55 @@ impl<'a> Searcher<'a> {
             nodes: 0,
             aborted: false,
             bufs: Vec::new(),
+            pbuf: Vec::with_capacity(32),
+            check_mask: if cfg.rollouts > 0 {
+                CHECK_MASK_ROLLOUT
+            } else {
+                CHECK_MASK
+            },
+            rollouts: cfg.rollouts,
+            round_salt: 0x5EED,
         }
     }
 
     /// Search `root` by iterative deepening and return the best of `legal`.
     ///
-    /// A move is available from the moment the depth-1 iteration finishes; an
-    /// iteration that runs out of budget part-way is discarded in favour of
-    /// the deepest one that completed.
+    /// A move is available from the moment the depth-1 iteration finishes.
+    ///
+    /// # Partially completed iterations
+    ///
+    /// An iteration that runs out of budget part-way is *not* thrown away
+    /// wholesale. The root moves are ordered best-first from the previous
+    /// iteration, so the first of them is the move that iteration chose; any
+    /// later move that outscored it here was judged with strictly more
+    /// information — a ply more, or twice the playouts — and is adopted even
+    /// though the rest of the list never got searched. `result.depth` still
+    /// reports only the depth of the last iteration that *finished*, because
+    /// that is what the value is worth.
+    ///
+    /// This matters much more than it looks. Iterative deepening spends most
+    /// of its budget on its final, incomplete iteration; with a static leaf
+    /// evaluation the wasted fraction is small because the next depth is only
+    /// a few times more expensive, but once the leaves run playouts a node
+    /// costs tens of engine plies and the aborted iteration can be most of
+    /// the search.
+    ///
+    /// # Deepening the sampling before the horizon
+    ///
+    /// When the leaves run playouts ([`Config::rollouts`]), spare budget goes
+    /// first into *doubling the playouts per leaf* and only then into another
+    /// ply, up to [`Config::rollout_cap`]. That ordering is measured, not
+    /// assumed, and it is the opposite of what a chess engine would do.
+    ///
+    /// Two things drive it. One ply here costs about thirtyfold — a dozen
+    /// legal moves times the chance node that follows most of them — and at a
+    /// realistic budget thirty times the sampling is worth more than the ply.
+    /// And a max node taking the largest of several *noisy* leaf estimates is
+    /// biased upward by roughly the spread of that noise, a min node
+    /// symmetrically downward, so a deeper tree over under-sampled leaves
+    /// does not merely fail to help, it actively degrades the root ordering.
+    /// [`Config::rollout_common_seed`] attacks the same bias from the other
+    /// side.
     ///
     /// # Panics
     ///
@@ -169,9 +240,11 @@ impl<'a> Searcher<'a> {
             value: 0.0,
             depth: 0,
             nodes: 0,
+            samples: self.rollouts,
         };
 
-        for depth in 1..=self.cfg.max_depth {
+        let mut depth = 1u8;
+        loop {
             let mut window = Window::FULL;
             let mut iter_best = moves[0];
             let mut iter_value = V_MIN;
@@ -192,6 +265,14 @@ impl<'a> Searcher<'a> {
             }
 
             if self.aborted {
+                // Salvage a better-informed opinion if there is one:
+                // `moves[0]` is the previous round's choice, so anything that
+                // outscored it here beat the standing answer with more
+                // information behind it.
+                if !scored.is_empty() && iter_best != moves[0] {
+                    result.best = iter_best;
+                    result.value = iter_value;
+                }
                 break;
             }
 
@@ -207,6 +288,25 @@ impl<'a> Searcher<'a> {
             // A proven result will not change by looking further, and a
             // forced move needs no second opinion.
             if iter_value.abs() >= MATE_THRESHOLD || moves.len() == 1 || self.out_of_budget() {
+                break;
+            }
+
+            // Spend the next slice of budget on sharper leaves before a
+            // deeper horizon: see the note on the ramp above `think`.
+            if self.rollouts > 0 && self.rollouts < self.cfg.rollout_cap {
+                self.rollouts = (self.rollouts * 2).min(self.cfg.rollout_cap);
+                // Leaf values just changed, so nothing stored under the old
+                // sample count is comparable any more, and the next round
+                // wants its own simulated luck.
+                self.tt.new_generation();
+                self.round_salt = self
+                    .round_salt
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    .wrapping_add(1);
+                result.samples = self.rollouts;
+            } else if depth < self.cfg.max_depth {
+                depth += 1;
+            } else {
                 break;
             }
         }
@@ -233,7 +333,7 @@ impl<'a> Searcher<'a> {
         if !resolves_chance(state, action) {
             let mut next = *state;
             if !apply(&mut next, action, &Outcome::default()) {
-                return eval::evaluate(state, self.me);
+                return self.static_eval(state);
             }
             return self.node(&next, depth, ply, window);
         }
@@ -242,7 +342,7 @@ impl<'a> Searcher<'a> {
         if outcomes.len() == 1 {
             let mut next = *state;
             if !apply(&mut next, action, &outcomes[0].0) {
-                return eval::evaluate(state, self.me);
+                return self.static_eval(state);
             }
             return self.node(&next, depth, ply, window);
         }
@@ -302,7 +402,7 @@ impl<'a> Searcher<'a> {
                 // The engine refused an outcome `chance_outcomes` offered.
                 // Fall back to the static value rather than corrupting the
                 // expectation by dropping a term.
-                acc += w * eval::evaluate(state, self.me);
+                acc += w * self.static_eval(state);
                 left = rest;
                 continue;
             }
@@ -337,14 +437,24 @@ impl<'a> Searcher<'a> {
         if let Some(result) = state.result() {
             return terminal_value(result, self.me, ply);
         }
-        if depth == 0 {
-            return eval::evaluate(state, self.me);
-        }
-        if self.nodes & CHECK_MASK == 0 && self.out_of_budget() {
+        // The budget is checked *before* the horizon test, not after: a leaf
+        // that runs playouts is the most expensive node in the tree, so a
+        // search that only checked the clock at interior nodes would sail
+        // past a wall-clock deadline by a wide margin.
+        if self.nodes & self.check_mask == 0 && self.out_of_budget() {
             self.aborted = true;
         }
         if self.aborted {
-            return eval::evaluate(state, self.me);
+            return self.static_eval(state);
+        }
+        if depth == 0 {
+            // A playout costs about what a decision node does, times the
+            // length of the game it plays out, so charging the budget one
+            // node per playout keeps `Budget::Nodes` a usable proxy for work
+            // — and puts it on the same footing as `duels-agent-mcts-uct`,
+            // whose `Budget::Nodes(n)` is exactly `n` playouts.
+            self.nodes += u64::from(self.rollouts);
+            return self.leaf(state);
         }
 
         let Window {
@@ -383,7 +493,7 @@ impl<'a> Searcher<'a> {
             // Only a finished game has no legal move, and that was handled
             // above; be total anyway.
             self.put_buf(ply, moves);
-            return eval::evaluate(state, self.me);
+            return self.static_eval(state);
         }
         self.order(state, &mut moves, tt_move);
 
@@ -436,6 +546,24 @@ impl<'a> Searcher<'a> {
         best_value
     }
 
+    /// The static evaluation, with this search's weights. Used for the
+    /// degenerate paths — an aborted iteration, an outcome the engine refused
+    /// — where paying for a playout would be waste.
+    fn static_eval(&self, state: &GameState) -> f64 {
+        static_eval(state, self.me, self.cfg)
+    }
+
+    /// The value of a horizon leaf: the static evaluation, blended with the
+    /// mean of a few playouts when the configuration asks for them.
+    fn leaf(&mut self, state: &GameState) -> f64 {
+        let key = if self.cfg.rollout_common_seed {
+            self.round_salt
+        } else {
+            crate::tt::state_key(state)
+        };
+        leaf_value(state, self.me, self.cfg, self.rollouts, key, &mut self.pbuf)
+    }
+
     /// Apply whichever move ordering the configuration asks for.
     fn order(&self, state: &GameState, moves: &mut [Action], tt_move: Option<Action>) {
         if self.cfg.order_lookahead {
@@ -466,6 +594,48 @@ impl<'a> Searcher<'a> {
             self.bufs[i] = buf;
         }
     }
+}
+
+/// The static evaluation of `state` for `me` under `cfg`'s weights.
+fn static_eval(state: &GameState, me: Player, cfg: &Config) -> f64 {
+    eval::evaluate_with(state, me, &cfg.weights)
+}
+
+/// The value of a horizon leaf.
+///
+/// With `cfg.rollouts == 0` this is just the static evaluation, which is what
+/// the crate did originally. Otherwise the static term is blended with the
+/// mean of `cfg.rollouts` playouts (see [`playout`]); the blend keeps the
+/// static term's knowledge of the two instant-win races, which a playout under
+/// a random policy almost never stumbles into, while letting the playout speak
+/// for the end-of-game scoring the static term can only guess at.
+///
+/// A leaf value is a pure function of the position, playouts included — see
+/// [`playout::estimate`] — so the transposition table stays sound and
+/// `Budget::Nodes` stays reproducible.
+fn leaf_value(
+    state: &GameState,
+    me: Player,
+    cfg: &Config,
+    rollouts: u32,
+    key: u64,
+    buf: &mut Vec<Action>,
+) -> f64 {
+    let stat = static_eval(state, me, cfg);
+    if rollouts == 0 || cfg.rollout_blend <= 0.0 {
+        return stat;
+    }
+    let mc = playout::estimate(
+        state,
+        me,
+        key,
+        rollouts,
+        &cfg.rollout_policy,
+        cfg.rollout_metric,
+        buf,
+    );
+    let b = cfg.rollout_blend.clamp(0.0, 1.0);
+    ((1.0 - b) * stat + b * mc).clamp(-eval::EVAL_CLAMP, eval::EVAL_CLAMP)
 }
 
 /// Apply `action` with `outcome` forced. `false` if the engine refused.
@@ -523,6 +693,16 @@ fn resolves_chance(state: &GameState, action: Action) -> bool {
 /// all of it. Within one node the survivors are equally weighted and equally
 /// likely a priori, so the estimate is unbiased, but a `cap` of three does
 /// not make the variance of a 200-outcome distribution disappear.
+///
+/// It is nevertheless *not* what was holding the agent back, which is worth
+/// recording because it was the obvious suspect. At a matched wall-clock
+/// budget a `cap` of 6 or 8 loses to a `cap` of 3 — 45% and 37% over 100 games
+/// with the static-evaluation leaf, 50% and 45% with the playout leaf — and a
+/// `cap` of 1 or 2 loses too (44% and 48%). Three is a local optimum in both
+/// regimes: the depth an honest expectation costs is worth more than the
+/// variance it removes. A less lossy sampling scheme (weighted-without-
+/// replacement top-K rather than a stride) would move numbers of that size at
+/// best.
 pub fn reduced_outcomes(state: &GameState, action: Action, cap: usize) -> Vec<(Outcome, f64)> {
     let mut all = engine::chance_outcomes(state, action);
     if cap > 0 && all.len() > cap {
@@ -611,27 +791,26 @@ fn from_tt(v: f64, ply: u32) -> f64 {
 /// behind — so this is the only thing standing between "pruning works" and
 /// "pruning looks like it works".
 #[cfg(test)]
-fn reference_expectimax(
-    state: &GameState,
-    me: Player,
-    depth: u32,
-    ply: u32,
-    chance_cap: usize,
-) -> f64 {
+fn reference_expectimax(state: &GameState, me: Player, depth: u32, ply: u32, cfg: &Config) -> f64 {
     if let Some(result) = state.result() {
         return terminal_value(result, me, ply);
     }
     if depth == 0 {
-        return eval::evaluate(state, me);
+        let key = if cfg.rollout_common_seed {
+            0x5EED
+        } else {
+            crate::tt::state_key(state)
+        };
+        return leaf_value(state, me, cfg, cfg.rollouts, key, &mut Vec::new());
     }
     let moves = engine::legal_actions(state);
     if moves.is_empty() {
-        return eval::evaluate(state, me);
+        return static_eval(state, me, cfg);
     }
     let maximizing = state.current_player() == me;
     let mut best = if maximizing { V_MIN } else { V_MAX };
     for action in moves {
-        let v = reference_child(state, me, action, depth - 1, ply + 1, chance_cap);
+        let v = reference_child(state, me, action, depth - 1, ply + 1, cfg);
         best = if maximizing { best.max(v) } else { best.min(v) };
     }
     best
@@ -645,10 +824,10 @@ fn reference_child(
     action: Action,
     depth: u32,
     ply: u32,
-    chance_cap: usize,
+    cfg: &Config,
 ) -> f64 {
     let outcomes = if resolves_chance(state, action) {
-        reduced_outcomes(state, action, chance_cap)
+        reduced_outcomes(state, action, cfg.chance_cap)
     } else {
         vec![(Outcome::default(), 1.0)]
     };
@@ -656,10 +835,10 @@ fn reference_child(
     for (outcome, w) in &outcomes {
         let mut next = *state;
         if !apply(&mut next, action, outcome) {
-            acc += w * eval::evaluate(state, me);
+            acc += w * static_eval(state, me, cfg);
             continue;
         }
-        acc += w * reference_expectimax(&next, me, depth, ply, chance_cap);
+        acc += w * reference_expectimax(&next, me, depth, ply, cfg);
     }
     acc
 }
@@ -677,7 +856,21 @@ mod tests {
             max_depth: 3,
             chance_cap: 3,
             tt_bits: 14,
+            rollouts: 0,
             ..Config::default()
+        }
+    }
+
+    /// The same, with the playout leaf switched on. `rollout_cap` matches
+    /// `rollouts` so the sampling ramp stays out of the way: the property
+    /// under test is that pruning does not change a value, at a fixed leaf
+    /// definition.
+    fn rollout_cfg() -> Config {
+        Config {
+            rollouts: 2,
+            rollout_cap: 2,
+            rollout_blend: 0.75,
+            ..cfg()
         }
     }
 
@@ -764,35 +957,36 @@ mod tests {
         ];
         for (i, depth) in cases {
             let st = &all[i];
-            let want = reference_expectimax(
-                st,
-                st.current_player(),
-                u32::from(depth),
-                0,
-                cfg().chance_cap,
-            );
-            for (star1, use_tt, order_moves, order_lookahead) in [
-                (false, false, false, false),
-                (true, false, false, false),
-                (false, true, false, false),
-                (false, false, true, false),
-                (false, false, false, true),
-                (true, true, true, false),
-                (true, true, false, true),
-            ] {
-                let c = Config {
-                    star1,
-                    use_tt,
-                    order_moves,
-                    order_lookahead,
-                    ..cfg()
-                };
-                let got = search_with(st, &c, depth).value;
-                assert!(
-                    (got - want).abs() < 1e-6,
-                    "position {i} depth {depth} star1={star1} tt={use_tt} \
-                     order={order_moves}/{order_lookahead}: got {got}, want {want}"
-                );
+            // Both leaf policies: a static evaluation, and the playout blend,
+            // whose value has to stay a pure function of the position for the
+            // transposition table to be sound.
+            for base in [cfg(), rollout_cfg()] {
+                let want =
+                    reference_expectimax(st, st.current_player(), u32::from(depth), 0, &base);
+                for (star1, use_tt, order_moves, order_lookahead) in [
+                    (false, false, false, false),
+                    (true, false, false, false),
+                    (false, true, false, false),
+                    (false, false, true, false),
+                    (false, false, false, true),
+                    (true, true, true, false),
+                    (true, true, false, true),
+                ] {
+                    let c = Config {
+                        star1,
+                        use_tt,
+                        order_moves,
+                        order_lookahead,
+                        ..base.clone()
+                    };
+                    let got = search_with(st, &c, depth).value;
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "position {i} depth {depth} rollouts={} star1={star1} tt={use_tt} \
+                         order={order_moves}/{order_lookahead}: got {got}, want {want}",
+                        base.rollouts
+                    );
+                }
             }
         }
     }
@@ -837,7 +1031,7 @@ mod tests {
                         got.best,
                         u32::from(depth) - 1,
                         1,
-                        c.chance_cap,
+                        &c,
                     );
                     assert!(
                         (v - base.value).abs() < 1e-6,
@@ -987,6 +1181,79 @@ mod tests {
             }
         }
         assert!(saw_a_reduction, "expected at least one capped chance node");
+    }
+
+    /// The sampling ramp is the agent's main budget-allocation decision, so
+    /// it needs to actually engage — and only upward.
+    #[test]
+    fn spare_budget_goes_into_more_playouts_per_leaf() {
+        let st = &positions()[3];
+        let legal = engine::legal_actions(st);
+        let c = Config {
+            max_depth: 2,
+            rollouts: 2,
+            rollout_cap: 64,
+            ..cfg()
+        };
+        let mut samples = Vec::new();
+        for budget in [50u64, 500, 5_000, 50_000] {
+            let mut tt = Table::with_bits(c.tt_bits);
+            let mut s = Searcher::new(st.current_player(), &c, &mut tt, Budget::Nodes(budget));
+            let r = s.think(st, &legal);
+            assert!(legal.contains(&r.best));
+            assert!(
+                r.samples >= c.rollouts && r.samples <= c.rollout_cap,
+                "budget {budget}: {} samples is outside {}..={}",
+                r.samples,
+                c.rollouts,
+                c.rollout_cap
+            );
+            samples.push(r.samples);
+        }
+        assert!(
+            samples.windows(2).all(|w| w[1] >= w[0]),
+            "sample counts did not rise with the budget: {samples:?}"
+        );
+        assert!(
+            samples.last() > samples.first(),
+            "the ramp never engaged: {samples:?}"
+        );
+    }
+
+    /// With no playouts configured the ramp must not exist at all, so the
+    /// original static-evaluation agent is still exactly reproducible.
+    #[test]
+    fn the_static_evaluation_configuration_never_ramps() {
+        let st = &positions()[3];
+        let legal = engine::legal_actions(st);
+        let c = Config::v1();
+        for budget in [100u64, 10_000] {
+            let mut tt = Table::with_bits(14);
+            let mut s = Searcher::new(st.current_player(), &c, &mut tt, Budget::Nodes(budget));
+            let r = s.think(st, &legal);
+            assert_eq!(r.samples, 0, "budget {budget}");
+        }
+    }
+
+    /// The playout leaf must not disturb the two hard-terminal properties:
+    /// a proven win is still `MATE`-scale, not a large simulated average.
+    #[test]
+    fn a_playout_leaf_still_reports_a_proven_win_as_a_win() {
+        let st = StateBuilder::new()
+            .age(3)
+            .conflict(8)
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .open_slots(&[(19, "circus"), (18, "senate")])
+            .build();
+        let r = search_with(&st, &rollout_cfg(), 1);
+        assert!(
+            r.value >= MATE_THRESHOLD,
+            "expected a proven win, got {} for {:?}",
+            r.value,
+            r.best
+        );
+        assert_eq!(r.best, Action::Build { slot: 19 });
     }
 
     #[test]

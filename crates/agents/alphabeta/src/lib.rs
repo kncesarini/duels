@@ -3,8 +3,9 @@
 //! [`AlphaBetaAgent`] picks its move by searching the game tree: expectimax
 //! over the game's chance nodes, alpha-beta at the decision nodes, iterative
 //! deepening within whatever [`Budget`] it is handed, a transposition table
-//! and a move-ordering heuristic to make the pruning bite, and a cheap static
-//! evaluation at the horizon.
+//! and a move-ordering heuristic to make the pruning bite, and — at the
+//! horizon — a short Monte Carlo playout to the end of the game rather than a
+//! static score.
 //!
 //! # Why expectimax and not just minimax
 //!
@@ -38,47 +39,109 @@
 //! - It **does** fix the deal of the *later* ages: the engine deals the Age II
 //!   and Age III structures from the decks the state already holds, not
 //!   through the chance API, so every line the search follows past an age
-//!   boundary sees the same Age II/III layout — the one that got sampled.
-//!   Searching deep enough for that to matter would need a fresh
-//!   determinization per root and averaging over several, which is left for
-//!   later; at the depths this agent actually reaches it is a horizon away.
+//!   boundary — a leaf playout included — sees the same Age II/III layout,
+//!   the one that got sampled. Averaging over several determinizations per
+//!   root is the natural next step and is not done here.
 //!
-//! # Budgets
+//! # The horizon: a playout, not a score
 //!
-//! Both [`Budget`] variants are honoured. `Budget::Nodes(n)` counts decision
-//! nodes and makes the agent fully deterministic (given its seed), which is
-//! what the tests use. `Budget::TimeMs(ms)` reads the wall clock — the only
-//! place in the crate that does, see `search::clock` — and so may return
-//! different moves on different machines.
+//! This is the part of the agent that decides how strong it is, and the part
+//! that was originally wrong.
+//!
+//! 7 Wonders Duel scores holistically at the end. Guild majorities are
+//! recomputed from the final board, `coins / 3` rounds once, and the whole
+//! point of a resource base is builds twenty plies later. A static evaluation
+//! four or five plies from the root is therefore judging a position on
+//! evidence that is mostly not in yet — and extra depth does not rescue it,
+//! because the horizon merely moves from ply five to ply eight in a
+//! seventy-ply game. The first version of this crate did exactly that, and
+//! the symptom was visible in its games: it discarded most of its Age II and
+//! III turns, because banking two coins is a certain `2/3` of a point in the
+//! *current* score while a brown card is worth nothing until it pays for a
+//! build the search cannot see.
+//!
+//! So the leaves now play the position out under a cheap policy and read the
+//! real scoring rules (see [`playout`]). The static form survives as a small
+//! blended term, because a random playout almost never stumbles into the two
+//! instant-win races and [`eval`] does know about them.
+//!
+//! Two consequences, both measured rather than assumed:
+//!
+//! - **Depth is worth much less than sampling.** One extra ply costs about
+//!   thirtyfold here (a dozen legal moves, times the chance node after most of
+//!   them), and thirty times the playouts at the horizon is worth more than
+//!   the ply. Worse, a max node taking the largest of several *noisy* leaf
+//!   estimates is biased upward by roughly the spread of that noise and a min
+//!   node symmetrically downward, so deepening over under-sampled leaves
+//!   actively degrades the root ordering. Spare budget therefore goes into
+//!   doubling the playouts per leaf *before* another ply — see
+//!   [`search::Searcher::think`]. At `TimeMs(20)` the agent settles around a
+//!   mean completed depth of 1.4, going deeper only in the endgame where
+//!   playouts are short.
+//! - **`Budget::Nodes` now counts playouts too.** A leaf that runs `n`
+//!   playouts charges `n` to the budget, which keeps a node budget a usable
+//!   proxy for work and puts it on the same footing as `mcts-uct`, whose
+//!   `Budget::Nodes(n)` is exactly `n` playouts.
 //!
 //! # What it measures
 //!
-//! Against `RandomAgent` over 50 seeded games with alternating seats
-//! (`tests/vs_random.rs::benchmark_against_random`):
+//! Paired seat-swapped matches, 200 games each (100 seeds, both seats), run
+//! through `duels-arena` and its `ab_lab` example. `v1` is [`Config::v1`], the
+//! static-evaluation agent this replaced. The `+/-` figures are one binomial
+//! standard error.
 //!
-//! | budget | win rate | mean completed depth | nodes per decision |
+//! | opponent | budget | v1 | this version |
 //! |---|---|---|---|
-//! | `Nodes(2_000)` | 82% | 4.4 | 2.2k |
-//! | `Nodes(20_000)` | 96% | 5.8 | 19k |
-//! | `TimeMs(200)` | 96% | 7.9 | 750k |
+//! | `random` | `Nodes(2_000)` | 92% | **100%** |
+//! | `greedy` | `Nodes(2_000)` | 82% | **100%** |
+//! | `mcts-uct` | `Nodes(2_000)` | 2.5% | **19.5%** +/- 2.8 |
+//! | `mcts-uct` | `TimeMs(20)` | 3.0% | **27.5%** +/- 3.2 |
+//! | `v1` | `TimeMs(20)` | — | **94%** +/- 1.7 |
 //!
-//! Strength rising monotonically with the budget is the useful signal there:
-//! a search with a sign error or a broken expectation at the chance nodes
-//! tends to get *worse* as it looks further, not better.
+//! The wall-clock row is the one that counts. Read the node rows with care:
+//! `v1` at `Nodes(2_000)` spent 25 ms per game against `mcts-uct`'s 674 ms, so
+//! the original round-robin's "matched" node budget was giving `mcts-uct`
+//! twentyfold the actual compute. Charging playouts to the node counter (see
+//! above) is what brings the two back within 15% of each other on the clock at
+//! the same nominal budget.
 //!
-//! Depth is uneven by design: early in an age most moves uncover face-down
-//! cards, so the effective branching factor is `moves x chance_cap` and the
-//! search reaches four or five plies; late in an age, and in the endgame,
-//! there is nothing left to uncover and it often solves the rest of the game
-//! outright.
+//! Strength still rises monotonically with the budget — `Nodes(8_000)` beats
+//! `Nodes(1_000)` 75% over 100 games — which is the useful signal there: a
+//! search with a sign error or a broken expectation at the chance nodes tends
+//! to get *worse* as it looks further, not better.
 //!
-//! Of the three optimisations (see `examples/search_stats.rs`), Star1 at the
-//! chance nodes is by far the most valuable — it roughly halves the tree in
-//! chance-heavy positions. The move ordering is worth ~15% there, and the
-//! transposition table hits ~25% of probes in real play but saves only a few
-//! percent of nodes: genuine transpositions are rare in this game over a
-//! short horizon, and the table mostly earns its keep as a best-move hint
-//! between deepening iterations.
+//! # The honest ceiling
+//!
+//! `mcts-uct` is still ahead at a matched wall clock — 27.5%, or about 170 Elo
+//! — and eight times the time only brings this agent to 39% (+/- 3.4), so the
+//! remainder is not a tuning pass away.
+//!
+//! The reason is structural. Both agents now spend essentially their whole
+//! budget on the same primitive, a determinized playout to the end of the
+//! game, and UCT allocates those playouts adaptively down the lines that
+//! actually matter while expectimax must evaluate every leaf of a fixed-depth
+//! tree whether the line is plausible or not. At a 20 ms budget this agent
+//! reaches a mean completed depth of 1.4: it is, in effect, a well-sampled
+//! one-ply search, because the measurements above say a second ply is not
+//! worth thirty times the sampling. Recovering the rest of the gap means
+//! importing UCT's adaptive allocation, at which point the agent stops being
+//! an alpha-beta search and becomes a second `mcts-uct`.
+//!
+//! So the honest summary is that a *static-evaluation* search agent has a very
+//! low ceiling in this game — 3% against `mcts-uct` — and that a search agent
+//! with a *simulation-based* leaf has a respectable but still clearly bounded
+//! one. Two things might raise it without abandoning the search framing,
+//! neither attempted here: averaging over several root determinizations, and a
+//! leaf estimator accurate enough per unit of time to make a second ply pay
+//! for itself.
+//!
+//! Ablations that did **not** help, so that nobody pays for them twice:
+//! raising [`Config::chance_cap`] above 3 (a `cap` of 6 or 8 loses at a
+//! matched wall clock — the thinning of the chance-outcome list, flagged as
+//! the original build's other suspect, is not what was wrong); reporting a
+//! playout's win / loss outcome instead of its margin; a playout policy that
+//! follows the move-ordering heuristic; and the one-ply-lookahead move
+//! ordering. Each is documented where it lives.
 //!
 //! # Example
 //!
@@ -105,6 +168,7 @@ use rand::{rngs::StdRng, SeedableRng};
 
 pub mod eval;
 pub mod order;
+pub mod playout;
 pub mod search;
 pub mod tt;
 
@@ -114,9 +178,14 @@ use tt::Table;
 /// Search parameters.
 ///
 /// The defaults are what [`AlphaBetaAgent::new`] uses and what the reported
-/// win rate was measured with; the switches exist mostly so the tests can
-/// turn each optimisation off and check it did not change the answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// win rates were measured with. Every field either exists so a test can turn
+/// an optimisation off and check it did not change the answer, or records a
+/// measurement — the doc comment on each says which, and says what the
+/// alternative scored, so an ablation is not re-run from scratch.
+///
+/// [`Config::v1`] is the whole pre-rework configuration in one call, which is
+/// what the before/after numbers are taken against.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Hard ceiling on iterative deepening, in decision plies. The budget
     /// normally binds long before this does.
@@ -134,8 +203,53 @@ pub struct Config {
     /// Sort moves before searching them, using static card data.
     pub order_moves: bool,
     /// Sort moves by a one-ply lookahead instead (overrides `order_moves`):
-    /// better ordering, but an apply and an evaluation per move.
+    /// better ordering, but an apply and an evaluation per move. Measured
+    /// neutral once the leaves run playouts (49% over 100 games), where the
+    /// ordering's cost is negligible but so is the extra pruning it buys, the
+    /// tree being only a ply or two deep.
     pub order_lookahead: bool,
+    /// Coefficients for the static leaf evaluation.
+    pub weights: eval::Weights,
+    /// Playouts averaged at each horizon leaf; `0` means the leaf value is
+    /// the static evaluation alone. See [`playout`] for why a search agent in
+    /// this game wants any at all.
+    pub rollouts: u32,
+    /// How much of the leaf value comes from the playout average rather than
+    /// the static evaluation, in `0.0..=1.0`. Ignored when `rollouts` is `0`.
+    ///
+    /// Not `1.0`: the small static remainder is what keeps the search aware of
+    /// the two instant-win races, which a playout under a random policy
+    /// essentially never walks into. Empirically flat between `0.75` and
+    /// `1.0`, with `0.9` marginally ahead.
+    pub rollout_blend: f64,
+    /// The playout policy.
+    pub rollout_policy: playout::PolicyWeights,
+    /// What a playout reports back: the victory-point margin, or the win /
+    /// draw / loss outcome. See [`playout::Metric`].
+    pub rollout_metric: playout::Metric,
+    /// Seed every leaf's playouts from a per-iteration constant instead of
+    /// from the position's own hash: common random numbers, so that sibling
+    /// leaves are compared under the same simulated luck.
+    ///
+    /// This is a variance-reduction device aimed squarely at the max-of-noise
+    /// bias described on [`search::Searcher::think`], and it does what it
+    /// says: with a two-ply ceiling it recovers the ground a second ply
+    /// otherwise loses (43% -> 50% against the one-ply configuration over 100
+    /// games each). It is off by default because at the one-ply depth the
+    /// agent actually settles on there are no siblings to correlate, and it
+    /// then measures as exactly neutral (51%/49%). Turn it on together with a
+    /// depth ceiling above one.
+    pub rollout_common_seed: bool,
+    /// Ceiling on the sampling ramp: spare budget doubles the playouts per
+    /// leaf, up to this many, before it buys another ply. See
+    /// [`search::Searcher::think`].
+    ///
+    /// The cap is what stops the agent from being a one-ply agent forever: at
+    /// a large enough budget the sampling saturates and the search deepens
+    /// instead. `48` and `128` measure the same at `TimeMs(20)` and `512`
+    /// measures worse (43%), so this is set at the top of the flat region,
+    /// where it leaves the most room to deepen.
+    pub rollout_cap: u32,
     /// Seed for the determinization sampling.
     pub seed: u64,
 }
@@ -150,16 +264,37 @@ impl Default for Config {
             star1: true,
             order_moves: true,
             order_lookahead: false,
+            weights: eval::Weights::DEFAULT,
+            rollouts: 8,
+            rollout_blend: 0.9,
+            rollout_policy: playout::PolicyWeights::BIASED,
+            rollout_metric: playout::Metric::MARGIN,
+            rollout_common_seed: false,
+            rollout_cap: 128,
             seed: 0,
         }
     }
 }
 
 impl Config {
+    /// The parameters the crate shipped with before the leaf evaluation was
+    /// reworked: a static evaluation at the horizon and nothing else.
+    ///
+    /// Kept so the tuning harness (`duels-arena`'s `ab_lab` example) and the
+    /// tests can measure against the version whose win rates the crate docs
+    /// used to quote, rather than against a remembered number.
+    pub fn v1() -> Self {
+        Self {
+            weights: eval::Weights::V1,
+            rollouts: 0,
+            ..Self::default()
+        }
+    }
+
     /// A compact description of the parameters, for [`AgentSpec::params`].
     pub fn describe(&self) -> String {
         format!(
-            "max_depth={},chance_cap={},tt_bits={},tt={},star1={},order={}",
+            "max_depth={},chance_cap={},tt_bits={},tt={},star1={},order={},leaf={}",
             self.max_depth,
             self.chance_cap,
             self.tt_bits,
@@ -172,6 +307,22 @@ impl Config {
             } else {
                 "none"
             },
+            self.describe_leaf(),
+        )
+    }
+
+    /// How the horizon is evaluated, for [`Config::describe`].
+    fn describe_leaf(&self) -> String {
+        if self.rollouts == 0 {
+            return "static".to_string();
+        }
+        let metric = match self.rollout_metric {
+            playout::Metric::Margin { clamp } => format!("margin({clamp:.0})"),
+            playout::Metric::Outcome { scale } => format!("outcome({scale:.0})"),
+        };
+        format!(
+            "playout({}..{},blend={:.2},{metric})",
+            self.rollouts, self.rollout_cap, self.rollout_blend
         )
     }
 }
@@ -181,7 +332,9 @@ impl Config {
 pub struct Stats {
     /// Calls to [`Agent::choose`].
     pub decisions: u64,
-    /// Decision nodes searched, in total.
+    /// Search work, in total, in units of "one decision node or one leaf
+    /// playout" — see [`search::Searcher::think`] for why playouts are
+    /// charged to the same counter.
     pub nodes: u64,
     /// Sum of the depths reached, so `depth_sum / decisions` is the mean.
     pub depth_sum: u64,
@@ -266,7 +419,7 @@ impl Agent for AlphaBetaAgent {
     fn spec(&self) -> AgentSpec {
         AgentSpec {
             name: "alphabeta".to_string(),
-            version: "1.0.0".to_string(),
+            version: "2.0.0".to_string(),
             params: self.cfg.describe(),
         }
     }
@@ -318,9 +471,15 @@ mod tests {
         let agent = AlphaBetaAgent::new(1);
         let spec = agent.spec();
         assert_eq!(spec.name, "alphabeta");
-        assert_eq!(spec.version, "1.0.0");
+        assert_eq!(spec.version, "2.0.0");
         assert!(spec.params.contains("max_depth="), "{}", spec.params);
         assert!(spec.params.contains("chance_cap="), "{}", spec.params);
+        assert!(spec.params.contains("leaf=playout("), "{}", spec.params);
+        assert!(
+            Config::v1().describe().contains("leaf=static"),
+            "{}",
+            Config::v1().describe()
+        );
     }
 
     #[test]
