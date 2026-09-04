@@ -56,11 +56,15 @@
 //! Against `RandomAgent` over 50 seeded games with alternating seats
 //! (`tests/vs_random.rs::benchmark_against_random`):
 //!
-//! | budget | win rate | mean completed depth |
-//! |---|---|---|
-//! | `Nodes(2_000)` | 90% | 4.6 |
-//! | `Nodes(20_000)` | 96% | 5.8 |
-//! | `TimeMs(200)` | 98% | 7.9 |
+//! | budget | win rate | mean completed depth | nodes per decision |
+//! |---|---|---|---|
+//! | `Nodes(2_000)` | 82% | 4.4 | 2.2k |
+//! | `Nodes(20_000)` | 96% | 5.8 | 19k |
+//! | `TimeMs(200)` | 96% | 7.9 | 750k |
+//!
+//! Strength rising monotonically with the budget is the useful signal there:
+//! a search with a sign error or a broken expectation at the chance nodes
+//! tends to get *worse* as it looks further, not better.
 //!
 //! Depth is uneven by design: early in an age most moves uncover face-down
 //! cards, so the effective branching factor is `moves x chance_cap` and the
