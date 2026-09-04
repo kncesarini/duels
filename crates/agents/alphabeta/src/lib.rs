@@ -161,6 +161,14 @@
 //! is worse than holding one sharp one, and no combination rule at the root
 //! can recover what the thinner sampling threw away.
 //!
+//! The budget is the whole story, and raising it says so: at `Nodes(8_000)`,
+//! where even a halved slice saturates the ramp, `N = 2` scores 47.5% +/- 3.5
+//! against a 46.5% +/- 3.5 control over 200 games — the five-point deficit it
+//! showed at `Nodes(2_000)` is simply gone. Suggestive rather than conclusive
+//! at that sample size, but it is the direction the explanation predicts, and
+//! it is why this knob is worth keeping around rather than deleting: a future
+//! configuration with budget to spare may want it.
+//!
 //! Two other costs are real but demonstrably secondary. An ensemble searches
 //! every root move on a full window ([`Config::ensemble_exact_root`], so the
 //! values being averaged are values and not fail-low bounds), which gives up

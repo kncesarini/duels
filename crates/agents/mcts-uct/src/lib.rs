@@ -104,6 +104,11 @@
 //! overhead (one determinization and one tree allocation) is far below the
 //! noise, which is what the shared, chained deadlines in `Slices` are for.
 //!
+//! Four times the budget does not change the answer either: at
+//! `Nodes(8_000)` over 200 games, `N = 2` scores 50.0% +/- 3.5 against
+//! `N = 1`, with a 49.5% +/- 3.5 control. Dead level, which is the same "no
+//! effect" as the `Nodes(2_000)` column read against its own control.
+//!
 //! The reading: this tree already integrates over every reveal the chance API
 //! exposes (point 2 above), so a fresh determinization re-rolls only what the
 //! API does not cover — the next age's deal, the undrafted wonders, and the
