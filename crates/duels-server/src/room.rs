@@ -29,7 +29,14 @@ fn next_id() -> u64 {
 /// web client's opponent picker should offer them (weakest/cheapest first).
 /// `GET /agents` serves this list so the UI never hand-maintains its own
 /// copy. Mirrors `duels-arena`'s `agent_registry::KNOWN_AGENTS`.
-pub const KNOWN_AGENTS: &[&str] = &["random", "greedy", "greedy-ev", "alphabeta", "mcts-uct"];
+pub const KNOWN_AGENTS: &[&str] = &[
+    "random",
+    "greedy",
+    "greedy-ev",
+    "strategist",
+    "alphabeta",
+    "mcts-uct",
+];
 
 /// Construct the `Agent` for an agent seat. Unknown names are rejected when
 /// the room is created rather than silently falling back to something.
@@ -41,6 +48,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
         "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
         "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
+        "strategist" => Ok(Box::new(duels_agent_strategist::StrategistAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         other => Err(format!(

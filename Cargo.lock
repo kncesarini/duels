@@ -420,6 +420,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "duels-agent-strategist"
+version = "0.1.0"
+dependencies = [
+ "duels-agent-greedy",
+ "duels-agent-greedy-ev",
+ "duels-agent-random",
+ "duels-agents-api",
+ "duels-core",
+ "duels-strategy",
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "duels-agents-api"
 version = "0.1.0"
 dependencies = [
@@ -438,6 +451,7 @@ dependencies = [
  "duels-agent-greedy-ev",
  "duels-agent-mcts-uct",
  "duels-agent-random",
+ "duels-agent-strategist",
  "duels-agents-api",
  "duels-core",
  "rand 0.8.8",
@@ -468,6 +482,7 @@ dependencies = [
  "duels-agent-greedy-ev",
  "duels-agent-mcts-uct",
  "duels-agent-random",
+ "duels-agent-strategist",
  "duels-agents-api",
  "duels-core",
  "futures-util",

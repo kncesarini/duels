@@ -9,6 +9,7 @@ members = [
     "crates/agents/random",
     "crates/agents/greedy",
     "crates/agents/greedy-ev",
+    "crates/agents/strategist",
     "crates/agents/mcts-uct",
     "crates/agents/alphabeta",
 ]
