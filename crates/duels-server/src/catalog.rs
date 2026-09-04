@@ -11,7 +11,8 @@
 use duels_core::data::{self, CardId, CountTarget, TokenId, WonderId};
 
 use crate::protocol::{
-    CardCatalogEntry, Catalog, MilitaryCatalog, TokenCatalogEntry, WonderCatalogEntry,
+    AgeStructureLayout, CardCatalogEntry, Catalog, MilitaryCatalog, TokenCatalogEntry,
+    WonderCatalogEntry,
 };
 
 fn count_target_label(t: CountTarget) -> String {
@@ -107,11 +108,16 @@ pub fn build() -> Catalog {
             .collect(),
     };
 
+    let layouts = std::array::from_fn(|i| AgeStructureLayout {
+        positions: duels_core::layout::layout((i + 1) as u8).positions,
+    });
+
     Catalog {
         cards,
         wonders,
         tokens,
         military,
+        layouts,
     }
 }
 
@@ -126,5 +132,8 @@ mod tests {
         assert_eq!(c.wonders.len(), data::NUM_WONDERS);
         assert_eq!(c.tokens.len(), data::NUM_TOKENS);
         assert_eq!(c.military.victory_points_by_distance.len(), 9);
+        for l in &c.layouts {
+            assert_eq!(l.positions.len(), duels_core::layout::SLOTS);
+        }
     }
 }

@@ -308,6 +308,18 @@ pub struct TokenCatalogEntry {
     pub chain_build_coins: u8,
 }
 
+/// The `(row, column)` position of every slot of one age's structure, so the
+/// client can render the pyramid shape without hard-coding it. Straight from
+/// `duels_core::layout::layout(age).positions` — already public, static
+/// geometry, so no `duels-core` change was needed for this one.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgeStructureLayout {
+    /// `positions[slot] = (row, column)`, 1-indexed, matching
+    /// `duels_core::layout::AgeLayout::positions`.
+    pub positions: [(u8, u8); duels_core::layout::SLOTS],
+}
+
 /// The military track's static facts, for `GET /catalog`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -339,6 +351,8 @@ pub struct Catalog {
     pub tokens: Vec<TokenCatalogEntry>,
     /// The military track.
     pub military: MilitaryCatalog,
+    /// Slot geometry for ages I, II and III, indexed by `age - 1`.
+    pub layouts: [AgeStructureLayout; 3],
 }
 
 /// `{ wood, clay, stone, glass, papyrus }`, named rather than a positional
