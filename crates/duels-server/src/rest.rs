@@ -1,4 +1,4 @@
-//! `POST /rooms`, `GET /rooms/:id` and `GET /catalog`.
+//! `POST /rooms`, `GET /rooms/:id`, `GET /catalog` and `GET /agents`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -58,4 +58,12 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 /// once and cached; nothing in it depends on any room's state.
 pub async fn get_catalog() -> Json<&'static Catalog> {
     Json(CATALOG.get_or_init(crate::catalog::build))
+}
+
+/// `GET /agents`: every agent name `POST /rooms` will accept for a
+/// `SeatSpec::Agent`, in the order the web client's opponent picker should
+/// offer them. Backed by `room::KNOWN_AGENTS` so the UI never hand-maintains
+/// its own copy that could drift from `room::make_agent`.
+pub async fn get_agents() -> Json<&'static [&'static str]> {
+    Json(crate::room::KNOWN_AGENTS)
 }
