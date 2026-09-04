@@ -1,0 +1,34 @@
+{
+  "$schema_version": 1,
+  "note": "Military is tracked with a single conflict pawn on a track from -9 (Player 1's capital) to +9 (Player 2's capital), starting at 0. Each shield symbol on a constructed military building or wonder moves the pawn 1 space toward the shield-owner's opponent's capital. See data/README.md for how this maps to the physical board's zones.",
+  "conflict_track": {
+    "min": -9,
+    "max": 9,
+    "start": 0,
+    "capital_position": 9,
+    "capital_instant_win": true
+  },
+  "military_tokens": [
+    {
+      "id": "military-token-near",
+      "distance_from_center": 3,
+      "effect": { "type": "opponent_loses_coins", "amount": 2 },
+      "note": "There are two of these (one per side of the track, at position magnitude 3-5). The first time the conflict pawn enters this zone on a given side, the player being pushed away from center loses 2 coins and the token is removed from the game."
+    },
+    {
+      "id": "military-token-far",
+      "distance_from_center": 6,
+      "effect": { "type": "opponent_loses_coins", "amount": 5 },
+      "note": "There are two of these (one per side of the track, at position magnitude 6-8). The first time the conflict pawn enters this zone on a given side, the player being pushed away from center loses 5 coins (in addition to the near token's 2, if not already triggered) and the token is removed from the game."
+    }
+  ],
+  "end_of_game_military_scoring": {
+    "note": "If neither player reached the opposing capital (instant military-supremacy win) during the game, military victory points at end of Age III are awarded based on the conflict pawn's final distance from center, in the winning player's favor.",
+    "table": [
+      { "pawn_distance_from_center": 0, "victory_points": 0 },
+      { "pawn_distance_from_center_range": [1, 2], "victory_points": 2 },
+      { "pawn_distance_from_center_range": [3, 5], "victory_points": 5 },
+      { "pawn_distance_from_center_range": [6, 8], "victory_points": 10 }
+    ]
+  }
+}

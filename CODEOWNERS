@@ -1,0 +1,10 @@
+# Mandatory-review paths. See docs/adr for the decisions behind this setup.
+#
+# CODEOWNERS applies to the *last* matching pattern, so more specific rules
+# should stay below more general ones if that behavior is ever relied upon.
+# For now these four are independent (non-overlapping) path prefixes.
+
+docs/**       @kncesarini
+.github/**    @kncesarini
+data/**       @kncesarini
+CODEOWNERS    @kncesarini
