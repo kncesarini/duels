@@ -253,7 +253,7 @@ impl<'a> Searcher<'a> {
     pub fn think(&mut self, root: &GameState, legal: &[Action]) -> SearchResult {
         assert!(!legal.is_empty(), "think needs at least one legal move");
         let mut moves = legal.to_vec();
-        self.order(root, &mut moves, None);
+        self.order(root, &mut moves, None, 0);
 
         let mut result = SearchResult {
             best: moves[0],
@@ -560,7 +560,7 @@ impl<'a> Searcher<'a> {
             self.put_buf(ply, moves);
             return self.static_eval(state);
         }
-        self.order(state, &mut moves, tt_move);
+        self.order(state, &mut moves, tt_move, ply);
 
         let maximizing = state.current_player() == self.me;
         let mut best_value = if maximizing { V_MIN } else { V_MAX };
@@ -630,9 +630,11 @@ impl<'a> Searcher<'a> {
     }
 
     /// Apply whichever move ordering the configuration asks for.
-    fn order(&self, state: &GameState, moves: &mut [Action], tt_move: Option<Action>) {
+    fn order(&self, state: &GameState, moves: &mut [Action], tt_move: Option<Action>, ply: u32) {
         if self.cfg.order_lookahead {
             order::order_by_lookahead(state, self.me, moves, tt_move);
+        } else if self.cfg.order_priors {
+            order::order_with_priors(state, moves, tt_move, ply);
         } else if self.cfg.order_moves {
             order::order(state, moves, tt_move);
         }
@@ -1096,27 +1098,30 @@ mod tests {
             for base in [cfg(), rollout_cfg()] {
                 let want =
                     reference_expectimax(st, st.current_player(), u32::from(depth), 0, &base);
-                for (star1, use_tt, order_moves, order_lookahead) in [
-                    (false, false, false, false),
-                    (true, false, false, false),
-                    (false, true, false, false),
-                    (false, false, true, false),
-                    (false, false, false, true),
-                    (true, true, true, false),
-                    (true, true, false, true),
+                for (star1, use_tt, order_moves, order_lookahead, order_priors) in [
+                    (false, false, false, false, false),
+                    (true, false, false, false, false),
+                    (false, true, false, false, false),
+                    (false, false, true, false, false),
+                    (false, false, false, true, false),
+                    (false, false, true, false, true),
+                    (true, true, true, false, false),
+                    (true, true, false, true, false),
+                    (true, true, true, false, true),
                 ] {
                     let c = Config {
                         star1,
                         use_tt,
                         order_moves,
                         order_lookahead,
+                        order_priors,
                         ..base.clone()
                     };
                     let got = search_with(st, &c, depth).value;
                     assert!(
                         (got - want).abs() < 1e-6,
                         "position {i} depth {depth} rollouts={} star1={star1} tt={use_tt} \
-                         order={order_moves}/{order_lookahead}: got {got}, want {want}",
+                         order={order_moves}/{order_lookahead}/{order_priors}: got {got}, want {want}",
                         base.rollouts
                     );
                 }
@@ -1137,12 +1142,17 @@ mod tests {
             for shuffle_seed in 0..4u64 {
                 let mut legal = base_legal.clone();
                 legal.shuffle(&mut StdRng::seed_from_u64(shuffle_seed));
-                for (order_moves, order_lookahead) in [(true, false), (false, false), (false, true)]
-                {
+                for (order_moves, order_lookahead, order_priors) in [
+                    (true, false, false),
+                    (false, false, false),
+                    (false, true, false),
+                    (true, false, true),
+                ] {
                     let c = Config {
                         max_depth: depth,
                         order_moves,
                         order_lookahead,
+                        order_priors,
                         ..cfg()
                     };
                     let mut tt = Table::with_bits(c.tt_bits);
@@ -1152,7 +1162,7 @@ mod tests {
                     assert!(
                         (got.value - base.value).abs() < 1e-6,
                         "position {i} shuffle {shuffle_seed} ordering \
-                         {order_moves}/{order_lookahead}: {} vs {}",
+                         {order_moves}/{order_lookahead}/{order_priors}: {} vs {}",
                         got.value,
                         base.value
                     );

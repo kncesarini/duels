@@ -190,6 +190,52 @@
 //!     --a alphabeta:dets=4 --b alphabeta:dets=1 --games 400 --budget nodes:2000
 //! ```
 //!
+//! # Move-ordering priors, and why they are off too
+//!
+//! [`Config::order_priors`] adds `duels_strategy::action_prior` as a second
+//! signal on top of `order_moves`'s static score (see
+//! [`order::order_with_priors`]), gated to the top few plies so a
+//! `duels_strategy::stance` — measured at about 29% of an MCTS rollout by
+//! that crate's own benchmark — is not priced at every node of a search that
+//! visits far more nodes per second than `mcts-uct` runs rollouts.
+//!
+//! Paired, seat-swapped matches through `ab_lab`, `+/-` one binomial standard
+//! error, against the same identical-configuration noise floor the
+//! ensembling section above uses:
+//!
+//! | budget | games | `order=priors` vs `order=static` | noise floor (identical config) |
+//! |---|---|---|---|
+//! | `Nodes(2_000)` | 400 | 52.0% +/- 2.5 | 52.2% +/- 2.5 |
+//! | `TimeMs(20)` | 1,000 | 50.8% +/- 1.6 | 50.7% +/- 2.5 |
+//! | `TimeMs(200)` | 400 | 50.8% +/- 2.5 | 51.5% +/- 3.5 |
+//!
+//! Every one of those falls right on top of its own noise floor. Individual
+//! 200-game slices swung as high as 53% and as low as 48%, which is exactly
+//! the spread the noise-floor column says to expect from this many games —
+//! the effect, if there is one, is smaller than this harness can resolve. Nor
+//! does it move the `mcts-uct` gap: 32.0% +/- 3.3 for `order=priors` against
+//! 29.5% +/- 3.2 for `order=static`, on the same seeds at `TimeMs(20)`, a
+//! two-and-a-half point gap well inside either side's own error bar.
+//!
+//! Two plausible reasons. First, at these budgets the search rarely completes
+//! past the second ply anyway (mean depth 1.3-2.2 across the table above), so
+//! the top-few-ply gate barely restricts *anything* — most nodes a real
+//! search visits already qualify, which means the 29%-per-node cost is being
+//! paid close to everywhere a deeper budget would have spared it, for
+//! pruning gains that a tree this shallow has little room to cash in. Second,
+//! `order_moves`'s existing static score already gets the wonders and the
+//! highest-value cards to the front cheaply; the prior's main addition is
+//! pricing *denial*, which matters most in exactly the imminent positions
+//! `order_moves`'s own "closing/breaking a certainty" cases already exist to
+//! catch by other means (see `score`'s wonder and card terms).
+//!
+//! `order_priors` stays off by default (`false`), for the same reason
+//! `order_lookahead` and root ensembling do: a measured neutral result is
+//! worth documenting and keeping around — the gate in [`order`] is there for
+//! a future configuration with more budget to spare, where the tree is
+//! actually deep enough for the top few plies to mean something — but it is
+//! not a reason to spend the extra cycles by default.
+//!
 //! # The honest ceiling
 //!
 //! `mcts-uct` is still ahead at a matched wall clock — 27.5%, or about 170 Elo
@@ -222,7 +268,8 @@
 //! the original build's other suspect, is not what was wrong); reporting a
 //! playout's win / loss outcome instead of its margin; a playout policy that
 //! follows the move-ordering heuristic; the one-ply-lookahead move ordering;
-//! and root-determinization ensembling (above). Each is documented where it
+//! blending `duels_strategy::action_prior` into move ordering (above); and
+//! root-determinization ensembling (above). Each is documented where it
 //! lives.
 //!
 //! # Example
@@ -290,6 +337,15 @@ pub struct Config {
     /// ordering's cost is negligible but so is the extra pruning it buys, the
     /// tree being only a ply or two deep.
     pub order_lookahead: bool,
+    /// Blend `duels_strategy::action_prior` into `order_moves`'s static
+    /// score instead (overridden by `order_lookahead`): see
+    /// [`order::order_with_priors`] for the mechanism, and [`order::PRIOR_MAX_PLY`]
+    /// / [`order::PRIOR_MIN_MOVES`] for the gate that keeps a `stance` from
+    /// being priced at every node — `duels-strategy`'s own benchmark puts
+    /// that at about 29% of an MCTS rollout, which this search would visit
+    /// far more often per second than `mcts-uct` runs rollouts if it paid it
+    /// unconditionally. Measured off by default; see the crate docs.
+    pub order_priors: bool,
     /// Coefficients for the static leaf evaluation.
     pub weights: eval::Weights,
     /// Playouts averaged at each horizon leaf; `0` means the leaf value is
@@ -361,6 +417,7 @@ impl Default for Config {
             star1: true,
             order_moves: true,
             order_lookahead: false,
+            order_priors: false,
             weights: eval::Weights::DEFAULT,
             rollouts: 8,
             rollout_blend: 0.9,
@@ -401,6 +458,8 @@ impl Config {
             self.star1,
             if self.order_lookahead {
                 "lookahead"
+            } else if self.order_priors {
+                "priors"
             } else if self.order_moves {
                 "static"
             } else {
