@@ -1,20 +1,54 @@
-//! The core match runner: plays one complete game between two named agents,
-//! and pairs up seat-swapped games per seed so first-player advantage and
-//! setup randomness roughly cancel across the pair.
+//! The core match runner: plays one complete game between two agents named
+//! by a [`crate::agent_spec`] specification string (a bare registered name,
+//! or `name:key=value,...`), and pairs up seat-swapped games per seed so
+//! first-player advantage and setup randomness roughly cancel across the
+//! pair.
 //!
 //! Mirrors the loop in `duels-server`'s `room::drive_agents`: agents are fed
 //! only `Observation`s and `legal_actions`, never a `GameState`, exactly as
 //! the `Agent` contract requires.
+//!
+//! Each game is also watched, move by move, for "race exposure" — whether
+//! either player's conflict pawn or scientific-symbol count came within one
+//! step of an instant win (see [`race_exposure_at`]) — without any extra
+//! replay pass over the finished game: the flag is folded in as the game is
+//! played, the same way `moves`/`wall_time_ms` already are.
 
 use std::time::Instant;
 
 use duels_agents_api::{AgentSpec, Budget};
-use duels_core::{engine, GameResult, Player};
+use duels_core::scoring::VictoryKind;
+use duels_core::{engine, GameResult, GameState, Player};
 use rand::{rngs::StdRng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::agent_registry::make_agent;
+use crate::agent_spec::make_agent_from_spec;
+
+/// Conflict-pawn distance from centre (`0`) at which a player is one loot
+/// token away from the capital (distance 9, an instant military win) — see
+/// `duels_core::data::MilitaryTrack`. Reaching this distance, regardless of
+/// who eventually wins the game or how, is what [`GameRecord::military_race_exposed`]
+/// flags: it is the threshold at which a human reviewing a match would call
+/// the military track "in play" for that game.
+pub const MILITARY_RACE_DISTANCE: u8 = 6;
+
+/// Distinct scientific symbols at which a player is one build away from
+/// scientific supremacy (6 distinct symbols wins outright). Reaching this
+/// count, regardless of who eventually wins, is what
+/// [`GameRecord::science_race_exposed`] flags.
+pub const SCIENCE_RACE_SYMBOLS: u8 = 5;
+
+/// Whether `state` currently shows either side within the "race exposure"
+/// zone of the military track / the scientific-symbol count, as `(military,
+/// science)`. Called after every move (see `play_one_game`) to build up a
+/// game's race-exposure flags without re-simulating anything.
+fn race_exposure_at(state: &GameState) -> (bool, bool) {
+    let military = state.conflict().unsigned_abs() >= MILITARY_RACE_DISTANCE;
+    let science = state.player(Player::One).distinct_science() >= SCIENCE_RACE_SYMBOLS
+        || state.player(Player::Two).distinct_science() >= SCIENCE_RACE_SYMBOLS;
+    (military, science)
+}
 
 /// Salts distinguishing "the agent playing role A" and "the agent playing
 /// role B" from the game-setup seed and from each other, so each has its own
@@ -48,6 +82,16 @@ pub struct GameRecord {
     /// Wall-clock time to play the whole game, for basic performance
     /// reporting (not used by any statistic).
     pub wall_time_ms: u64,
+    /// Whether either player's conflict pawn reached [`MILITARY_RACE_DISTANCE`]
+    /// or beyond at any point in this game, regardless of who eventually won
+    /// or how. Lets a human sanity-check *why* one agent beats another (e.g.
+    /// "it wins by consistently getting the military race into contention"),
+    /// not just that it does.
+    pub military_race_exposed: bool,
+    /// Whether either player reached [`SCIENCE_RACE_SYMBOLS`] distinct
+    /// scientific symbols at any point in this game, regardless of who
+    /// eventually won or how.
+    pub science_race_exposed: bool,
 }
 
 /// Aggregate win/loss/draw counts for "role A" vs "role B" over a set of
@@ -84,13 +128,123 @@ pub fn tally(records: &[GameRecord]) -> MatchTally {
     t
 }
 
+/// One side's wins, broken down by *how* they were won (see [`VictoryKind`]).
+/// [`Self::total`] always equals that side's win count from [`MatchTally`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VictoryBreakdown {
+    /// Wins where the conflict pawn reached the loser's capital.
+    pub military_supremacy: u32,
+    /// Wins on six distinct scientific symbols.
+    pub scientific_supremacy: u32,
+    /// Wins on victory points at the end of Age III.
+    pub civilian_victory: u32,
+    /// Wins on the civilian (blue) points tiebreak after equal totals.
+    pub civilian_tiebreak: u32,
+}
+
+impl VictoryBreakdown {
+    /// Every win this breakdown accounts for, regardless of kind.
+    pub fn total(&self) -> u32 {
+        self.military_supremacy
+            + self.scientific_supremacy
+            + self.civilian_victory
+            + self.civilian_tiebreak
+    }
+
+    fn record(&mut self, kind: VictoryKind) {
+        match kind {
+            VictoryKind::MilitarySupremacy => self.military_supremacy += 1,
+            VictoryKind::ScientificSupremacy => self.scientific_supremacy += 1,
+            VictoryKind::CivilianVictory => self.civilian_victory += 1,
+            VictoryKind::CivilianTiebreak => self.civilian_tiebreak += 1,
+        }
+    }
+}
+
+/// Both sides' [`VictoryBreakdown`]s over a match, from the "role A" / "role
+/// B" perspective (see [`GameRecord::agent_a_seat`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchVictoryBreakdown {
+    /// How role A's wins were achieved.
+    pub a: VictoryBreakdown,
+    /// How role B's wins were achieved.
+    pub b: VictoryBreakdown,
+}
+
+/// Break down how each side's wins in `records` were achieved. Draws
+/// contribute to neither side's breakdown; see [`tally`] for the draw count.
+/// `victory_breakdown(records).a.total() == tally(records).a_wins` always
+/// holds (and likewise for `b`) — see the round-trip test in this module.
+pub fn victory_breakdown(records: &[GameRecord]) -> MatchVictoryBreakdown {
+    let mut out = MatchVictoryBreakdown::default();
+    for r in records {
+        if let GameResult::Win { winner, kind } = r.result {
+            if winner == r.agent_a_seat {
+                out.a.record(kind);
+            } else {
+                out.b.record(kind);
+            }
+        }
+    }
+    out
+}
+
+/// How many games in a match came within reach of an instant win, regardless
+/// of who eventually won or how — see [`GameRecord::military_race_exposed`] /
+/// [`GameRecord::science_race_exposed`]. This is what lets a human
+/// sanity-check *why* one agent beats another (e.g. "it wins mostly by
+/// keeping the game out of either race, not by winning races itself") rather
+/// than only observing that it does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaceExposure {
+    /// Games where either player's conflict pawn reached
+    /// [`MILITARY_RACE_DISTANCE`] or beyond.
+    pub military_games: u32,
+    /// Games where either player reached [`SCIENCE_RACE_SYMBOLS`] distinct
+    /// scientific symbols.
+    pub science_games: u32,
+    /// Total games the breakdown was computed over, for turning the above
+    /// into a rate.
+    pub total_games: u32,
+}
+
+/// Compute [`RaceExposure`] over `records`.
+pub fn race_exposure(records: &[GameRecord]) -> RaceExposure {
+    let mut out = RaceExposure {
+        total_games: records.len() as u32,
+        ..RaceExposure::default()
+    };
+    for r in records {
+        if r.military_race_exposed {
+            out.military_games += 1;
+        }
+        if r.science_race_exposed {
+            out.science_games += 1;
+        }
+    }
+    out
+}
+
+/// Everything [`play_one_game`] learns about one finished game, before it is
+/// attached to a `seed`/`agent_a_seat` and turned into a [`GameRecord`].
+struct OneGameOutcome {
+    spec_one: AgentSpec,
+    spec_two: AgentSpec,
+    result: GameResult,
+    moves: u32,
+    wall_time_ms: u64,
+    military_race_exposed: bool,
+    science_race_exposed: bool,
+}
+
 /// Play one complete game: `seat_one_name`/`seat_two_name` occupy
 /// [`Player::One`]/[`Player::Two`], each agent's own decisions seeded from
 /// `seat_one_seed`/`seat_two_seed`, and the game setup (deal, shuffle, first
 /// player) from `setup_seed`.
 ///
 /// Returns the two agents' specs, the finished game's result, the move
-/// count, and wall-clock time. Feeds each agent only `Observation`s and
+/// count, wall-clock time, and the two race-exposure flags (see
+/// [`race_exposure_at`]). Feeds each agent only `Observation`s and
 /// `legal_actions`, never `GameState`, per the `Agent` contract.
 #[allow(clippy::too_many_arguments)]
 fn play_one_game(
@@ -100,9 +254,9 @@ fn play_one_game(
     seat_two_seed: u64,
     setup_seed: u64,
     budget: Budget,
-) -> Result<(AgentSpec, AgentSpec, GameResult, u32, u64), String> {
-    let mut agent_one = make_agent(seat_one_name, seat_one_seed)?;
-    let mut agent_two = make_agent(seat_two_name, seat_two_seed)?;
+) -> Result<OneGameOutcome, String> {
+    let mut agent_one = make_agent_from_spec(seat_one_name, seat_one_seed)?;
+    let mut agent_two = make_agent_from_spec(seat_two_name, seat_two_seed)?;
     let spec_one = agent_one.spec();
     let spec_two = agent_two.spec();
 
@@ -116,6 +270,8 @@ fn play_one_game(
     let start = Instant::now();
 
     let mut moves = 0u32;
+    let mut military_race_exposed = false;
+    let mut science_race_exposed = false;
     loop {
         if state.is_over() {
             break;
@@ -136,6 +292,9 @@ fn play_one_game(
         }
         engine::apply(&mut state, action, &mut rng).map_err(|e| e.to_string())?;
         moves += 1;
+        let (military, science) = race_exposure_at(&state);
+        military_race_exposed |= military;
+        science_race_exposed |= science;
     }
 
     #[allow(clippy::disallowed_methods)]
@@ -144,7 +303,15 @@ fn play_one_game(
     let result = state
         .result()
         .ok_or_else(|| "game loop ended without a legal action but no result".to_string())?;
-    Ok((spec_one, spec_two, result, moves, wall_time_ms))
+    Ok(OneGameOutcome {
+        spec_one,
+        spec_two,
+        result,
+        moves,
+        wall_time_ms,
+        military_race_exposed,
+        science_race_exposed,
+    })
 }
 
 /// Play one paired seed: `agent_a` as [`Player::One`] / `agent_b` as
@@ -162,28 +329,30 @@ fn play_pair(
     let a_seed = seed ^ AGENT_A_SALT;
     let b_seed = seed ^ AGENT_B_SALT;
 
-    let (seat_one, seat_two, result, moves, wall_time_ms) =
-        play_one_game(agent_a, agent_b, a_seed, b_seed, seed, budget)?;
+    let outcome = play_one_game(agent_a, agent_b, a_seed, b_seed, seed, budget)?;
     let first = GameRecord {
         seed,
         agent_a_seat: Player::One,
-        seat_one,
-        seat_two,
-        result,
-        moves,
-        wall_time_ms,
+        seat_one: outcome.spec_one,
+        seat_two: outcome.spec_two,
+        result: outcome.result,
+        moves: outcome.moves,
+        wall_time_ms: outcome.wall_time_ms,
+        military_race_exposed: outcome.military_race_exposed,
+        science_race_exposed: outcome.science_race_exposed,
     };
 
-    let (seat_one, seat_two, result, moves, wall_time_ms) =
-        play_one_game(agent_b, agent_a, b_seed, a_seed, seed, budget)?;
+    let outcome = play_one_game(agent_b, agent_a, b_seed, a_seed, seed, budget)?;
     let second = GameRecord {
         seed,
         agent_a_seat: Player::Two,
-        seat_one,
-        seat_two,
-        result,
-        moves,
-        wall_time_ms,
+        seat_one: outcome.spec_one,
+        seat_two: outcome.spec_two,
+        result: outcome.result,
+        moves: outcome.moves,
+        wall_time_ms: outcome.wall_time_ms,
+        military_race_exposed: outcome.military_race_exposed,
+        science_race_exposed: outcome.science_race_exposed,
     };
 
     Ok([first, second])
@@ -308,5 +477,75 @@ mod tests {
     fn unknown_agent_name_surfaces_as_an_error_not_a_panic() {
         let err = play_paired_match("nope", "random", &[1], Budget::Nodes(1)).unwrap_err();
         assert!(err.contains("nope"));
+    }
+
+    #[test]
+    fn race_exposure_thresholds_match_the_documented_distances() {
+        use duels_core::testing::StateBuilder;
+
+        // Fresh game: neither race is in reach.
+        let fresh = StateBuilder::new().build();
+        assert_eq!(race_exposure_at(&fresh), (false, false));
+
+        // Just below the military threshold: not yet exposed.
+        let st = StateBuilder::new().conflict(5).build();
+        assert_eq!(race_exposure_at(&st), (false, false));
+        // At and beyond the threshold (either direction): exposed.
+        let st = StateBuilder::new().conflict(6).build();
+        assert_eq!(race_exposure_at(&st), (true, false));
+        let st = StateBuilder::new().conflict(-8).build();
+        assert_eq!(race_exposure_at(&st), (true, false));
+
+        // Four distinct symbols: not yet exposed. Five (one build away from
+        // the 6-symbol instant win): exposed. Matches
+        // `duels_core::engine::tests::six_distinct_symbols_wins_instantly`,
+        // which builds the same five cards to reach exactly 5 symbols.
+        let four = StateBuilder::new()
+            .built(
+                Player::One,
+                &["workshop", "apothecary", "scriptorium", "pharmacist"],
+            )
+            .build();
+        assert_eq!(race_exposure_at(&four), (false, false));
+        let five = StateBuilder::new()
+            .built(
+                Player::One,
+                &[
+                    "workshop",
+                    "apothecary",
+                    "scriptorium",
+                    "pharmacist",
+                    "academy",
+                ],
+            )
+            .build();
+        assert_eq!(race_exposure_at(&five), (false, true));
+    }
+
+    #[test]
+    fn victory_breakdown_sums_to_the_win_count_for_each_side() {
+        // A real, sizeable match end to end: random vs random over enough
+        // seeds to see a mix of civilian/tiebreak/draw outcomes (military
+        // and scientific supremacy are rare with random play but the sum
+        // property must hold regardless of which kinds actually occur).
+        let seeds: Vec<u64> = (0..60).collect();
+        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let t = tally(&records);
+        let vb = victory_breakdown(&records);
+        assert_eq!(vb.a.total(), t.a_wins);
+        assert_eq!(vb.b.total(), t.b_wins);
+        // Every record is accounted for by exactly one of: A's breakdown, B's
+        // breakdown, or a draw.
+        assert_eq!(vb.a.total() + vb.b.total() + t.draws, t.total());
+    }
+
+    #[test]
+    fn race_exposure_counts_never_exceed_the_game_count() {
+        let seeds: Vec<u64> = (0..30).collect();
+        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let re = race_exposure(&records);
+        assert_eq!(re.total_games, records.len() as u32);
+        assert!(re.military_games <= re.total_games);
+        assert!(re.science_games <= re.total_games);
     }
 }
