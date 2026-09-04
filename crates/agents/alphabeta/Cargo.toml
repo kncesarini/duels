@@ -9,6 +9,7 @@ description = "Expectimax search with alpha-beta pruning, iterative deepening an
 [dependencies]
 duels-core = { path = "../../duels-core" }
 duels-agents-api = { path = "../../duels-agents-api" }
+duels-strategy = { path = "../../duels-strategy" }
 rand = { workspace = true }
 
 [dev-dependencies]

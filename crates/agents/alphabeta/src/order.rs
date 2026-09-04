@@ -4,19 +4,24 @@
 //! prune at all until its parent has a decent alpha, so ordering matters more
 //! here than in a deterministic game of the same branching factor.
 //!
-//! Two orderings live here. [`order`] scores moves from static card and
+//! Three orderings live here. [`order`] scores moves from static card and
 //! wonder data — cheap integers, no apply, no evaluation call — preferring
 //! the transposition table's move, then wonders (the highest-leverage single
 //! action in the game), then cards by what they contribute, with chain-free
 //! builds boosted and plain discards last unless the player is broke.
 //! [`order_by_lookahead`] instead applies each move and evaluates the
 //! result, which correlates far better and costs far more.
+//! [`order_with_priors`] keeps [`order`]'s static score as its base and adds
+//! `duels_strategy::action_prior` as a second signal, gated to the nodes
+//! where the extra cost is likely to be worth it — see its doc comment.
 //!
-//! Neither is ever compared against a search value; they exist only to sort.
+//! None of the three is ever compared against a search value; they exist
+//! only to sort.
 
 use duels_core::data::CardId;
 use duels_core::engine::{self, Outcome};
 use duels_core::{cost, Action, GameState, Player};
+use duels_strategy::{action_prior, stance, Stance};
 
 /// Longest move list `order` sorts. A turn offers at most `accessible slots x
 /// (build + discard + up to four wonders)`, which cannot reach this.
@@ -90,6 +95,84 @@ pub fn order_by_lookahead(
             }
         };
     }
+    for i in 1..n {
+        let (s, m) = (scores[i], moves[i]);
+        let mut j = i;
+        while j > 0 && scores[j - 1] < s {
+            scores[j] = scores[j - 1];
+            moves[j] = moves[j - 1];
+            j -= 1;
+        }
+        scores[j] = s;
+        moves[j] = m;
+    }
+}
+
+/// Plies from the root at which [`order_with_priors`] pays for a
+/// [`duels_strategy::stance()`].
+///
+/// `duels-strategy`'s own benchmark measures a full `stance` plus every
+/// legal move's `action_prior` at roughly 29% of an MCTS rollout — real cost,
+/// paid once per MCTS simulation but, if applied unconditionally here, once
+/// per *node*, and this search visits far more nodes per second than
+/// `mcts-uct` runs simulations. Most of that cost would be wasted near the
+/// horizon anyway: there is little tree left below a shallow-remaining-depth
+/// node for a better ordering to prune. Restricting it to the top few plies
+/// bounds the number of nodes that ever pay for a stance by roughly
+/// `(branching factor) ^ PRIOR_MAX_PLY`, while still improving the ordering
+/// at exactly the levels where a cut-off saves the most: everything still
+/// below it.
+pub const PRIOR_MAX_PLY: u32 = 2;
+
+/// Legal moves a node must offer before [`order_with_priors`] bothers pricing
+/// a prior at all. With two or three options a stable sort barely reorders
+/// anything, so a node this narrow is not where ordering earns its keep.
+pub const PRIOR_MIN_MOVES: usize = 4;
+
+/// How much one natural-log unit of [`action_prior`] is worth against
+/// [`score`]'s integer units.
+///
+/// `action_prior` is always positive and spans roughly `PriorWeights::floor`
+/// (0.05) to `PriorWeights::dominating` applied to a small base (order 50),
+/// so its log ranges from about -3 to +4. Multiplying by this constant puts a
+/// dominating move's bonus (around +160) alongside the biggest static scores
+/// (`BuildWonder` tops out near 250) without letting an ordinary prior — a
+/// log near zero — swamp the static heuristic's own read of the position.
+const PRIOR_LOG_SCALE: f64 = 40.0;
+
+/// [`order`], with [`duels_strategy::action_prior`] blended in as a second
+/// signal at shallow `ply` — see [`PRIOR_MAX_PLY`] and [`PRIOR_MIN_MOVES`]
+/// for the gate. Below that, or with too few candidates, this falls back to
+/// exactly [`order`]'s ranking, so it is safe to call at every decision node.
+///
+/// [`duels_strategy::stance()`] is computed at most once per call — never per
+/// candidate action, and not at all when the node does not qualify — because
+/// it is the expensive half of the pair; `action_prior` itself is a cheap
+/// lookup against an already-built [`Stance`].
+pub fn order_with_priors(
+    state: &GameState,
+    moves: &mut [Action],
+    tt_move: Option<Action>,
+    ply: u32,
+) {
+    let n = moves.len().min(MAX_SORTED);
+    debug_assert_eq!(n, moves.len(), "move list longer than MAX_SORTED");
+    let st: Option<Stance> = (ply <= PRIOR_MAX_PLY && n >= PRIOR_MIN_MOVES)
+        .then(|| stance(state, state.current_player()));
+
+    let mut scores = [0.0f64; MAX_SORTED];
+    for i in 0..n {
+        scores[i] = if Some(moves[i]) == tt_move {
+            f64::INFINITY
+        } else {
+            let mut s = f64::from(score(state, moves[i]));
+            if let Some(st) = &st {
+                s += PRIOR_LOG_SCALE * action_prior(state, moves[i], st).ln();
+            }
+            s
+        };
+    }
+    // Insertion sort, descending: see `order` for why this has to be stable.
     for i in 1..n {
         let (s, m) = (scores[i], moves[i]);
         let mut j = i;
@@ -299,5 +382,61 @@ mod tests {
                 }
             ) > score(&st, Action::Build { slot: 19 })
         );
+    }
+
+    #[test]
+    fn priors_ordering_is_a_permutation_of_the_input() {
+        for seed in 0..10u64 {
+            let st = engine::new_game(seed);
+            let mut moves = engine::legal_actions(&st);
+            let before = moves.clone();
+            order_with_priors(&st, &mut moves, None, 0);
+            assert_eq!(moves.len(), before.len());
+            for m in &before {
+                assert!(moves.contains(m), "{m:?} was dropped");
+            }
+        }
+    }
+
+    #[test]
+    fn priors_still_try_the_transposition_table_move_first() {
+        let st = engine::new_game(3);
+        let mut moves = engine::legal_actions(&st);
+        assert!(moves.len() > 1);
+        let favourite = moves[moves.len() - 1];
+        order_with_priors(&st, &mut moves, Some(favourite), 0);
+        assert_eq!(moves[0], favourite);
+    }
+
+    #[test]
+    fn priors_are_skipped_past_the_max_ply_and_match_plain_order() {
+        // Beyond `PRIOR_MAX_PLY` the stance is never computed, so the two
+        // orderings must agree exactly, move for move.
+        let st = engine::new_game(11);
+        let mut a = engine::legal_actions(&st);
+        let mut b = a.clone();
+        order(&st, &mut a, None);
+        order_with_priors(&st, &mut b, None, PRIOR_MAX_PLY + 1);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn priors_are_skipped_below_the_min_move_count() {
+        // A two-option position (there is always at least one) never
+        // qualifies, however shallow, so this must match plain `order` too.
+        let st = StateBuilder::new()
+            .open_slots(&[(19, "palace")])
+            .coins(Player::One, 20)
+            .build();
+        let mut moves = engine::legal_actions(&st);
+        assert!(
+            moves.len() < PRIOR_MIN_MOVES,
+            "expected a narrow move list, got {}",
+            moves.len()
+        );
+        let mut a = moves.clone();
+        order(&st, &mut moves, None);
+        order_with_priors(&st, &mut a, None, 0);
+        assert_eq!(a, moves);
     }
 }

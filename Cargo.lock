@@ -376,6 +376,7 @@ dependencies = [
  "duels-agent-random",
  "duels-agents-api",
  "duels-core",
+ "duels-strategy",
  "rand 0.8.8",
 ]
 
