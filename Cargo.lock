@@ -484,6 +484,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "duels-strategy"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "duels-agent-greedy",
+ "duels-agent-random",
+ "duels-agents-api",
+ "duels-core",
+ "proptest",
+ "rand 0.8.8",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
