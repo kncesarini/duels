@@ -1,19 +1,27 @@
 //! Play a self-play game and narrate what the race reads say after every move.
 //!
-//! This is the human checkpoint for this crate: the point is to read it and
-//! judge whether "Live" / "Imminent" / "Closed" match how *you* read those
-//! positions, and whether the stance the mover ends up with is the one you
-//! would want a search to spend its nodes on.
+//! This is the human checkpoint for this crate. The point is to read it and
+//! judge whether the *numbers* match how you read those positions: is a race
+//! at `M = 0.48` really about even? Is the symbol the model says the threat
+//! holder "secures" the one you would take? Is the action the denial channel
+//! prices highest the one you would play?
 //!
 //! ```text
 //! cargo run --release -p duels-strategy --example watch_reads
 //! cargo run --release -p duels-strategy --example watch_reads -- 7 greedy random
 //! cargo run --release -p duels-strategy --example watch_reads -- 7 greedy random --quiet
+//! cargo run --release -p duels-strategy --example watch_reads -- --calibration
 //! ```
 //!
 //! Arguments, all optional: `seed`, `player-one agent`, `player-two agent`
 //! (`greedy` or `random`), and `--quiet` to print only the turns where a
 //! classification changed.
+//!
+//! `--calibration` skips the game entirely and renders the hand-built
+//! positions from `tests/threat_calibration.rs` instead — the four-symbol
+//! race, the three places the Law token can be, and the chained extra turn —
+//! so the numbers those tests assert can be read in context rather than as
+//! bare floats in an assertion message.
 //!
 //! The default pairing is `greedy` vs `random`, which is the matchup that
 //! motivated this crate: `greedy` carries explicit military-race terms in its
@@ -28,8 +36,8 @@ use duels_core::state::Phase;
 use duels_core::{engine, Action, GameState, Player};
 use duels_strategy::masks::ALL_SCIENCE;
 use duels_strategy::{
-    action_prior, military_read, science_read, stance, vp_read, Board, MilitaryRead,
-    MilitaryStatus, ScienceRead, ScienceStatus, VpRead,
+    action_prior, delta_m, deny_vp, military_read_with, science_read_with, stance_in, vp_read_with,
+    Context, MilitaryRead, MilitaryStatus, ScienceRead, ScienceStatus, Tempo, VpRead, VpWeights,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -74,6 +82,12 @@ fn symbol_char(s: Science) -> char {
     }
 }
 
+/// A magnitude as a bar, so a column of them is scannable.
+fn bar(m: f64) -> String {
+    let filled = (m * 10.0).round().clamp(0.0, 10.0) as usize;
+    format!("[{}{}]", "#".repeat(filled), ".".repeat(10 - filled))
+}
+
 /// The pawn track as a picture, with the capitals at either end.
 fn pawn_bar(conflict: i8) -> String {
     let mut bar = String::from("P1 |");
@@ -90,10 +104,24 @@ fn pawn_bar(conflict: i8) -> String {
     bar
 }
 
+fn describe_tempo(t: &Tempo) -> String {
+    format!(
+        "tempo    {:>2} decisions left ({:.1} effective)   share {:.0}%   chain {} now / {:.1} expected{}",
+        t.decisions_left,
+        t.decisions_left_eff,
+        100.0 * t.share,
+        t.chain,
+        t.extra_expected,
+        if t.banked { "   [extra turn banked]" } else { "" },
+    )
+}
+
 fn describe_military(r: &MilitaryRead) -> String {
     let mut s = format!(
-        "military {:<8} need {:>2}   now {:>2} (best {:>1}, fork {})   table {:>2} + {:.1} hidden + {:.1} to come",
+        "military {:<8} M {:.2} {}   need {:>2}   now {:>2} (best {:>1}, fork {})   table {:>2} + {:.1} hidden + {:.1} to come",
         military_label(r.status),
+        r.magnitude,
+        bar(r.magnitude),
         r.need,
         r.now,
         r.best_single,
@@ -104,10 +132,13 @@ fn describe_military(r: &MilitaryRead) -> String {
     );
     match r.turns_to_close {
         Some(t) => s.push_str(&format!(
-            "\n      closes in ~{t} of its own turns (of {} left)",
-            r.decisions_left
+            "\n      closes on round {t} of the simulation (chain {}, {:.2} shields/card of stream, defender answers with {})",
+            r.model.chain, r.model.avg_stream, r.model.defender_best_single,
         )),
-        None => s.push_str("\n      no route to the capital left"),
+        None => s.push_str(&format!(
+            "\n      never closes within {:.0} rounds (defender answers with {})",
+            r.model.horizon, r.model.defender_best_single
+        )),
     }
     if r.undeniable {
         s.push_str("   [UNDENIABLE]");
@@ -146,8 +177,10 @@ fn describe_science(r: &ScienceRead) -> String {
         })
         .collect();
     let mut s = format!(
-        "science  {:<8} {} of 6 held [{held}]   missing {}   reachable {}   fragility {}",
+        "science  {:<8} M {:.2} {}   {} of 6 held [{held}]   missing {}   routes {}   fragility {}",
         science_label(r.status),
+        r.magnitude,
+        bar(r.magnitude),
         r.distinct,
         r.missing,
         r.obtainable_missing,
@@ -156,6 +189,20 @@ fn describe_science(r: &ScienceRead) -> String {
     if r.dead {
         s.push_str("   [DEAD]");
     }
+    s.push_str(&format!(
+        "\n      surface {:.2} x (1 - P(stopped) {:.2}), slack {}{}",
+        r.detail.surface,
+        r.detail.p_stop,
+        r.detail.slack,
+        match r.detail.secured {
+            Some(sym) => format!(
+                "   secures {} next turn (reachable slots {:?})",
+                symbol_char(sym),
+                slot_list(r.model.symbols[sym.index()].reachable_slots)
+            ),
+            None => String::new(),
+        }
+    ));
     let mut routes: Vec<String> = Vec::new();
     for sym in r.missing_symbols() {
         let a = &r.availability[sym.index()];
@@ -181,10 +228,24 @@ fn describe_science(r: &ScienceRead) -> String {
         if how.is_empty() {
             how.push("gone".to_string());
         }
-        routes.push(format!("{}: {}", symbol_char(sym), how.join(", ")));
+        let kill = r.kill_cost(sym);
+        let kill_text = if kill.is_finite() {
+            format!(
+                "kill {kill:.2} turns -> P {:.2}",
+                r.model.share_defender.powf(kill)
+            )
+        } else {
+            "UNDENIABLE".to_string()
+        };
+        routes.push(format!(
+            "{}: c {:.2} ({}) {kill_text}",
+            symbol_char(sym),
+            r.copies(sym),
+            how.join(", "),
+        ));
     }
-    if !routes.is_empty() {
-        s.push_str(&format!("\n      {}", routes.join("  |  ")));
+    for line in routes {
+        s.push_str(&format!("\n        {line}"));
     }
     let pairs: Vec<char> = ALL_SCIENCE
         .iter()
@@ -197,9 +258,20 @@ fn describe_science(r: &ScienceRead) -> String {
             .best_board_token
             .map(|(t, v)| format!("{} (worth ~{v:.1} VP)", t.def().name))
             .unwrap_or_else(|| "nothing on the board".to_string());
-        s.push_str(&format!("\n      half-pairs {pairs:?} would claim {token}"));
+        s.push_str(&format!(
+            "\n      half-pairs {pairs:?} ({}) would claim {token}",
+            if r.pair_setup.has_live_half_pair() {
+                "completable"
+            } else {
+                "second copy gone"
+            }
+        ));
     }
     s
+}
+
+fn slot_list(mask: u32) -> Vec<u8> {
+    duels_strategy::board::iter_slots(mask).collect()
 }
 
 fn describe_vp(r: &VpRead) -> String {
@@ -222,44 +294,41 @@ fn describe_vp(r: &VpRead) -> String {
 fn describe_action(state: &GameState, action: Action) -> String {
     match action {
         Action::Build { slot } => match state.face_up_card(slot) {
-            Some(c) => format!("builds {} (slot {slot})", c.def().name),
-            None => format!("builds slot {slot}"),
+            Some(c) => format!("build {} (slot {slot})", c.def().name),
+            None => format!("build slot {slot}"),
         },
         Action::Discard { slot } => match state.face_up_card(slot) {
-            Some(c) => format!("discards {} (slot {slot}) for coins", c.def().name),
-            None => format!("discards slot {slot}"),
+            Some(c) => format!("discard {} (slot {slot})", c.def().name),
+            None => format!("discard slot {slot}"),
         },
         Action::BuildWonder { slot, wonder } => match state.face_up_card(slot) {
-            Some(c) => format!("spends {} to build {}", c.def().name, wonder.def().name),
-            None => format!("builds {} with slot {slot}", wonder.def().name),
+            Some(c) => format!("spend {} on {}", c.def().name, wonder.def().name),
+            None => format!("build {} with slot {slot}", wonder.def().name),
         },
-        Action::PickWonder { wonder } => format!("drafts {}", wonder.def().name),
-        Action::ChooseProgressToken { token } => format!("takes the {} token", token.def().name),
+        Action::PickWonder { wonder } => format!("draft {}", wonder.def().name),
+        Action::ChooseProgressToken { token } => format!("take the {} token", token.def().name),
         Action::ChooseGreatLibraryToken { token } => {
-            format!(
-                "keeps the {} token from the Great Library",
-                token.def().name
-            )
+            format!("keep the {} token from the Great Library", token.def().name)
         }
         Action::MausoleumBuild { card } => {
-            format!("rebuilds {} from the discard pile", card.def().name)
+            format!("rebuild {} from the discard pile", card.def().name)
         }
-        Action::DestroyOpponentCard { card } => format!("destroys {}", card.def().name),
-        Action::ChooseFirstPlayer { player } => format!("gives the first turn to {player}"),
+        Action::DestroyOpponentCard { card } => format!("destroy {}", card.def().name),
+        Action::ChooseFirstPlayer { player } => format!("give the first turn to {player}"),
     }
 }
 
 /// A short signature of every classification, so `--quiet` can show only the
 /// turns where one of them moved.
 fn classification_signature(state: &GameState) -> String {
-    let board = Board::of(state);
+    let ctx = Context::of(state);
     Player::ALL
         .iter()
         .map(|&p| {
             format!(
                 "{p}:{}/{}",
-                military_label(duels_strategy::military_read_with(state, p, &board).status),
-                science_label(duels_strategy::science_read_with(state, p, &board).status),
+                military_label(military_read_with(state, p, &ctx).status),
+                science_label(science_read_with(state, p, &ctx).status),
             )
         })
         .collect::<Vec<_>>()
@@ -267,27 +336,34 @@ fn classification_signature(state: &GameState) -> String {
 }
 
 fn print_position(state: &GameState, mover: Player) {
-    let board = Board::of(state);
+    let ctx = Context::of(state);
     println!(
         "  {}      age {}   {} cards left   coins {} / {}",
         pawn_bar(state.conflict()),
         state.age(),
-        board.cards_left(),
+        ctx.board.cards_left(),
         state.player(Player::One).coins(),
         state.player(Player::Two).coins(),
     );
     for p in Player::ALL {
         let tag = if p == mover { "*" } else { " " };
+        println!("  {tag}{p}  {}", describe_tempo(ctx.tempo(p)));
         println!(
-            "  {tag}{p}  {}",
-            describe_military(&military_read(state, p))
+            "      {}",
+            describe_military(&military_read_with(state, p, &ctx))
         );
-        println!("      {}", describe_science(&science_read(state, p)));
+        println!(
+            "      {}",
+            describe_science(&science_read_with(state, p, &ctx))
+        );
     }
-    println!("      {}", describe_vp(&vp_read(state, mover)));
+    println!(
+        "      {}",
+        describe_vp(&vp_read_with(state, mover, &ctx, &VpWeights::default()))
+    );
 
     if state.phase() == Phase::Turn || state.phase() == Phase::WonderDraft {
-        let s = stance(state, mover);
+        let s = stance_in(state, mover, Default::default(), &ctx);
         println!("      stance for {mover}: {}", s.headline());
         let legal = engine::legal_actions(state);
         let mut scored: Vec<(Action, f64)> = legal
@@ -312,10 +388,175 @@ fn print_position(state: &GameState, mover: Player) {
             legal.len(),
             shown.join("  |  ")
         );
+
+        // The denial channel, on its own: what each move does to the
+        // *opponent's* two magnitudes, and what that is worth in points.
+        let mut denial: Vec<(Action, f64, duels_strategy::DeltaM)> = legal
+            .iter()
+            .map(|&a| (a, deny_vp(a, &s), delta_m(a, &s)))
+            .collect();
+        denial.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if denial.iter().any(|&(_, v, _)| v.abs() > 0.005) {
+            println!("      denial value (dM_sci / dM_mil -> VP):");
+            for &(a, v, d) in denial.iter().take(4) {
+                println!(
+                    "        {:<44} {:+.3} / {:+.3} -> {v:+.2} VP{}",
+                    describe_action(state, a),
+                    d.science,
+                    d.military,
+                    if d.breaks_certainty {
+                        "   [BREAKS A CERTAIN WIN]"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            if let Some(&(a, v, d)) = denial.last() {
+                if denial.len() > 4 {
+                    println!(
+                        "        ...worst: {:<34} {:+.3} / {:+.3} -> {v:+.2} VP",
+                        describe_action(state, a),
+                        d.science,
+                        d.military
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The hand-built positions the calibration tests assert on, rendered with
+/// the same narration as a real game.
+fn print_calibration() {
+    use duels_core::testing::StateBuilder;
+
+    const FOUR_EARLY: &[&str] = &["pharmacist", "workshop", "scriptorium", "apothecary"];
+    const FIVE_SYMBOLS: &[&str] = &[
+        "pharmacist",
+        "workshop",
+        "scriptorium",
+        "apothecary",
+        "university",
+    ];
+    const FIVE_ASIDE: &[&str] = &["law", "philosophy", "agriculture", "economy", "theology"];
+
+    let four_late = |age: u8| {
+        let slots: [(u8, &str); 2] = if age == 1 {
+            [(18, "lumber-yard"), (19, "clay-pool")]
+        } else {
+            [(18, "sawmill"), (19, "brickyard")]
+        };
+        StateBuilder::new()
+            .age(age)
+            .open_slots(&slots)
+            .built(Player::One, FOUR_EARLY)
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+    };
+    let balance_last = || {
+        StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace"), (19, "town-hall")])
+            .built(Player::One, FIVE_SYMBOLS)
+            .built(Player::Two, &["academy", "study"])
+            .coins(Player::One, 40)
+            .current(Player::One)
+    };
+
+    let cases: Vec<(&str, GameState)> = vec![
+        (
+            "four early symbols, end of Age II, nothing else in play",
+            four_late(2).build(),
+        ),
+        (
+            "the same at the end of Age I (must read identically)",
+            four_late(1).build(),
+        ),
+        (
+            "the same plus the Law token on the board",
+            four_late(2).board_tokens(&["law", "philosophy"]).build(),
+        ),
+        (
+            "five symbols, Balance the last one, Law ON THE BOARD",
+            balance_last().board_tokens(&["law"]).build(),
+        ),
+        (
+            "five symbols, Balance the last one, Law SET ASIDE, no wonder",
+            balance_last().set_aside_tokens(FIVE_ASIDE).build(),
+        ),
+        (
+            "five symbols, Balance the last one, Law SET ASIDE + Great Library",
+            balance_last()
+                .set_aside_tokens(FIVE_ASIDE)
+                .wonders(Player::One, &["the-great-library"])
+                .build(),
+        ),
+        (
+            "five symbols, the sixth one card deep, an affordable Sphinx",
+            StateBuilder::new()
+                .age(3)
+                .open_slots(&[(15, "academy"), (18, "palace"), (19, "town-hall")])
+                .built(Player::One, FIVE_SYMBOLS)
+                .wonders(Player::One, &["the-sphinx"])
+                .coins(Player::One, 40)
+                .coins(Player::Two, 40)
+                .current(Player::One)
+                .build(),
+        ),
+        (
+            "two missing symbols in the discard pile, one Mausoleum",
+            StateBuilder::new()
+                .age(3)
+                .open_slots(&[
+                    (15, "palace"),
+                    (16, "town-hall"),
+                    (17, "obelisk"),
+                    (18, "senate"),
+                    (19, "gardens"),
+                ])
+                .built(
+                    Player::One,
+                    &["pharmacist", "workshop", "scriptorium", "university"],
+                )
+                .built(Player::Two, &["study", "school"])
+                .discard(&["apothecary", "academy"])
+                .wonders(Player::One, &["the-mausoleum"])
+                .coins(Player::One, 40)
+                .current(Player::One)
+                .build(),
+        ),
+        (
+            "Theology plus an affordable Colossus, four shields from the capital",
+            StateBuilder::new()
+                .age(3)
+                .open_slots(&[(18, "fortifications"), (19, "palace"), (15, "town-hall")])
+                .wonders(Player::One, &["the-colossus"])
+                .tokens(Player::One, &["theology"])
+                .conflict(5)
+                .coins(Player::One, 40)
+                .coins(Player::Two, 3)
+                .current(Player::One)
+                .build(),
+        ),
+    ];
+
+    for (name, st) in cases {
+        println!();
+        println!("--- {name} ---");
+        print_position(&st, st.current_player());
     }
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--calibration") {
+        println!("=======================================================================");
+        println!(" watch_reads --calibration: the positions tests/threat_calibration.rs");
+        println!(" asserts on, rendered rather than asserted.");
+        println!("=======================================================================");
+        print_calibration();
+        return;
+    }
     let mut args = std::env::args().skip(1);
     let seed: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(11);
     let one = args.next().unwrap_or_else(|| "greedy".to_string());
@@ -332,8 +573,10 @@ fn main() {
     if quiet {
         println!(" --quiet: printing only the turns where a classification changed");
     }
-    println!(" IMMINENT = wins next move if unopposed   |   live = reachable");
-    println!(" pressure = worth forcing denial, not worth winning   |   closed / DEAD");
+    println!(" M is the win probability of that race from public information alone.");
+    println!(" IMMINENT = M 1.00 (certain if unopposed)   |   live = M >= 0.25");
+    println!(" pressure = M >= 0.05, worth forcing denial  |   closed / DEAD");
+    println!(" dM is what a move does to the OPPONENT's M: positive denies, negative gifts.");
     println!("=======================================================================");
 
     let mut last_signature = String::new();

@@ -12,13 +12,23 @@
 //! rollout uses — measured here rather than quoted, so the comparison is
 //! against a number from the same machine and the same run.
 //!
+//! The breakdown matters as much as the total, because the two halves scale
+//! differently: `context_of` plus `stance_in_precomputed_context` is paid once
+//! per node, while `delta_m_all_actions` is paid once per legal move and is
+//! what a wide node multiplies. `prices_both` is broken out because the cost
+//! engine ([`duels_core::cost`]) is the single most expensive thing this crate
+//! calls and everything else is a table lookup over its answers.
+//!
 //! Nothing is asserted: a threshold that passes on a laptop is flaky on a
 //! shared CI runner. The observed figures are recorded in the crate's PR
 //! description.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use duels_core::{engine, Action, GameState};
-use duels_strategy::{action_prior, military_read, science_read, stance, vp_read, Board};
+use duels_strategy::{
+    action_prior, delta_m, military_read, military_read_with, science_read, science_read_with,
+    stance, stance_in, vp_read, vp_read_with, Board, Context, PriorWeights, VpWeights,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -103,6 +113,67 @@ fn bench(c: &mut Criterion) {
 
     c.bench_function("stance_only", |b| {
         b.iter(|| black_box(stance(black_box(&state), player)))
+    });
+
+    c.bench_function("prices_both", |b| {
+        let board = Board::of(&state);
+        b.iter(|| {
+            black_box((
+                duels_strategy::Prices::of(black_box(&state), duels_core::Player::One, &board),
+                duels_strategy::Prices::of(black_box(&state), duels_core::Player::Two, &board),
+            ))
+        })
+    });
+
+    c.bench_function("expectations_of", |b| {
+        let board = Board::of(&state);
+        b.iter(|| black_box(duels_strategy::Expectations::of(black_box(&board))))
+    });
+
+    c.bench_function("context_of", |b| {
+        b.iter(|| black_box(Context::of(black_box(&state))))
+    });
+
+    let ctx = Context::of(&state);
+
+    c.bench_function("stance_in_precomputed_context", |b| {
+        b.iter(|| {
+            black_box(stance_in(
+                black_box(&state),
+                player,
+                PriorWeights::default(),
+                &ctx,
+            ))
+        })
+    });
+
+    c.bench_function("military_read_with", |b| {
+        b.iter(|| black_box(military_read_with(black_box(&state), player, &ctx)))
+    });
+
+    c.bench_function("science_read_with", |b| {
+        b.iter(|| black_box(science_read_with(black_box(&state), player, &ctx)))
+    });
+
+    c.bench_function("vp_read_with", |b| {
+        b.iter(|| {
+            black_box(vp_read_with(
+                black_box(&state),
+                player,
+                &ctx,
+                &VpWeights::default(),
+            ))
+        })
+    });
+
+    c.bench_function("delta_m_all_actions", |b| {
+        b.iter(|| {
+            let mut total = 0.0;
+            for &a in &legal {
+                total += delta_m(a, &precomputed).total();
+            }
+            black_box(total)
+        })
     });
 
     c.bench_function("board_of", |b| {

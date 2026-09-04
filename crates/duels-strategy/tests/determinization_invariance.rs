@@ -32,7 +32,23 @@ use proptest::prelude::*;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use duels_strategy::{action_prior, military_read, science_read, stance, vp_read, Board, Stance};
+use duels_strategy::masks::ALL_SCIENCE;
+use duels_strategy::{
+    action_prior, delta_m, deny_vp, military_read, science_read, stance, vp_read, Board, Context,
+    Stance,
+};
+
+/// Two `f64`s from identical inputs through identical arithmetic must be
+/// identical *bit for bit*. A difference of any size means something read what
+/// it should not have, so this is deliberately not an epsilon comparison.
+#[track_caller]
+fn same_bits(a: f64, b: f64, what: &str) {
+    assert_eq!(
+        a.to_bits(),
+        b.to_bits(),
+        "{what}: {a} vs {b} differ in bits"
+    );
+}
 
 /// Walk a real game `steps` decisions in, with a deterministic policy that
 /// depends on `mix` so different cases explore different lines.
@@ -66,30 +82,108 @@ fn assert_reads_agree(a: &GameState, b: &GameState, ctx: &str) {
     let legal_b = engine::legal_actions(b);
     assert_eq!(legal_a, legal_b, "{ctx}: legal actions");
 
+    let ctx_a = Context::of(a);
+    let ctx_b = Context::of(b);
+    assert_eq!(ctx_a, ctx_b, "{ctx}: Context");
+
     for p in Player::ALL {
-        assert_eq!(
-            military_read(a, p),
-            military_read(b, p),
-            "{ctx}: military_read for {p}"
+        // The tempo inputs both magnitudes are built on.
+        let ta = ctx_a.tempo(p);
+        let tb = ctx_b.tempo(p);
+        assert_eq!(ta, tb, "{ctx}: Tempo for {p}");
+        same_bits(ta.share, tb.share, &format!("{ctx}: share for {p}"));
+        same_bits(
+            ta.decisions_left_eff,
+            tb.decisions_left_eff,
+            &format!("{ctx}: decisions_left_eff for {p}"),
         );
-        assert_eq!(
-            science_read(a, p),
-            science_read(b, p),
-            "{ctx}: science_read for {p}"
+        same_bits(
+            ta.extra_expected,
+            tb.extra_expected,
+            &format!("{ctx}: extra_expected for {p}"),
         );
+        assert_eq!(ta.chain, tb.chain, "{ctx}: chain for {p}");
+
+        let ma = military_read(a, p);
+        let mb = military_read(b, p);
+        assert_eq!(ma, mb, "{ctx}: military_read for {p}");
+        same_bits(
+            ma.magnitude,
+            mb.magnitude,
+            &format!("{ctx}: M_military for {p}"),
+        );
+
+        let ra = science_read(a, p);
+        let rb = science_read(b, p);
+        assert_eq!(ra, rb, "{ctx}: science_read for {p}");
+        same_bits(
+            ra.magnitude,
+            rb.magnitude,
+            &format!("{ctx}: M_science for {p}"),
+        );
+        same_bits(
+            ra.detail.surface,
+            rb.detail.surface,
+            &format!("{ctx}: surface for {p}"),
+        );
+        same_bits(
+            ra.detail.p_stop,
+            rb.detail.p_stop,
+            &format!("{ctx}: p_stop for {p}"),
+        );
+        for sym in ALL_SCIENCE {
+            same_bits(
+                ra.copies(sym),
+                rb.copies(sym),
+                &format!("{ctx}: c_s({sym:?}) for {p}"),
+            );
+            let (ka, kb) = (ra.kill_cost(sym), rb.kill_cost(sym));
+            assert_eq!(
+                ka.is_infinite(),
+                kb.is_infinite(),
+                "{ctx}: kill_s({sym:?}) for {p} disagrees on deniability"
+            );
+            if ka.is_finite() {
+                same_bits(ka, kb, &format!("{ctx}: kill_s({sym:?}) for {p}"));
+            }
+        }
+
         assert_eq!(vp_read(a, p), vp_read(b, p), "{ctx}: vp_read for {p}");
 
         let sa: Stance = stance(a, p);
         let sb: Stance = stance(b, p);
         assert_eq!(sa, sb, "{ctx}: stance for {p}");
+        same_bits(sa.stakes, sb.stakes, &format!("{ctx}: stakes for {p}"));
 
         for &action in &legal_a {
             let pa = action_prior(a, action, &sa);
             let pb = action_prior(b, action, &sb);
+            same_bits(
+                pa,
+                pb,
+                &format!("{ctx}: action_prior for {p} on {action:?}"),
+            );
+
+            let da = delta_m(action, &sa);
+            let db = delta_m(action, &sb);
+            same_bits(
+                da.science,
+                db.science,
+                &format!("{ctx}: dM_science for {p} on {action:?}"),
+            );
+            same_bits(
+                da.military,
+                db.military,
+                &format!("{ctx}: dM_military for {p} on {action:?}"),
+            );
             assert_eq!(
-                pa.to_bits(),
-                pb.to_bits(),
-                "{ctx}: action_prior for {p} on {action:?}: {pa} vs {pb}"
+                da.breaks_certainty, db.breaks_certainty,
+                "{ctx}: breaks_certainty for {p} on {action:?}"
+            );
+            same_bits(
+                deny_vp(action, &sa),
+                deny_vp(action, &sb),
+                &format!("{ctx}: deny_vp for {p} on {action:?}"),
             );
         }
     }

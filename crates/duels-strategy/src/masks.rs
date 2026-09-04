@@ -103,6 +103,18 @@ impl AgeSupply {
     pub fn expected_civilian_vp(&self) -> f64 {
         f64::from(self.plain_civilian_vp) * frac(self.plain_dealt, self.plain_cards)
     }
+
+    /// The chance that any one *named* non-guild card of this age reaches the
+    /// table when the age is dealt: `plain_dealt / plain_cards`, which is
+    /// 20/23 for Ages I and II and 17/20 for Age III.
+    ///
+    /// This is the `p_dealt` of the threat model: the probability that a
+    /// specific symbol card an undealt age still holds is not one of the
+    /// copies setup returns to the box unseen.
+    #[inline]
+    pub fn plain_dealt_fraction(&self) -> f64 {
+        frac(self.plain_dealt, self.plain_cards)
+    }
 }
 
 /// Bitmasks and lookups over the static game data.
@@ -120,6 +132,9 @@ pub struct Masks {
     great_library: Option<WonderId>,
     mausoleum: Option<WonderId>,
     shield_wonders: u16,
+    future_dealt_weight: [[f64; 5]; NUM_SCIENCE],
+    play_again_wonders: u16,
+    theology_token: Option<TokenId>,
 }
 
 static MASKS: OnceLock<Masks> = OnceLock::new();
@@ -222,10 +237,43 @@ impl Masks {
         self.mausoleum
     }
 
+    /// The expected number of copies of `symbol` an undealt age still holds,
+    /// summed over the ages `first_undealt_age..=3` and weighted by
+    /// [`AgeSupply::plain_dealt_fraction`] — the chance setup deals a
+    /// particular card at all rather than returning it to the box.
+    ///
+    /// A static function of the symbol and which ages are left, so it is
+    /// tabulated rather than recomputed per position. `first_undealt_age`
+    /// above 3 gives zero.
+    #[inline]
+    pub fn future_dealt_copies(&self, symbol: Science, first_undealt_age: u8) -> f64 {
+        self.future_dealt_weight[symbol.index()][usize::from(first_undealt_age.min(4))]
+    }
+
     /// Bitmask over [`WonderId::index`] of the wonders that grant shields.
     #[inline]
     pub fn shield_wonders(&self) -> u16 {
         self.shield_wonders
+    }
+
+    /// Bitmask over [`WonderId::index`] of the wonders whose *printed* effect
+    /// grants an extra turn.
+    ///
+    /// Resolved from [`duels_core::data::Wonder::play_again`], never from a
+    /// slug: which wonders these are is a fact about the data, and the base
+    /// game's five (Piraeus, The Appian Way, The Hanging Gardens, The Sphinx,
+    /// The Temple of Artemis) are only asserted in a test, not assumed by the
+    /// logic.
+    #[inline]
+    pub fn play_again_wonders(&self) -> u16 {
+        self.play_again_wonders
+    }
+
+    /// The progress token that grants an extra turn for every wonder its
+    /// holder constructs (Theology), found by its effect.
+    #[inline]
+    pub fn theology_token(&self) -> Option<TokenId> {
+        self.theology_token
     }
 }
 
@@ -308,6 +356,29 @@ fn build() -> Masks {
     let shield_wonders = WonderId::all()
         .filter(|w| w.def().shields > 0)
         .fold(0u16, |m, w| m | (1u16 << w.index()));
+    // `future_dealt_weight[s][a]` is the expected copies of `s` in the ages
+    // `a..=3`, so index 4 is empty and index 1 is the whole game.
+    let mut future_dealt_weight = [[0.0f64; 5]; NUM_SCIENCE];
+    for (i, w) in future_dealt_weight.iter_mut().enumerate() {
+        for first in 1..=4u8 {
+            let mut total = 0.0;
+            for c in iter_cards(symbol[i]) {
+                let age = c.def().age;
+                if age >= first {
+                    total += frac(
+                        supply[(age - 1) as usize].plain_dealt,
+                        supply[(age - 1) as usize].plain_cards,
+                    );
+                }
+            }
+            w[usize::from(first)] = total;
+        }
+    }
+
+    let play_again_wonders = WonderId::all()
+        .filter(|w| w.def().play_again)
+        .fold(0u16, |m, w| m | (1u16 << w.index()));
+    let theology_token = TokenId::all().find(|t| t.def().wonder_play_again);
 
     Masks {
         shield,
@@ -322,6 +393,9 @@ fn build() -> Masks {
         great_library,
         mausoleum,
         shield_wonders,
+        future_dealt_weight,
+        play_again_wonders,
+        theology_token,
     }
 }
 

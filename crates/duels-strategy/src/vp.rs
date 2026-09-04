@@ -20,6 +20,7 @@ use duels_core::scoring;
 use duels_core::{GameState, Player};
 
 use crate::board::Board;
+use crate::context::Context;
 use crate::masks::{iter_cards, masks};
 
 /// Named weights for [`VpRead::structural_edge`].
@@ -95,12 +96,13 @@ impl VpRead {
 
 /// Read the victory-point race for `player`.
 pub fn vp_read(state: &GameState, player: Player) -> VpRead {
-    vp_read_with(state, player, &Board::of(state), &VpWeights::default())
+    vp_read_with(state, player, &Context::of(state), &VpWeights::default())
 }
 
-/// [`vp_read`] against a [`Board`] the caller already built, with explicit
+/// [`vp_read`] against a [`Context`] the caller already built, with explicit
 /// weights.
-pub fn vp_read_with(state: &GameState, player: Player, board: &Board, w: &VpWeights) -> VpRead {
+pub fn vp_read_with(state: &GameState, player: Player, ctx: &Context, w: &VpWeights) -> VpRead {
+    let board = &ctx.board;
     let m = masks();
     let opp = player.other();
     let mine = scoring::breakdown(state, player);
@@ -115,18 +117,8 @@ pub fn vp_read_with(state: &GameState, player: Player, board: &Board, w: &VpWeig
     };
 
     let civilian_face_up = crate::masks::victory_points_in(board.face_up & m.civilian_vp_mask());
-    let civ_mask = m.civilian_vp_mask();
-    let civilian_vp_hidden = board.expected_hidden(|c| {
-        if civ_mask & (1u128 << c.index()) != 0 {
-            f64::from(c.def().victory_points)
-        } else {
-            0.0
-        }
-    });
-    let mut civilian_vp_future_ages = 0.0;
-    for age in board.undealt_ages() {
-        civilian_vp_future_ages += m.age_supply(age).expected_civilian_vp();
-    }
+    let civilian_vp_hidden = ctx.expected.hidden_civilian_vp;
+    let civilian_vp_future_ages = ctx.expected.future_civilian_vp;
 
     let lean = guild_lean(state, player, board);
     let gap = i32::from(mine.total) - i32::from(theirs.total);

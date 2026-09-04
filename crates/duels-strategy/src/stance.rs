@@ -1,50 +1,60 @@
 //! The policy layer: what is this position *about*, and which moves deserve
 //! search attention?
 //!
-//! [`stance`] reads both races for both players once and classifies the
-//! position into one of five [`StanceMode`]s, following a strict priority
-//! order. [`action_prior`] then prices a single action against that
-//! classification, returning a normalizable weight — the caller normalizes
-//! over its own legal-action list.
+//! # Denial is a price, not a mode
 //!
-//! # The priority order
+//! The first cut of this layer had a discrete gate: if the opponent could win
+//! outright next turn, promote every move that took the card away, and
+//! otherwise ignore denial entirely. That is exactly wrong in the middle,
+//! which is where most of the game is. A player who is two symbols short with
+//! four copies still on the table is not "imminent", but letting them take one
+//! is worth several points of eventual swing, and a player who is one symbol
+//! short with the only copy behind an unbuilt Mausoleum is "imminent" and
+//! cannot be denied at all.
 //!
-//! 1. **Deny-Imminent** — the opponent has a move that wins outright next
-//!    turn, and this player can take the card it needs away (or, for a
-//!    military close, shove the pawn back far enough that it no longer
-//!    reaches). Nothing else matters.
-//! 2. **Push-Imminent-with-fork** — this player wins outright next turn and
-//!    the close cannot be prevented, because there are two independent
-//!    closing moves or because the closing move is a wonder, which needs no
-//!    particular card. Take it.
-//! 3. **Push-Live** — a race this player can realistically close, tilted by
-//!    `1 / turns_to_close` and by [`VpRead::structural_edge`]: a trailing
-//!    player leans in hard, a leading player barely leans at all. Suppressed
-//!    when the opponent's own supply could simply answer the push, because
-//!    tilting into a race the opponent trivially reverses is worse than
-//!    playing for points.
-//! 4. **Pressure** (science only) — the race is not really winnable against a
-//!    denying opponent, but forcing the denial has real value. A small tilt
-//!    toward a symbol, and none at all when a clearly stronger card is on the
-//!    table.
-//! 5. **VP-efficient** — otherwise play for points, with an *optionality*
-//!    tilt: a mild preference for moves that keep a race alive, and a mild
-//!    aversion to moves that hand the opponent a race they do not currently
-//!    have.
+//! So denial is priced continuously. Each race carries a magnitude
+//! `M ∈ [0, 1]` per player — [`crate::ScienceRead::magnitude`],
+//! [`crate::MilitaryRead::magnitude`] — and an action is worth
+//!
+//! ```text
+//! deny_vp(a) = game_swing_vp × stakes × (ΔM_science + ΔM_military)
+//! ΔM_race(a) = M_race(opponent) − M_race(opponent | a)
+//! ```
+//!
+//! which drops straight into the same linear victory-point channel as
+//! [`action_vp_value`]. A negative `ΔM` — an action that uncovers the shields
+//! the opponent needed, or hands them the slot they could not reach — is a
+//! *cost*, which is why this subsumes the old separate "exposure risk" term
+//! rather than sitting beside it.
+//!
+//! `stakes` scales that by who can afford a race: a player behind on points
+//! should be gambling on a race of their own rather than spending turns
+//! denying one (0.6×), a player ahead has more to lose (1.4×).
+//!
+//! # What is left of the discrete rules
+//!
+//! One rail: an action that takes a *certain* opposing win (`M == 1`) and
+//! makes it uncertain, or that closes this player's own race, is promoted by
+//! [`PriorWeights::dominating`] so a search always looks there first. The
+//! [`StanceMode`] enum survives as a label — computed *from* the magnitudes,
+//! not consulted by them — plus the push-side tilts, which are about this
+//! player's own plan rather than about the opponent's.
 //!
 //! # This is a prior, not a decision
 //!
-//! Nothing here plays a move. A weight of `dominating` says "look here first",
-//! and it is deliberately possible for two different actions to both get it —
-//! in Deny-Imminent mode, a player who can *also* win right now has both the
-//! deny and the win promoted, and the search decides.
+//! Nothing here plays a move. A weight of `dominating` says "look here
+//! first", and it is deliberately possible for two different actions to both
+//! get it — a player who can *also* win right now has both the deny and the
+//! win promoted, and the search decides.
 
 use duels_core::state::Phase;
 use duels_core::{cost, engine, scoring, Action, GameState, Player};
 
 use crate::board::{iter_slots, Board};
-use crate::military::{military_read_with, MilitaryRead, MilitaryStatus};
-use crate::science::{science_read_with, token_value, ScienceRead, ScienceStatus};
+use crate::context::Context;
+use crate::military::{military_read_with, MilModel, MilitaryRead, MilitaryStatus, ShieldSource};
+use crate::science::{science_read_with, token_value, SciModel, ScienceRead, ScienceStatus};
+use crate::tempo::{grants_extra_turn, holds_theology, ThreatWeights};
 use crate::vp::{vp_read_with, VpRead, VpWeights};
 
 /// Points per coin, matching the real `floor(coins / 3)` scoring rule.
@@ -59,11 +69,13 @@ pub enum Race {
     Science,
 }
 
-/// What a position is about, per the priority order in the module docs.
+/// What a position is about. A label over the magnitudes, and the carrier of
+/// the push-side tilts; the denial half of the prior does not consult it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StanceMode {
-    /// The opponent closes next turn and this player can stop it.
-    DenyImminent,
+    /// The opponent has a race at `M == 1` — certain if unopposed — and this
+    /// player has a way to make it uncertain.
+    DenyCertain,
     /// This player closes next turn and cannot be stopped.
     PushImminentFork,
     /// A race worth leaning into.
@@ -76,16 +88,16 @@ pub enum StanceMode {
 
 /// Named weights for [`action_prior`].
 ///
-/// Every judgement call the prior makes lives here rather than as a literal in
-/// the code, so it can be swept or fitted later by a tournament runner without
-/// touching the rules.
+/// Every judgement call the prior makes lives here or in [`ThreatWeights`]
+/// rather than as a literal in the code, so it can be swept or fitted later by
+/// a tournament runner without touching the rules.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PriorWeights {
     /// Weight every action starts from.
     pub base: f64,
-    /// Multiplier applied to a move that closes or denies a race outright.
-    /// Set far above the range the other terms can reach, so a closing move is
-    /// always at the top of the list.
+    /// Multiplier applied to a move that closes a race outright, or that
+    /// breaks a certain opposing one. Set far above the range the other terms
+    /// can reach, so such a move is always at the top of the list.
     pub dominating: f64,
     /// Tilt applied to a race-advancing move in [`StanceMode::PushLive`],
     /// before the tempo and edge adjustments.
@@ -101,13 +113,11 @@ pub struct PriorWeights {
     /// How far below the best available move a symbol-gaining move may be
     /// before the pressure tilt is withheld entirely, in victory points.
     pub pressure_margin: f64,
-    /// Weight on [`action_vp_value`] in [`StanceMode::VpEfficient`].
+    /// Weight on the linear victory-point channel: [`action_vp_value`] plus
+    /// [`deny_vp`].
     pub vp: f64,
     /// Tilt for a move that keeps one of this player's races alive.
     pub optionality: f64,
-    /// Aversion to a move that opens up shields for an opponent who is close
-    /// to military supremacy, at full exposure.
-    pub exposure: f64,
     /// Lower bound on a returned weight, so a prior is never zero or negative
     /// and every legal move keeps some probability.
     pub floor: f64,
@@ -125,7 +135,6 @@ impl Default for PriorWeights {
             pressure_margin: 3.0,
             vp: 0.35,
             optionality: 0.15,
-            exposure: 0.4,
             floor: 0.05,
         }
     }
@@ -138,6 +147,8 @@ pub struct Stance {
     pub player: Player,
     /// Where the cards publicly are.
     pub board: Board,
+    /// The threat-model weights in force.
+    pub threat: ThreatWeights,
     /// This player's military race.
     pub military: MilitaryRead,
     /// The opponent's military race — this player's military threat level.
@@ -155,6 +166,9 @@ pub struct Stance {
     /// The multiplier a race-advancing move receives in
     /// [`StanceMode::PushLive`] or [`StanceMode::Pressure`], as `1 + tilt`.
     pub tilt: f64,
+    /// How much a point of the opponent's race magnitude is worth to this
+    /// player: `clamp(1 + stakes_scale × structural_edge, 0.6, 1.4)`.
+    pub stakes: f64,
     /// Slots whose card the opponent needs to close a race, and which this
     /// player can therefore take away.
     pub deny_slots: u32,
@@ -164,6 +178,16 @@ pub struct Stance {
     /// Wonders that would do the same. Bitmask over
     /// [`duels_core::data::WonderId::index`].
     pub counter_wonders: u16,
+    /// Play-again wonders whose construction *begins* a certain close that
+    /// needs the extra turn to finish. Bitmask over
+    /// [`duels_core::data::WonderId::index`].
+    ///
+    /// A race at `M == 1` is not always closed by one card: the sixth symbol
+    /// may sit behind a covering card, or the last shields may be split
+    /// between a wonder and a card. In those positions the winning move is the
+    /// wonder that buys the second action, and there is no closing *slot* at
+    /// all — so the promotion rail would miss it without this.
+    pub chain_close_wonders: u16,
     /// Slots that advance the race in [`Stance::race`].
     pub push_slots: u32,
     /// Wonders that advance it. Bitmask over
@@ -172,6 +196,20 @@ pub struct Stance {
     /// Slots whose card keeps one of this player's races alive: an affordable
     /// shield card, or an affordable card carrying a symbol they want.
     pub optionality_slots: u32,
+    /// Revealed slots whose card the *opponent* could afford right now. What
+    /// makes an uncovered card a real gift rather than a theoretical one.
+    pub opponent_affordable_slots: u32,
+    /// Whether the *mover* holds Theology, so every wonder they build hands
+    /// them another turn — and with it the card that build uncovers. This is
+    /// what lets a defender reach behind a covering card.
+    pub mover_holds_theology: bool,
+    /// Whether the opponent holds Strategy, so every red card they build is
+    /// worth one shield more than it prints.
+    pub opponent_strategy: bool,
+    /// Revealed slots holding a red card the opponent could pay for. What
+    /// makes uncovering one a gift rather than a shrug, and the fast path the
+    /// denial channel tests before touching a model.
+    pub exposed_shield_slots: u32,
     /// The best [`action_vp_value`] among the legal actions. Used to withhold
     /// the pressure tilt when a clearly stronger card is on the table, and
     /// therefore computed only in [`StanceMode::Pressure`] — it is zero in
@@ -180,8 +218,6 @@ pub struct Stance {
     pub best_action_vp: f64,
     /// Whether this player has a move that closes a race right now.
     pub can_close_now: bool,
-    /// Expected shields behind one face-down slot of the current age.
-    pub expected_shields_per_hidden: f64,
     /// The weights in force.
     pub weights: PriorWeights,
 }
@@ -201,7 +237,10 @@ impl Stance {
             Some(Race::Science) => "science",
             None => "-",
         };
-        format!("{:?} (race: {race}, tilt: {:+.2})", self.mode, self.tilt)
+        format!(
+            "{:?} (race: {race}, tilt: {:+.2}, stakes: {:.2}x)",
+            self.mode, self.tilt, self.stakes
+        )
     }
 }
 
@@ -210,22 +249,32 @@ pub fn stance(state: &GameState, player: Player) -> Stance {
     stance_with(state, player, PriorWeights::default())
 }
 
-/// [`stance`] with explicit prior weights.
+/// [`stance`] with explicit prior weights and [`ThreatWeights::default`].
 pub fn stance_with(state: &GameState, player: Player, weights: PriorWeights) -> Stance {
-    let opp = player.other();
-    let board = Board::of(state);
-    let military = military_read_with(state, player, &board);
-    let opponent_military = military_read_with(state, opp, &board);
-    let science = science_read_with(state, player, &board);
-    let opponent_science = science_read_with(state, opp, &board);
-    let vp = vp_read_with(state, player, &board, &VpWeights::default());
+    stance_in(
+        state,
+        player,
+        weights,
+        &Context::with(state, ThreatWeights::default()),
+    )
+}
 
-    let hidden = board.hidden_slot_count();
-    let expected_shields_per_hidden = if hidden == 0 {
-        0.0
-    } else {
-        board.expected_hidden(|c| f64::from(c.def().shields)) / f64::from(hidden)
-    };
+/// [`stance`] against a [`Context`] the caller already built, which is where
+/// the threat weights come from.
+pub fn stance_in(
+    state: &GameState,
+    player: Player,
+    weights: PriorWeights,
+    ctx: &Context,
+) -> Stance {
+    let opp = player.other();
+    let military = military_read_with(state, player, ctx);
+    let opponent_military = military_read_with(state, opp, ctx);
+    let science = science_read_with(state, player, ctx);
+    let opponent_science = science_read_with(state, opp, ctx);
+    let vp = vp_read_with(state, player, ctx, &VpWeights::default());
+    let board = &ctx.board;
+    let tw = &ctx.weights;
 
     // --- what this player could do about the opponent's race ---------------
     let deny_slots = opponent_military.closing_slots | opponent_science.closing_slots;
@@ -243,33 +292,45 @@ pub fn stance_with(state: &GameState, player: Player, weights: PriorWeights) -> 
                 continue;
             }
             match src {
-                crate::military::ShieldSource::Card { slot, .. } => {
-                    counter_slots |= 1u32 << slot;
-                }
-                crate::military::ShieldSource::Wonder { wonder, .. } => {
-                    counter_wonders |= 1u16 << wonder.index();
-                }
+                ShieldSource::Card { slot, .. } => counter_slots |= 1u32 << slot,
+                ShieldSource::Wonder { wonder, .. } => counter_wonders |= 1u16 << wonder.index(),
             }
         }
     }
 
+    // A close that needs the extra turn a play-again wonder buys has no
+    // closing slot and no closing wonder of its own: the magnitude says the
+    // race is won, and the wonder is the first half of winning it.
+    let needs_a_chain = (science.magnitude >= 1.0
+        && science.closing_slots == 0
+        && science.closing_via_token.is_none())
+        || (military.magnitude >= 1.0
+            && military.closing_slots == 0
+            && military.closing_wonders == 0
+            && military.need > 0);
+    let chain_close_wonders = if needs_a_chain && ctx.tempo(player).chain > 0 {
+        let affordable = ctx.prices(player).affordable_wonders;
+        if holds_theology(state, player) {
+            affordable
+        } else {
+            affordable & crate::masks::masks().play_again_wonders()
+        }
+    } else {
+        0
+    };
+
     let can_close_now = military.closing_slots != 0
         || military.closing_wonders != 0
         || science.closing_slots != 0
-        || science.closing_via_token.is_some();
+        || science.closing_via_token.is_some()
+        || chain_close_wonders != 0;
 
     // --- which of this player's races is worth pushing ---------------------
-    let military_live = matches!(
-        military.status,
-        MilitaryStatus::Imminent | MilitaryStatus::Live
-    );
-    let science_live = matches!(
-        science.status,
-        ScienceStatus::Imminent | ScienceStatus::Live
-    );
+    let military_live = military.magnitude >= tw.live_threshold;
+    let science_live = science.magnitude >= tw.live_threshold;
     let military_turns = military.turns_to_close.unwrap_or(u8::MAX);
     let opponent_military_turns = opponent_military.turns_to_close.unwrap_or(u8::MAX);
-    let science_turns = if science.status == ScienceStatus::Imminent {
+    let science_turns = if science.magnitude >= 1.0 {
         1
     } else {
         science.missing.max(1)
@@ -317,20 +378,22 @@ pub fn stance_with(state: &GameState, player: Player, weights: PriorWeights) -> 
     optionality_slots &= board.accessible;
 
     // --- the priority order -----------------------------------------------
-    let threatened = opponent_military.status == MilitaryStatus::Imminent
-        || opponent_science.status == ScienceStatus::Imminent;
+    let certain_threat = opponent_military.magnitude >= 1.0 || opponent_science.magnitude >= 1.0;
     let can_deny = deny_slots != 0 || counter_slots != 0 || counter_wonders != 0;
 
     let military_unstoppable = military.status == MilitaryStatus::Imminent && military.undeniable;
     // The science analogue of a fork: two accessible cards either of which
     // completes the sixth symbol, so one opposing turn cannot take both.
-    let science_unstoppable =
-        science.status == ScienceStatus::Imminent && science.closing_slots.count_ones() >= 2;
+    let science_unstoppable = science.status == ScienceStatus::Imminent
+        && (science.closing_slots.count_ones() >= 2
+            // A chained close happens inside one visit to the table, so the
+            // opponent only gets to interfere if they can chain too.
+            || (chain_close_wonders != 0 && ctx.tempo(opp).chain == 0));
 
     let mut tilt = 0.0;
     let mut final_race = race;
-    let mode = if threatened && can_deny {
-        StanceMode::DenyImminent
+    let mode = if certain_threat && can_deny {
+        StanceMode::DenyCertain
     } else if military_unstoppable || science_unstoppable {
         final_race = Some(if military_unstoppable {
             Race::Military
@@ -374,7 +437,8 @@ pub fn stance_with(state: &GameState, player: Player, weights: PriorWeights) -> 
 
     Stance {
         player,
-        board,
+        board: *board,
+        threat: *tw,
         military,
         opponent_military,
         science,
@@ -383,15 +447,24 @@ pub fn stance_with(state: &GameState, player: Player, weights: PriorWeights) -> 
         mode,
         race: final_race,
         tilt,
+        stakes: (1.0 + tw.stakes_scale * vp.structural_edge).clamp(tw.stakes_min, tw.stakes_max),
         deny_slots,
         counter_slots,
         counter_wonders,
+        chain_close_wonders,
         push_slots,
         push_wonders,
         optionality_slots,
+        // What the opponent could pay for: the delta model asks this of every
+        // card a move would uncover, and `Prices` already knows.
+        opponent_affordable_slots: ctx.prices(opp).affordable_slots,
+        exposed_shield_slots: ctx.prices(opp).affordable_slots & board.shield_slots,
+        mover_holds_theology: holds_theology(state, player),
+        opponent_strategy: crate::masks::masks()
+            .strategy_token()
+            .is_some_and(|t| state.player(opp).tokens().any(|held| held == t)),
         best_action_vp,
         can_close_now,
-        expected_shields_per_hidden,
         weights,
     }
 }
@@ -415,7 +488,9 @@ pub fn action_closes(action: Action, stance: &Stance) -> bool {
             stance.military.closing_slots & bit != 0 || stance.science.closing_slots & bit != 0
         }
         Action::BuildWonder { wonder, .. } => {
-            stance.military.closing_wonders & (1u16 << wonder.index()) != 0
+            (stance.military.closing_wonders | stance.chain_close_wonders)
+                & (1u16 << wonder.index())
+                != 0
         }
         Action::ChooseProgressToken { token } | Action::ChooseGreatLibraryToken { token } => {
             stance.science.closing_via_token == Some(token)
@@ -426,6 +501,10 @@ pub fn action_closes(action: Action, stance: &Stance) -> bool {
 
 /// Whether `action` would take away the card the opponent needs to close, or
 /// shove the conflict pawn back out of their reach.
+///
+/// A diagnostic: [`action_prior`] prices denial through [`delta_m`] instead, so
+/// that a move which only *partly* spoils an opposing race is worth a
+/// proportionate amount rather than nothing.
 pub fn action_denies(action: Action, stance: &Stance) -> bool {
     match action {
         Action::Build { slot } | Action::Discard { slot } => {
@@ -452,6 +531,222 @@ pub fn action_advances(action: Action, stance: &Stance) -> bool {
     }
 }
 
+/// How much one action moves the *opponent's* race magnitudes.
+///
+/// Positive is denial: the opponent is less likely to win that race after this
+/// move. Negative means the move helps them — uncovering the red card they
+/// needed, or clearing the cover off the symbol they could not reach.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DeltaM {
+    /// `M_science(opponent) − M_science(opponent | action)`.
+    pub science: f64,
+    /// `M_military(opponent) − M_military(opponent | action)`.
+    pub military: f64,
+    /// Whether the action turns a *certain* opposing win into an uncertain
+    /// one: what the [`PriorWeights::dominating`] rail fires on.
+    pub breaks_certainty: bool,
+}
+
+impl DeltaM {
+    /// The two races together.
+    #[inline]
+    pub fn total(&self) -> f64 {
+        self.science + self.military
+    }
+}
+
+/// [`DeltaM`] for one action.
+///
+/// Applies the action to the *extracted inputs* of the opponent's reads
+/// ([`SciModel`], [`MilModel`]) rather than replaying it through
+/// [`duels_core::engine::apply`]: a prior that cost a real state transition per
+/// legal move would cost more than the search it is meant to guide.
+pub fn delta_m(action: Action, s: &Stance) -> DeltaM {
+    let board = &s.board;
+    let sci_before = s.opponent_science.magnitude;
+    let mil_before = s.opponent_military.magnitude;
+
+    // A race that is physically dead, or that needs more symbols than the
+    // opponent has decisions left, is already at zero and nothing below can
+    // add a route back — so it never has to be recomputed. Likewise, no move
+    // can take shields off a military race that already reads zero; only
+    // uncovering a red card can move it, and that is checked for separately.
+    let sci_frozen = s.opponent_science.dead
+        || f64::from(s.opponent_science.missing) > s.opponent_science.model.decisions_left_eff;
+
+    // The models are several hundred bytes each and almost every legal move in
+    // almost every position touches neither, so they are copied lazily: a
+    // bitmask test says whether this action can move a magnitude at all, and
+    // only then is there a model to modify.
+    let mut sci: Option<SciModel> = None;
+    let mut mil: Option<MilModel> = None;
+
+    match action {
+        Action::Build { slot } | Action::Discard { slot } | Action::BuildWonder { slot, .. } => {
+            let bit = 1u32 << slot;
+            // The card leaves the structure, so the opponent cannot have it.
+            if !sci_frozen
+                && (s.opponent_science.missing_symbol_slots
+                    | s.opponent_science.reachable_missing_slots)
+                    & bit
+                    != 0
+            {
+                let symbol = board.slot_card[slot as usize].and_then(|c| c.def().science);
+                sci = Some(
+                    sci.unwrap_or(s.opponent_science.model)
+                        .after_slot_taken(slot, symbol),
+                );
+            }
+            if mil_before > 0.0 {
+                if let Some(shields) = s.opponent_military.card_source_shields(slot) {
+                    mil = Some(
+                        mil.unwrap_or(s.opponent_military.model)
+                            .after_card_denied(shields),
+                    );
+                }
+            }
+
+            // ...and whatever it was sitting on comes into view. A play-again
+            // wonder buys the turn on which the mover takes the best of those
+            // for themselves, so it is a denial rather than a gift.
+            let (uncovered, _) = board.newly_open_slots_after(slot, board.occupied);
+            let sci_uncovered = if sci_frozen {
+                0
+            } else {
+                uncovered & s.opponent_science.missing_symbol_slots
+            };
+            let mil_uncovered = uncovered & s.exposed_shield_slots;
+            if sci_uncovered | mil_uncovered != 0 {
+                let chained = matches!(action, Action::BuildWonder { wonder, .. }
+                    if grants_extra_turn(wonder, s.mover_holds_theology));
+                let claimed = if chained {
+                    most_damaging(
+                        sci_uncovered,
+                        board,
+                        sci.as_ref().unwrap_or(&s.opponent_science.model),
+                    )
+                } else {
+                    None
+                };
+                for uslot in iter_slots(sci_uncovered | mil_uncovered) {
+                    let ubit = 1u32 << uslot;
+                    let Some(card) = board.slot_card[uslot as usize] else {
+                        continue;
+                    };
+                    if Some(uslot) == claimed {
+                        if let Some(sym) = card.def().science {
+                            sci = Some(
+                                sci.unwrap_or(s.opponent_science.model)
+                                    .after_slot_taken(uslot, Some(sym)),
+                            );
+                        }
+                        continue;
+                    }
+                    if s.opponent_affordable_slots & ubit == 0 {
+                        continue;
+                    }
+                    if sci_uncovered & ubit != 0 {
+                        if let Some(sym) = card.def().science {
+                            sci = Some(
+                                sci.unwrap_or(s.opponent_science.model)
+                                    .with_reachable(sym, uslot),
+                            );
+                        }
+                    }
+                    if mil_uncovered & ubit != 0 {
+                        mil = Some(mil.unwrap_or(s.opponent_military.model).after_card_exposed(
+                            card.def().shields + u8::from(s.opponent_strategy),
+                        ));
+                    }
+                }
+            }
+
+            // Shields the mover gains push the pawn back the other way, so the
+            // opponent needs more of them.
+            if mil_before > 0.0 {
+                let gained = match action {
+                    Action::Build { slot } => board.slot_card[slot as usize]
+                        .map(|c| c.def().shields)
+                        .unwrap_or(0),
+                    Action::BuildWonder { wonder, .. } => wonder.def().shields,
+                    _ => 0,
+                };
+                if gained > 0 {
+                    mil = Some(
+                        mil.unwrap_or(s.opponent_military.model)
+                            .after_counter_push(gained),
+                    );
+                }
+            }
+        }
+        Action::ChooseProgressToken { token } | Action::ChooseGreatLibraryToken { token } => {
+            if !sci_frozen && crate::masks::masks().law_token() == Some(token) {
+                sci = Some(s.opponent_science.model.after_law_taken());
+            }
+        }
+        Action::MausoleumBuild { card } => {
+            if !sci_frozen {
+                if let Some(sym) = card.def().science {
+                    sci = Some(s.opponent_science.model.after_discard_taken(sym));
+                }
+            }
+            if mil_before > 0.0 && card.def().shields > 0 {
+                mil = Some(
+                    s.opponent_military
+                        .model
+                        .after_counter_push(card.def().shields),
+                );
+            }
+        }
+        // Destroy effects only ever target brown and grey buildings, which
+        // carry neither symbols nor shields, so they move no magnitude.
+        Action::DestroyOpponentCard { .. }
+        | Action::PickWonder { .. }
+        | Action::ChooseFirstPlayer { .. } => {}
+    }
+
+    let sci_after = sci.map_or(sci_before, |m| m.magnitude().value);
+    let mil_after = mil.map_or(mil_before, |m| m.magnitude());
+
+    DeltaM {
+        science: sci_before - sci_after,
+        military: mil_before - mil_after,
+        breaks_certainty: (sci_before >= 1.0 && sci_after < 1.0)
+            || (mil_before >= 1.0 && mil_after < 1.0),
+    }
+}
+
+/// The uncovered slot the mover would most want for themselves on a chained
+/// extra turn: a symbol the threat-holder still needs, preferring the scarcest.
+fn most_damaging(uncovered: u32, board: &Board, sci: &SciModel) -> Option<u8> {
+    let mut best: Option<(u8, f64)> = None;
+    for slot in iter_slots(uncovered) {
+        let Some(card) = board.slot_card[slot as usize] else {
+            continue;
+        };
+        let Some(sym) = card.def().science else {
+            continue;
+        };
+        if sci.held[sym.index()] > 0 {
+            continue;
+        }
+        let c = sci.copies(sym);
+        if best.is_none_or(|(_, b)| c < b) {
+            best = Some((slot, c));
+        }
+    }
+    best.map(|(slot, _)| slot)
+}
+
+/// The victory-point equivalent of what `action` does to the opponent's races.
+///
+/// `game_swing_vp × stakes × ΔM`, so it drops into the same linear channel as
+/// [`action_vp_value`] and needs no separate weight of its own.
+pub fn deny_vp(action: Action, stance: &Stance) -> f64 {
+    let d = delta_m(action, stance);
+    stance.threat.game_swing_vp * stance.stakes * d.total()
+}
+
 /// A normalizable prior weight for one action, given a precomputed
 /// [`Stance`].
 ///
@@ -460,75 +755,48 @@ pub fn action_advances(action: Action, stance: &Stance) -> bool {
 /// the search.
 pub fn action_prior(state: &GameState, action: Action, stance: &Stance) -> f64 {
     let w = &stance.weights;
-    let mut weight = w.base;
+    let d = delta_m(action, stance);
+    let deny = stance.threat.game_swing_vp * stance.stakes * d.total();
+    let vp = action_vp_value(state, stance.player, action);
+    let mut weight = w.base + w.vp * (vp + deny);
 
+    // The push side of the prior: this player's own plan, which the denial
+    // channel says nothing about.
     match stance.mode {
-        StanceMode::DenyImminent => {
-            if action_denies(action, stance) {
-                weight *= w.dominating;
-            }
-            // A player who can win right now should not be steered into
-            // defending instead; both get promoted and the search picks.
-            if stance.can_close_now && action_closes(action, stance) {
-                weight *= w.dominating;
-            }
-        }
-        StanceMode::PushImminentFork => {
-            if action_closes(action, stance) {
-                weight *= w.dominating;
-            }
-        }
         StanceMode::PushLive => {
-            weight += w.vp * action_vp_value(state, stance.player, action);
             if action_advances(action, stance) {
                 weight *= 1.0 + stance.tilt;
             }
         }
         StanceMode::Pressure => {
-            let vp = action_vp_value(state, stance.player, action);
             let symbol_move = matches!(action, Action::Build { slot }
                 if stance.science.new_symbol_slots & (1u32 << slot) != 0);
-            weight += w.vp * vp;
             // No tilt at all when a clearly stronger card is on the table.
             if symbol_move && vp + w.pressure_margin >= stance.best_action_vp {
                 weight *= 1.0 + stance.tilt;
             }
         }
         StanceMode::VpEfficient => {
-            weight += w.vp * action_vp_value(state, stance.player, action);
             if let Some(slot) = action_slot(action) {
                 if stance.optionality_slots & (1u32 << slot) != 0 {
                     weight *= 1.0 + w.optionality;
                 }
             }
-            weight *= 1.0 - w.exposure * exposure_risk(action, stance);
         }
+        StanceMode::DenyCertain | StanceMode::PushImminentFork => {}
+    }
+
+    // The one surviving discrete rail: make a search look at the moves that
+    // end the game, in either direction. The promoted weight is floored at
+    // `base` *before* the multiplier, because a game-ending move is very
+    // often an expensive one — the card that reaches the capital can easily be
+    // a net loss in coins, and `base + vp × (a big negative)` would otherwise
+    // leave it below a free discard however hard it is multiplied.
+    if d.breaks_certainty || (stance.can_close_now && action_closes(action, stance)) {
+        weight = weight.max(w.base) * w.dominating;
     }
 
     weight.max(w.floor)
-}
-
-/// How much this action would open up the opponent's military race, in
-/// `0.0..=1.0`.
-///
-/// Taking a card uncovers what it was sitting on. Some of that is face up
-/// already, so its shields are known exactly; the rest is turned over, and is
-/// priced at the expected shields behind one face-down slot of this age. The
-/// result is scaled by how few shields the opponent still needs, so exposing a
-/// three-shield card matters enormously at `need == 3` and hardly at all at
-/// `need == 9`.
-pub fn exposure_risk(action: Action, stance: &Stance) -> f64 {
-    let Some(slot) = action_slot(action) else {
-        return 0.0;
-    };
-    let (known, face_down) = stance.board.newly_open_after(slot);
-    let exposed = f64::from(crate::masks::shields_in(known))
-        + f64::from(face_down) * stance.expected_shields_per_hidden;
-    if exposed <= 0.0 {
-        return 0.0;
-    }
-    let need = f64::from(stance.opponent_military.need.max(1));
-    (exposed / need).clamp(0.0, 1.0)
 }
 
 /// A cheap "how many victory points is this move worth to me right now"
@@ -721,8 +989,9 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<Stance>();
         let size = std::mem::size_of::<Stance>();
-        assert!(size <= 1024, "Stance grew to {size} bytes");
+        assert!(size <= 4096, "Stance grew to {size} bytes");
         println!("size_of::<Stance>() = {size}");
+        println!("size_of::<Context>() = {}", std::mem::size_of::<Context>());
         println!("size_of::<Board>() = {}", std::mem::size_of::<Board>());
         println!(
             "size_of::<MilitaryRead>() = {}",

@@ -18,7 +18,7 @@
 //! determinization of a position from another; that is asserted by
 //! `tests/determinization_invariance.rs`.
 
-use duels_core::data::{self, CardId, NUM_CARDS};
+use duels_core::data::{self, CardId, NUM_CARDS, NUM_SCIENCE};
 use duels_core::layout::{self, SLOTS};
 use duels_core::state::{Phase, GUILDS_IN_PLAY};
 use duels_core::{GameState, Player};
@@ -44,6 +44,22 @@ pub struct Board {
     pub face_up: u128,
     /// Cards face up *and* currently accessible.
     pub accessible_cards: u128,
+    /// Revealed, occupied slots whose card carries each scientific symbol,
+    /// indexed by [`duels_core::data::Science::index`].
+    ///
+    /// Answers "which slots would give me the Wheel" with an `and`, which the
+    /// science read and the denial channel both ask of every position.
+    pub symbol_slots: [u32; NUM_SCIENCE],
+    /// Revealed, occupied slots whose card carries at least one shield.
+    pub shield_slots: u32,
+    /// Face-up slots that taking any *one* accessible card would make
+    /// accessible.
+    ///
+    /// The frontier one move out, which is what a chained extra turn reaches
+    /// and what an ordinary move hands to the opponent. Knowing it up front is
+    /// what lets [`crate::Prices`] price the handful of slots that can matter
+    /// rather than every revealed card in the structure.
+    pub one_step_reveals: u32,
     /// Cards in either player's city.
     pub in_city: u128,
     /// Cards in the shared discard pile.
@@ -87,12 +103,21 @@ impl Board {
             std::array::from_fn(|i| state.face_up_card(i as u8));
         let mut face_up = 0u128;
         let mut accessible_cards = 0u128;
+        let mut symbol_slots = [0u32; NUM_SCIENCE];
+        let mut shield_slots = 0u32;
         for (i, entry) in slot_card.iter().enumerate() {
             if let Some(card) = entry {
                 let bit = 1u128 << card.index();
                 face_up |= bit;
                 if accessible & (1u32 << i) != 0 {
                     accessible_cards |= bit;
+                }
+                let def = card.def();
+                if let Some(sym) = def.science {
+                    symbol_slots[sym.index()] |= 1u32 << i;
+                }
+                if def.shields > 0 {
+                    shield_slots |= 1u32 << i;
                 }
             }
         }
@@ -128,6 +153,27 @@ impl Board {
             slot_card,
             face_up,
             accessible_cards,
+            symbol_slots,
+            shield_slots,
+            one_step_reveals: {
+                let l = layout::layout(age);
+                let mut out = 0u32;
+                let mut rest = accessible;
+                while rest != 0 {
+                    let slot = rest.trailing_zeros() as usize;
+                    rest &= rest - 1;
+                    let occ = occupied & !(1u32 << slot);
+                    let mut covers = l.covers[slot] & occ;
+                    while covers != 0 {
+                        let i = covers.trailing_zeros() as usize;
+                        covers &= covers - 1;
+                        if l.covered_by[i] & occ == 0 && revealed & (1u32 << i) != 0 {
+                            out |= 1u32 << i;
+                        }
+                    }
+                }
+                out
+            },
             in_city,
             discard,
             fodder,
@@ -174,6 +220,34 @@ impl Board {
             .saturating_sub(self.hidden_guild_count)
     }
 
+    /// Face-up slots reachable within `depth` consecutive takes: the
+    /// accessible slots, plus what taking any of them would reveal, plus what
+    /// taking any of *those* would reveal, and so on.
+    ///
+    /// Optimistic past depth one — it lets every slot reached so far be the
+    /// one that got taken — which matches the reachability walk in the science
+    /// read. Depth zero is just the accessible slots.
+    pub fn reveals_within(&self, depth: u8) -> u32 {
+        let mut seen = self.accessible;
+        let mut layer = self.accessible;
+        let mut occupancy = self.occupied;
+        for _ in 0..depth {
+            occupancy &= !layer;
+            let mut next = 0u32;
+            for slot in iter_slots(layer) {
+                let (known, _) = self.newly_open_slots_after(slot, occupancy | (1u32 << slot));
+                next |= known;
+            }
+            next &= !seen;
+            if next == 0 {
+                break;
+            }
+            seen |= next;
+            layer = next;
+        }
+        seen
+    }
+
     /// Slot indices that are accessible right now.
     pub fn accessible_slots(&self) -> impl Iterator<Item = u8> {
         iter_slots(self.accessible)
@@ -200,6 +274,37 @@ impl Board {
             + scaled(self.unknown_plain, self.hidden_plain_count())
     }
 
+    /// [`Board::expected_hidden`] for three figures at once, in one pass over
+    /// the pool.
+    ///
+    /// Every caller of `expected_hidden` wants two or three of these at the
+    /// same time — shields, shield-bearing cards, civilian points — and the
+    /// pool walk plus the per-card `def()` lookup dominate the cost, not the
+    /// arithmetic.
+    pub fn expected_hidden_3(&self, per_card: impl Fn(CardId) -> [f64; 3]) -> [f64; 3] {
+        let mut out = [0.0f64; 3];
+        let scaled = |pool: u128, slots: u8, out: &mut [f64; 3]| {
+            let n = pool.count_ones();
+            if n == 0 || slots == 0 {
+                return;
+            }
+            let mut total = [0.0f64; 3];
+            for card in iter_cards(pool) {
+                let v = per_card(card);
+                for i in 0..3 {
+                    total[i] += v[i];
+                }
+            }
+            let factor = f64::from(slots) / f64::from(n);
+            for i in 0..3 {
+                out[i] += total[i] * factor;
+            }
+        };
+        scaled(self.unknown_guilds, self.hidden_guild_count, &mut out);
+        scaled(self.unknown_plain, self.hidden_plain_count(), &mut out);
+        out
+    }
+
     /// What taking the card in `slot` would open up: the cards that become
     /// accessible and are already face up (so their identity is public), and a
     /// count of the face-down slots that would be turned over.
@@ -211,10 +316,32 @@ impl Board {
     /// geometry), which is why the known half is worth reporting separately
     /// from the unknown half.
     pub fn newly_open_after(&self, slot: u8) -> (u128, u8) {
-        let l = layout::layout(self.age);
-        let occ = self.occupied & !(1u32 << slot);
+        let (known_slots, face_down_slots) = self.newly_open_slots_after(slot, self.occupied);
         let mut known = 0u128;
-        let mut face_down = 0u8;
+        for i in iter_slots(known_slots) {
+            if let Some(card) = self.slot_card[i as usize] {
+                known |= 1u128 << card.index();
+            }
+        }
+        (
+            known,
+            u8::try_from(face_down_slots.count_ones()).unwrap_or(u8::MAX),
+        )
+    }
+
+    /// The same rule as [`Board::newly_open_after`] but reported as *slots*,
+    /// and against an arbitrary occupancy rather than the current one.
+    ///
+    /// Returns `(face_up_slots, face_down_slots)`: the slots that removing
+    /// `slot` from `occupied` would make accessible, split by whether their
+    /// card's identity is already public. Taking an `occupied` other than
+    /// [`Board::occupied`] is what lets a caller walk a *sequence* of takes —
+    /// the extra turns a play-again wonder grants — without mutating anything.
+    pub fn newly_open_slots_after(&self, slot: u8, occupied: u32) -> (u32, u32) {
+        let l = layout::layout(self.age);
+        let occ = occupied & !(1u32 << slot);
+        let mut known = 0u32;
+        let mut face_down = 0u32;
         let mut rest = l.covers[slot as usize] & occ;
         while rest != 0 {
             let i = rest.trailing_zeros() as usize;
@@ -223,8 +350,8 @@ impl Board {
                 continue;
             }
             match self.slot_card[i] {
-                Some(card) => known |= 1u128 << card.index(),
-                None => face_down += 1,
+                Some(_) => known |= 1u32 << i,
+                None => face_down |= 1u32 << i,
             }
         }
         (known, face_down)

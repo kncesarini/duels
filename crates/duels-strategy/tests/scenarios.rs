@@ -56,6 +56,10 @@ const AGE_TWO_DEAL: [&str; 20] = [
     "archery-range", // 2 shields, accessible
 ];
 
+/// Two inert cards in the two accessible Age III slots: enough of a structure
+/// that both players still have a decision to make, which a *race* needs.
+const AGE_THREE_QUIET: [(u8, &str); 2] = [(18, "palace"), (19, "town-hall")];
+
 // ---------------------------------------------------------------------------
 // Military
 // ---------------------------------------------------------------------------
@@ -150,11 +154,17 @@ fn an_affordable_shield_wonder_is_a_fork_the_opponent_cannot_deny() {
 }
 
 #[test]
-fn a_contested_but_open_age_reads_as_live_for_both_players_with_a_sane_horizon() {
+fn a_symmetric_contested_age_is_not_a_race_for_either_side() {
     // A full Age II structure, pawn centred: each side needs all nine shields
-    // and there are only four on the visible table, so nobody can force
-    // anything — but between the covered cards, the face-down slots and the
-    // whole of Age III, the race is genuinely open to both.
+    // and there are only four on the visible table. The supply picture is
+    // wide open — most of the game's shields are still to come — but it is
+    // *shared*, and the magnitude model prices that honestly: two players
+    // pushing equally hard from the centre means neither of them arrives.
+    //
+    // The first cut of this crate called this position `Live` for both, on an
+    // optimistic "never outbid" estimate. That was the calibration error the
+    // magnitude model exists to fix: a race nobody wins is not a race, and
+    // pricing denial against it would waste turns.
     let st = StateBuilder::new()
         .age(2)
         .deal(&AGE_TWO_DEAL)
@@ -172,20 +182,7 @@ fn a_contested_but_open_age_reads_as_live_for_both_players_with_a_sane_horizon()
             r.best_single < r.need,
             "{p}: nobody should be able to force it in one move"
         );
-        assert_eq!(r.status, MilitaryStatus::Live, "{p}");
-        let turns = r.turns_to_close.expect("a live race has an estimate");
-        assert!(
-            (3..=8).contains(&turns),
-            "{p}: implausible turns_to_close {turns}"
-        );
-        assert!(
-            turns <= r.decisions_left,
-            "{p}: {turns} turns but only {} decisions left",
-            r.decisions_left
-        );
-        // Seven of Age II's eight shields are face up; the eighth
-        // (horse-breeders) is in the unknown pool, so a fraction of it is
-        // expected behind the eight face-down slots.
+        // The supply is real...
         assert_eq!(r.visible, 7);
         assert!(r.expected_hidden > 0.0 && r.expected_hidden < 1.0);
         assert!(
@@ -193,7 +190,67 @@ fn a_contested_but_open_age_reads_as_live_for_both_players_with_a_sane_horizon()
             "Age III still holds most of the game's shields: {}",
             r.expected_future_ages
         );
+        // ...but it is contested, so the simulation only ever limps to the
+        // capital, and the tempo discount leaves almost nothing.
+        assert!(
+            r.magnitude < 0.05,
+            "{p}: a symmetric centred pawn should not read as a threat: M = {}",
+            r.magnitude
+        );
+        assert_eq!(r.status, MilitaryStatus::Closed, "{p}");
+        let turns = r.turns_to_close.expect("the supply does eventually add up");
+        assert!(
+            turns > 10 && turns <= r.decisions_left,
+            "{p}: implausible turns_to_close {turns} of {} decisions",
+            r.decisions_left
+        );
     }
+}
+
+#[test]
+fn an_unanswerable_push_close_to_the_capital_is_a_real_race() {
+    // The other half of the same coin. The pawn is five steps up, a
+    // three-shield Arsenal is accessible, and Player One holds an unbuilt
+    // Colossus for the last two shields.
+    //
+    // The Colossus is the load-bearing part: a *card* can always be denied,
+    // because discarding it for coins costs the opponent nothing but a turn,
+    // so two accessible red cards are not two routes. A wonder needs only
+    // some card to spend, and there is nothing to take away.
+    let st = STANCE_PUSH_POSITION();
+
+    let r = military_read(&st, Player::One);
+    assert_eq!(r.need, 4);
+    assert_eq!(r.best_single, 3, "the Arsenal is three shields");
+    assert_eq!(
+        r.turns_to_close,
+        Some(2),
+        "the Arsenal, then the Colossus the opponent cannot touch"
+    );
+    assert_eq!(r.status, MilitaryStatus::Live);
+    assert!((r.magnitude - 0.7).abs() < 1e-9, "M = {}", r.magnitude);
+
+    // ...and the opponent's own race is nowhere.
+    let theirs = military_read(&st, Player::Two);
+    assert_eq!(theirs.need, 14);
+    assert_eq!(theirs.status, MilitaryStatus::Closed);
+    assert_eq!(theirs.magnitude, 0.0);
+}
+
+/// The position both the military-magnitude and the push-stance test use:
+/// pawn at +5, a three-shield Arsenal on the table, and an unbuilt Colossus
+/// in Player One's hand for the last two.
+#[allow(non_snake_case)]
+fn STANCE_PUSH_POSITION() -> duels_core::GameState {
+    StateBuilder::new()
+        .age(3)
+        .open_slots(&[(18, "arsenal"), (19, "palace"), (15, "town-hall")])
+        .wonders(Player::One, &["the-colossus"])
+        .conflict(5)
+        .coins(Player::One, 40)
+        .coins(Player::Two, 3)
+        .current(Player::One)
+        .build()
 }
 
 #[test]
@@ -273,6 +330,7 @@ fn the_law_token_on_the_board_revives_that_same_position() {
     // is survivable exactly once.
     let st = StateBuilder::new()
         .age(3)
+        .open_slots(&AGE_THREE_QUIET)
         .built(Player::One, FIVE_SYMBOLS)
         .built(Player::Two, &["academy", "study"])
         .board_tokens(&["law"])
@@ -284,6 +342,7 @@ fn the_law_token_on_the_board_revives_that_same_position() {
     assert_eq!(r.obtainable_missing, 1);
     assert!(!r.dead);
     assert_eq!(r.status, ScienceStatus::Live);
+    assert!(r.magnitude > 0.8, "M = {}", r.magnitude);
 }
 
 #[test]
@@ -318,6 +377,7 @@ fn a_pending_token_choice_with_law_on_offer_is_an_imminent_science_win() {
 fn an_unbuilt_great_library_keeps_a_set_aside_law_token_in_reach() {
     let base = StateBuilder::new()
         .age(3)
+        .open_slots(&AGE_THREE_QUIET)
         .built(Player::One, FIVE_SYMBOLS)
         .built(Player::Two, &["academy", "study"])
         .set_aside_tokens(&["law", "philosophy", "agriculture", "economy", "theology"])
@@ -362,12 +422,25 @@ fn an_unbuilt_mausoleum_makes_a_discarded_symbol_obtainable_again() {
     // and the other is in the discard pile; Gyroscope is untouched.
     let base = StateBuilder::new()
         .age(3)
+        // Both Gyroscope cards are on the table but covered, so that symbol's
+        // supply is certain without being takeable this turn, and the test is
+        // only about Sundial's Mausoleum route.
+        .open_slots(&[
+            (11, "university"),
+            (12, "observatory"),
+            (15, "palace"),
+            (16, "town-hall"),
+            (17, "obelisk"),
+            (18, "senate"),
+            (19, "gardens"),
+        ])
         .built(
             Player::One,
             &["pharmacist", "workshop", "scriptorium", "apothecary"],
         )
         .built(Player::Two, &["academy"])
         .discard(&["study"])
+        .coins(Player::One, 40)
         .current(Player::One);
 
     let without = base.clone().build();
@@ -386,6 +459,12 @@ fn an_unbuilt_mausoleum_makes_a_discarded_symbol_obtainable_again() {
     assert_eq!(r.availability[Science::Sundial.index()].via_mausoleum, 1);
     assert_eq!(r.obtainable_missing, 2);
     assert!(!r.dead);
+    // The Mausoleum is affordable, so that copy counts at full weight.
+    assert!((r.copies(Science::Sundial) - 1.0).abs() < 1e-9);
+    assert!(
+        r.kill_cost(Science::Sundial).is_infinite(),
+        "a card in the discard pile behind a Mausoleum cannot be denied"
+    );
     // Sundial is down to that single discarded copy: one point of failure.
     assert_eq!(r.fragility, 1);
     assert_eq!(r.status, ScienceStatus::Live);
@@ -551,7 +630,7 @@ fn an_imminent_opposing_military_win_puts_the_stance_into_deny_mode() {
 
     let s = stance(&st, Player::One);
     assert_eq!(s.opponent_military.status, MilitaryStatus::Imminent);
-    assert_eq!(s.mode, StanceMode::DenyImminent);
+    assert_eq!(s.mode, StanceMode::DenyCertain);
     assert_ne!(s.deny_slots & (1 << 18), 0);
     assert!(action_denies(Action::Discard { slot: 18 }, &s));
     assert!(!action_denies(Action::Discard { slot: 19 }, &s));
@@ -583,25 +662,20 @@ fn an_imminent_opposing_science_win_is_denied_the_same_way() {
 
     let s = stance(&st, Player::One);
     assert_eq!(s.opponent_science.status, ScienceStatus::Imminent);
-    assert_eq!(s.mode, StanceMode::DenyImminent);
+    assert_eq!(s.mode, StanceMode::DenyCertain);
     assert_ne!(s.deny_slots & (1 << 18), 0);
 }
 
 #[test]
 fn the_stance_leans_into_a_live_race_and_reports_which_one() {
-    let st = StateBuilder::new()
-        .age(2)
-        .deal(&AGE_TWO_DEAL)
-        .conflict(0)
-        .coins(Player::One, 12)
-        .coins(Player::Two, 3)
-        .current(Player::One)
-        .build();
+    // Player One is four shields from the capital with a three-shield Arsenal
+    // on the table and an unbuilt Colossus for the last two, and Player Two
+    // has three coins and no shields anywhere. The push is unanswered, so the
+    // stance takes the race.
+    let st = STANCE_PUSH_POSITION();
 
     let s = stance(&st, Player::One);
-    // Player Two cannot afford either shield card, so Player One's push is
-    // unanswered.
-    assert_eq!(s.opponent_military.best_single, 0);
+    assert_eq!(s.opponent_military.best_single, 0, "Player Two is broke");
     assert_eq!(s.mode, StanceMode::PushLive);
     assert_eq!(s.race, Some(duels_strategy::Race::Military));
     assert!(s.tilt > 0.0);
@@ -660,7 +734,12 @@ fn priors_are_always_positive_and_finite_over_a_whole_game() {
 }
 
 #[test]
-fn exposure_aversion_prefers_not_uncovering_shields_for_a_near_opponent() {
+fn uncovering_shields_for_a_near_opponent_is_priced_as_a_negative_delta_m() {
+    // This is the test that used to assert a separate `exposure_risk` term.
+    // It now asserts the thing that replaced it: handing the opponent a red
+    // card they can reach *raises* their military magnitude, so `delta_m` is
+    // negative and the move is priced down.
+    //
     // Player Two needs three shields. Slot 18 covers slot 16, which holds a
     // face-up Arsenal (three shields); slot 19 covers 16 and 17, and 17 holds
     // an inert card. Taking 19 does not open the Arsenal on its own, because
@@ -681,7 +760,6 @@ fn exposure_aversion_prefers_not_uncovering_shields_for_a_near_opponent() {
         .build();
 
     let s = stance(&st, Player::One);
-    assert_eq!(s.mode, StanceMode::VpEfficient);
     // Slot 18 alone does not uncover 16 either (19 still covers it), so
     // compare what each move exposes directly.
     let (known18, _) = s.board.newly_open_after(18);
@@ -693,7 +771,7 @@ fn exposure_aversion_prefers_not_uncovering_shields_for_a_near_opponent() {
     );
 
     // Now remove slot 18's cover so that taking 19 really does open the
-    // Arsenal to an opponent three shields from supremacy.
+    // Arsenal to a player three shields from supremacy.
     let sharp = StateBuilder::new()
         .age(3)
         .open_slots(&[(16, "arsenal"), (19, "obelisk")])
@@ -708,9 +786,16 @@ fn exposure_aversion_prefers_not_uncovering_shields_for_a_near_opponent() {
         known,
         1u128 << CardId::from_slug("arsenal").unwrap().index()
     );
+
+    let d = duels_strategy::delta_m(Action::Discard { slot: 19 }, &s2);
     assert!(
-        duels_strategy::stance::exposure_risk(Action::Discard { slot: 19 }, &s2) > 0.5,
-        "exposing three shields to a player who needs three should read as risky"
+        d.military < 0.0,
+        "uncovering an Arsenal for a player who needs three shields should \
+         raise their magnitude, not lower it: delta {d:?}"
+    );
+    assert!(
+        duels_strategy::deny_vp(Action::Discard { slot: 19 }, &s2) < 0.0,
+        "and that should be priced as a cost"
     );
 }
 
@@ -730,6 +815,19 @@ fn slugs_used_in_these_tests_exist() {
         ]
         .iter(),
     ) {
+        assert!(CardId::from_slug(slug).is_some(), "missing card {slug}");
+    }
+    for slug in [
+        "university",
+        "observatory",
+        "gardens",
+        "pantheon",
+        "senate",
+        "pharmacist",
+        "workshop",
+        "scriptorium",
+        "apothecary",
+    ] {
         assert!(CardId::from_slug(slug).is_some(), "missing card {slug}");
     }
     for slug in ["the-colossus", "the-great-library", "the-mausoleum"] {
