@@ -465,6 +465,7 @@ dependencies = [
  "axum",
  "duels-agent-alphabeta",
  "duels-agent-greedy",
+ "duels-agent-greedy-ev",
  "duels-agent-mcts-uct",
  "duels-agent-random",
  "duels-agents-api",
