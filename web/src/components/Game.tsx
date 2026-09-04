@@ -15,6 +15,7 @@ export default function Game() {
   const catalog = useGameStore((s) => s.catalog);
   const status = useGameStore((s) => s.status);
   const errorMessage = useGameStore((s) => s.errorMessage);
+  const pending = useGameStore((s) => s.pending);
   const submitAction = useGameStore((s) => s.submitAction);
   const leaveGame = useGameStore((s) => s.leaveGame);
 
@@ -54,6 +55,12 @@ export default function Game() {
         </div>
       )}
 
+      {status === "reconnecting" && (
+        <div className="rounded bg-amber-100 px-3 py-2 text-sm text-amber-800" role="status">
+          Connection lost - reconnecting...
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <PlayerPanel
           label="Player One"
@@ -74,7 +81,7 @@ export default function Game() {
       <Board observation={observation} catalog={catalog} onOpenDiscard={() => setShowDiscard(true)} />
 
       {observation.phase === "wonder_draft" ? (
-        <WonderDraft observation={observation} catalog={catalog} legal={legal} onSubmit={submitAction} />
+        <WonderDraft observation={observation} catalog={catalog} legal={legal} onSubmit={submitAction} pending={pending} />
       ) : (
         <Structure
           observation={observation}

@@ -9,9 +9,13 @@ interface WonderDraftProps {
   catalog: Catalog;
   legal: Action[];
   onSubmit: (action: Action) => void;
+  /** True while a previously-submitted action's reply hasn't arrived yet
+   * (see `useGameStore`'s `pending`). Offered wonders disable during this
+   * window so a slow reply reads as "still working", not "unresponsive". */
+  pending: boolean;
 }
 
-export default function WonderDraft({ observation, catalog, legal, onSubmit }: WonderDraftProps) {
+export default function WonderDraft({ observation, catalog, legal, onSubmit, pending }: WonderDraftProps) {
   const pickable = new Set(
     legal.filter((a): a is Action & { type: "PickWonder" } => a.type === "PickWonder").map((a) => a.wonder),
   );
@@ -23,6 +27,7 @@ export default function WonderDraft({ observation, catalog, legal, onSubmit }: W
         <p className="text-sm text-stone-600">
           Pick {pickable.size > 0 ? "" : "-"} draft step {observation.draft_step + 1} of 8. {observation.undrafted_wonder_pool.length}{" "}
           wonder{observation.undrafted_wonder_pool.length === 1 ? "" : "s"} not yet revealed.
+          {pending && " Submitting..."}
         </p>
       </div>
 
@@ -30,7 +35,7 @@ export default function WonderDraft({ observation, catalog, legal, onSubmit }: W
         {observation.offered_wonders.map((id) => {
           const wonder = wonderById(catalog, id);
           if (!wonder) return null;
-          const canPick = pickable.has(id);
+          const canPick = pickable.has(id) && !pending;
           return (
             <WonderChip
               key={id}
