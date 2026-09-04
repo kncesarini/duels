@@ -1,10 +1,10 @@
 //! Measurement harness for root-determinization ensembling.
 //!
-//! Plays paired, seat-swapped matches between two *configurations* of the
-//! same search agent, which is what the `duels-arena` CLI cannot do (it knows
-//! agents only by name) and what this particular question needs: every cell of
-//! the `N` sweep is one agent against itself at a different
-//! `root_determinizations`, at a matched total budget.
+//! Plays paired, seat-swapped matches between two agent *specifications*
+//! (see [`duels_arena::agent_spec`]), which for this question means one agent
+//! against itself at a different `root_determinizations` and a matched total
+//! budget — every cell of the `N` sweep quoted in both search agents' crate
+//! docs.
 //!
 //! ```text
 //! cargo run --release -p duels-arena --example ensemble_lab -- \
@@ -12,30 +12,31 @@
 //!     --games 200 --budget nodes:2000 --seed 1 [--threads 4]
 //! ```
 //!
-//! Specifications:
+//! `duels-arena match` can run the same pairing and reports more about *how*
+//! the games were won; two things live here instead:
 //!
-//! - `mcts-uct[:dets=N,alpha=F,c=F]`
-//! - `alphabeta[:dets=N,exact=BOOL,rollouts=N,cap-rollouts=N,depth=N]`
-//! - any registered agent name (`random`, `greedy`, ...)
+//! - **each side's own wall clock per game**, which is how a budget split `N`
+//!   ways is checked for costing the same time as an unsplit one;
+//! - **`--cost N`**, which skips the match and reports how much search a
+//!   decision actually got (simulations for `mcts-uct`; nodes, reached depth
+//!   and playouts per leaf for `alphabeta`) — the check that a divided budget
+//!   is not simply buying less search, and the measurement that explained
+//!   `alphabeta`'s result.
 //!
-//! `--cost N` skips the match and reports, for each of the two
-//! specifications, how much search a decision actually got — the check that a
-//! wall-clock budget split `N` ways is not simply buying less search.
-//!
-//! `--threads` caps the rayon pool. **Use it for a `time_ms` budget**: games
-//! run in parallel across seeds, so on a machine already busy with `P` cores'
-//! worth of work a wall-clock budget buys less real search than it would in a
-//! quiet serial run. Both sides of a game are contended identically — they
-//! alternate inside one thread — so the comparison stays fair, but the
-//! *operating point* moves, and a technique whose value depends on the budget
-//! then gets measured at the wrong budget. Check `uptime` first, leave cores
-//! spare, and report the achieved ms/game the harness prints.
+//! `--threads` caps the rayon pool. Read the crate docs' "Benchmarking on a
+//! quiet machine" note before trusting a `time_ms` row: games run in parallel
+//! across seeds, so on a busy machine a wall-clock budget buys less real
+//! search than it would in a quiet serial run. Both sides of a game are
+//! contended identically — they alternate inside one thread — so the
+//! comparison stays fair, but the *operating point* moves, and a technique
+//! whose value depends on the budget then gets measured at the wrong budget.
 
 use std::collections::HashMap;
 
 use duels_agent_alphabeta::AlphaBetaAgent;
 use duels_agent_mcts_uct::MctsAgent;
 use duels_agents_api::{Agent, Budget};
+use duels_arena::agent_spec::{make_agent_from_spec, parse_alphabeta_config, parse_mcts_config};
 use duels_arena::match_runner::parse_budget;
 use duels_core::{engine, Player};
 use rand::{rngs::StdRng, SeedableRng};
@@ -43,48 +44,7 @@ use rayon::prelude::*;
 
 /// Build an agent from a specification string.
 fn make(spec: &str, seed: u64) -> Box<dyn Agent + Send> {
-    let (name, params) = match spec.split_once(':') {
-        Some((name, params)) => (name, params),
-        None => (spec, ""),
-    };
-    match name {
-        "mcts-uct" => Box::new(MctsAgent::with_config(seed, mcts_config(params))),
-        "alphabeta" => Box::new(AlphaBetaAgent::with_config(duels_agent_alphabeta::Config {
-            seed,
-            ..alphabeta_config(params)
-        })),
-        _ => duels_arena::agent_registry::make_agent(spec, seed).unwrap(),
-    }
-}
-
-fn mcts_config(params: &str) -> duels_agent_mcts_uct::Config {
-    let mut cfg = duels_agent_mcts_uct::Config::default();
-    for kv in params.split(',').filter(|s| !s.is_empty()) {
-        let (k, v) = kv.split_once('=').expect("key=value");
-        match k {
-            "dets" => cfg.root_determinizations = v.parse().unwrap(),
-            "alpha" => cfg.chance_widen_alpha = v.parse().unwrap(),
-            "c" => cfg.exploration = v.parse().unwrap(),
-            other => panic!("unknown mcts-uct key {other}"),
-        }
-    }
-    cfg
-}
-
-fn alphabeta_config(params: &str) -> duels_agent_alphabeta::Config {
-    let mut cfg = duels_agent_alphabeta::Config::default();
-    for kv in params.split(',').filter(|s| !s.is_empty()) {
-        let (k, v) = kv.split_once('=').expect("key=value");
-        match k {
-            "dets" => cfg.root_determinizations = v.parse().unwrap(),
-            "exact" => cfg.ensemble_exact_root = v.parse().unwrap(),
-            "rollouts" => cfg.rollouts = v.parse().unwrap(),
-            "cap-rollouts" => cfg.rollout_cap = v.parse().unwrap(),
-            "depth" => cfg.max_depth = v.parse().unwrap(),
-            other => panic!("unknown alphabeta key {other}"),
-        }
-    }
-    cfg
+    make_agent_from_spec(spec, seed).expect("a valid agent specification")
 }
 
 /// Play one game and return the winner, the move count and the per-seat
@@ -154,11 +114,12 @@ fn cost(spec: &str, budget: Budget, seeds: u64, seed0: u64) {
     for k in 0..seeds {
         let s = seed0 + k;
         let mut opponent = duels_arena::agent_registry::make_agent("random", s ^ 0xBEEF).unwrap();
-        let mut mcts = (name == "mcts-uct").then(|| MctsAgent::with_config(s, mcts_config(params)));
+        let mut mcts = (name == "mcts-uct")
+            .then(|| MctsAgent::with_config(s, parse_mcts_config(params).expect("valid keys")));
         let mut ab = (name == "alphabeta").then(|| {
             AlphaBetaAgent::with_config(duels_agent_alphabeta::Config {
                 seed: s,
-                ..alphabeta_config(params)
+                ..parse_alphabeta_config(params).expect("valid keys")
             })
         });
         let mut state = engine::new_game(s);

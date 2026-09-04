@@ -153,12 +153,13 @@
 //! | 8 | 2248 | 0.94 | 42.2 |
 //!
 //! Every configuration spends the budget it was given (the small overshoot is
-//! one leaf's playouts per slice), but by `N = 8` each search is a single ply
-//! evaluated with 42 playouts per leaf instead of 116 — and at `N = 8` the
-//! mean completed depth is below one, meaning some searches are returning a
-//! move without having scored every root option. Averaging eight noisy,
-//! shallow opinions is worse than holding one sharp one, and the ensemble
-//! cannot recover what the thinner sampling threw away.
+//! one leaf's playouts per slice), but by `N = 8` a search is a single ply
+//! evaluated with 42 playouts per leaf instead of 116 — and the depth column,
+//! which reports the *deepest* of the `N` searches, has fallen below one:
+//! even the best-off search in the ensemble sometimes returns a move without
+//! having scored every root option. Averaging eight shallow, noisy opinions
+//! is worse than holding one sharp one, and no combination rule at the root
+//! can recover what the thinner sampling threw away.
 //!
 //! Two other costs are real but demonstrably secondary. An ensemble searches
 //! every root move on a full window ([`Config::ensemble_exact_root`], so the
