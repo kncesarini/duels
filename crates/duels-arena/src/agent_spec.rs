@@ -28,7 +28,7 @@
 //!
 //! * `alphabeta` -- every [`duels_agent_alphabeta::Config`] field: `base`
 //!   (`v1`/`default`), `max_depth`/`depth`, `chance_cap`/`cap`, `tt_bits`,
-//!   `tt`, `star1`, `order` (`static`/`none`/`lookahead`), `rollouts`,
+//!   `tt`, `star1`, `order` (`static`/`none`/`lookahead`/`priors`), `rollouts`,
 //!   `rollout_blend`/`blend`, `rollout_cap`/`cap-rollouts`,
 //!   `rollout_common_seed`/`crn`, `policy` (`uniform`/`biased`), `greedy`,
 //!   `metric` (`margin:<clamp>` or `outcome:<scale>`), `weights`
@@ -167,6 +167,7 @@ pub fn parse_alphabeta_config(params: &str) -> Result<AlphaBetaConfig, String> {
             "order" => {
                 cfg.order_moves = v != "none";
                 cfg.order_lookahead = v == "lookahead";
+                cfg.order_priors = v == "priors";
             }
             "weights" => {
                 w = match v {
@@ -357,6 +358,7 @@ mod tests {
         assert_eq!(cfg.rollout_policy.greedy, 0.5);
         assert!(!cfg.order_moves);
         assert!(!cfg.order_lookahead);
+        assert!(!cfg.order_priors);
         assert_eq!(cfg.rollout_metric, playout::Metric::Outcome { scale: 2.0 });
         // `weights=v1` sets the base weights, then the individual `card`,
         // `coin`, `breadth`, `shield`, `threat` keys override just those
@@ -368,6 +370,14 @@ mod tests {
         assert_eq!(cfg.weights.shield, 4.0);
         assert_eq!(cfg.weights.capital_threat, 5.0);
         assert_eq!(cfg.weights.science_single, eval::Weights::V1.science_single);
+    }
+
+    #[test]
+    fn alphabeta_order_priors_sets_order_moves_and_priors_together() {
+        let cfg = parse_alphabeta_config("order=priors").unwrap();
+        assert!(cfg.order_moves);
+        assert!(cfg.order_priors);
+        assert!(!cfg.order_lookahead);
     }
 
     #[test]
