@@ -14,7 +14,6 @@
 //! guild majorities, the military track and `coins / 3`), plus positional
 //! terms expressed on the same scale.
 
-use duels_core::data;
 use duels_core::state::PlayerState;
 use duels_core::{scoring, GameState, Player};
 
@@ -43,7 +42,7 @@ const W_COIN: f64 = 0.10;
 const W_RESOURCE_BREADTH: f64 = 0.55;
 /// Per unpaired scientific symbol: half of a future progress token.
 const W_SCIENCE_SINGLE: f64 = 1.1;
-/// Per drafted-but-unbuilt wonder, which is a standing option, not a asset.
+/// Per drafted-but-unbuilt wonder: a standing option rather than an asset.
 const W_WONDER_OPTION: f64 = 0.4;
 
 /// Static evaluation of `state` from `me`'s point of view, in victory points.
@@ -97,15 +96,6 @@ fn economy(ps: &PlayerState) -> f64 {
 fn wonder_options(ps: &PlayerState) -> f64 {
     let unbuilt = ps.wonders().filter(|&w| !ps.has_built_wonder(w)).count();
     W_WONDER_OPTION * unbuilt as f64
-}
-
-/// Distance the conflict pawn still has to travel for an outright win, for
-/// the player it currently favours. Exposed for tests and for the move
-/// ordering, which likes to know when a build is a killer blow.
-pub fn steps_to_capital(state: &GameState) -> u8 {
-    data::military()
-        .capital_distance
-        .saturating_sub(state.conflict().unsigned_abs())
 }
 
 #[cfg(test)]
@@ -175,17 +165,5 @@ mod tests {
             let v = evaluate(&st, Player::One);
             assert!(v.abs() <= EVAL_CLAMP);
         }
-    }
-
-    #[test]
-    fn steps_to_capital_counts_down() {
-        assert_eq!(
-            steps_to_capital(&StateBuilder::new().conflict(0).build()),
-            data::military().capital_distance
-        );
-        assert_eq!(
-            steps_to_capital(&StateBuilder::new().conflict(-8).build()),
-            1
-        );
     }
 }
