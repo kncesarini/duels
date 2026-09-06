@@ -1,0 +1,223 @@
+name: ai-candidate
+
+# Milestone M6b's PR-side half: when a pull request changes an agent, measure
+# that agent against the designated champion and say plainly how far apart
+# they are.
+#
+# **This check is informational and does not gate merge.** It lives in its own
+# workflow file, so it is not - and structurally cannot become - part of
+# `ci.yml`'s `gate` job, which is the only context the `main-protection`
+# ruleset requires. A red `ai-candidate` is a prompt to read the numbers, not a
+# blocked merge. Promoting it to blocking is a deliberate future change: add it
+# to `gate`'s `needs:` in `ci.yml` *and* to the ruleset's required checks.
+#
+# The game count here is calibrated for a few minutes of CI, not for the
+# ~3,000-game rigor this project applies to a real accept/reject decision. It
+# is a smoke signal - "did this change move strength by a lot, in which
+# direction" - and the report says so. A genuine promotion decision runs the
+# nightly round robin (`nightly-arena.yml`) or a hand-run paired match on a
+# quiet machine.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/agents/**'
+      - 'crates/duels-agents-api/**'
+      - '.github/workflows/ai-candidate.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-candidate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Games per candidate-vs-champion match. Calibrated, not guessed: a measured
+  # `greedy` vs `mcts-uct` run on a GitHub-hosted 4-vCPU runner cost 1,493 ms
+  # of single-threaded work per game, so 400 games is about 2.5 minutes of
+  # match on top of a ~30 s cached build. See this workflow's header on why it
+  # is not 3,000: at this sample size the Elo interval is roughly +/-100 points
+  # wide, which resolves "this agent is much weaker/stronger" and nothing
+  # finer.
+  GAMES: '400'
+  BUDGET: 'nodes:2000'
+
+jobs:
+  ai-candidate:
+    name: ai-candidate (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed to diff the PR against its merge base.
+          fetch-depth: 0
+
+      - name: Work out which agents this PR touches
+        id: changed
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+
+          # One name per changed agent crate directory. These directory names
+          # are the `agent_registry` names verbatim (checked by
+          # `duels_arena::leaderboard::tests::every_ladder_agent_can_actually_be_constructed`).
+          agents="$(git diff --name-only "$base" "$head" -- crates/agents/ \
+            | awk -F/ 'NF >= 3 { print $3 }' | sort -u | tr '\n' ' ')"
+
+          api_changed=false
+          if ! git diff --quiet "$base" "$head" -- crates/duels-agents-api/; then
+            api_changed=true
+          fi
+
+          echo "agents=$agents" >> "$GITHUB_OUTPUT"
+          echo "api_changed=$api_changed" >> "$GITHUB_OUTPUT"
+          echo "Changed agent crates: ${agents:-<none>} (agents-api changed: $api_changed)"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build duels-arena (release)
+        run: cargo build --release -p duels-arena
+
+      - name: Measure each changed agent against the champion
+        id: measure
+        run: |
+          set -euo pipefail
+          arena=./target/release/duels-arena
+          champion="$("$arena" champion --field agent)"
+          agents='${{ steps.changed.outputs.agents }}'
+
+          # A change to the Agent contract with no agent crate touched: read
+          # the champion itself, so the branch below pits it against the
+          # runner-up.
+          if [ -z "${agents// /}" ] && [ '${{ steps.changed.outputs.api_changed }}' = 'true' ]; then
+            agents="$champion"
+          fi
+
+          if [ -z "${agents// /}" ]; then
+            echo 'No agent crate changed in this PR, so there is nothing to measure.' \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo 'report=' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The strongest agent on the committed leaderboard that is *not* the
+          # champion. Used when the champion itself is what changed, since
+          # measuring it against a binary built from the same PR would be
+          # self-play and tell nobody anything.
+          runner_up='alphabeta'
+          if [ -f arena/leaderboard.json ]; then
+            found="$(jq -r --arg c "$champion" \
+              'first(.rows[] | select(.agent != $c) | .agent) // empty' \
+              arena/leaderboard.json || true)"
+            # An `x && y` one-liner would abort the whole step under `set -e`
+            # whenever `x` is false, which here is the ordinary case.
+            if [ -n "$found" ]; then
+              runner_up="$found"
+            fi
+          fi
+
+          : > report.md
+          {
+            echo '## ai-candidate (informational - does not gate merge)'
+            echo ''
+            echo "Champion: \`$("$arena" champion --field spec)\`."
+            echo "Each match below is ${GAMES} games, paired seeds, seat-swapped, at \`${BUDGET}\`."
+            echo "That is a smoke signal, not the ~3,000-game evidence this project requires"
+            echo 'for a real accept/reject; see `.github/workflows/ai-candidate.yml`.'
+            echo ''
+          } >> report.md
+
+          # Every agent the arena knows how to build, one per line - so a PR
+          # that adds a crate directory without registering it is reported
+          # rather than failing the run with an opaque "unknown agent".
+          "$arena" pairings --format lines | tr ' ' '\n' | sort -u > known-agents.txt
+
+          for agent in $agents; do
+            if ! grep -qx "$agent" known-agents.txt; then
+              {
+                echo "### \`$agent\`"
+                echo ''
+                echo "Not registered in \`duels_arena::agent_registry\`, so the arena cannot build it - skipped. Add a \`make_agent\` arm and a \`LADDER\` entry to get it measured."
+                echo ''
+              } >> report.md
+              continue
+            fi
+
+            opponent="$champion"
+            note=''
+            if [ "$agent" = "$champion" ]; then
+              opponent="$runner_up"
+              note="\`$agent\` **is** the champion, so it is measured against \`$opponent\`, the next agent on the committed leaderboard - comparing it against itself would be self-play."
+            fi
+
+            echo "Running $agent vs $opponent..."
+            "$arena" match \
+              --agent-a "$agent" \
+              --agent-b "$opponent" \
+              --games "$GAMES" \
+              --budget "$BUDGET" \
+              --seed 1 \
+              --out "arena/results/ai-candidate-$agent.json" \
+              | tee "match-$agent.log"
+
+            elo_line="$(grep '^elo:' "match-$agent.log" || echo 'elo: (not reported)')"
+            result_line="$(grep '^results:' "match-$agent.log" || echo '')"
+
+            {
+              echo "### \`$agent\` vs \`$opponent\`"
+              echo ''
+              if [ -n "$note" ]; then
+                echo "$note"
+                echo ''
+              fi
+              echo '```'
+              echo "$result_line"
+              echo "$elo_line"
+              echo '```'
+              echo ''
+              echo '<details><summary>Full match output</summary>'
+              echo ''
+              echo '```'
+              cat "match-$agent.log"
+              echo '```'
+              echo ''
+              echo '</details>'
+              echo ''
+            } >> report.md
+          done
+
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          echo 'report=report.md' >> "$GITHUB_OUTPUT"
+
+      - name: Post the report as a PR comment
+        if: steps.measure.outputs.report != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # A marker so each run edits its own comment instead of adding a new
+          # one on every push.
+          marker='<!-- ai-candidate-report -->'
+          printf '%s\n' "$marker" > comment.md
+          cat report.md >> comment.md
+
+          # `--jq` runs once per page under `--paginate`, so filter to ids and
+          # take the last line rather than asking jq for `last`.
+          existing="$(gh api --paginate \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | tail -n 1)"
+
+          if [ -n "$existing" ]; then
+            gh api --method PATCH \
+              "repos/${{ github.repository }}/issues/comments/$existing" \
+              -F body=@comment.md > /dev/null
+            echo "Updated the existing ai-candidate comment ($existing)."
+          else
+            gh pr comment '${{ github.event.pull_request.number }}' --body-file comment.md
+          fi

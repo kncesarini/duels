@@ -1,0 +1,241 @@
+name: nightly-arena
+
+# Milestone M6b, "Arena live": every night, play a full round robin among every
+# registered agent at its production budget, refit the joint Elo table, and
+# propose the updated `arena/leaderboard.{md,json}` as a pull request.
+#
+# The round robin is deliberately *not* reduced for CI cost: all C(7,2) = 21
+# pairings, at real budgets, at a real game count. The way that stays inside
+# GitHub's per-job limits is a matrix - each pairing is its own job, so 21
+# pairings run in parallel rather than as one long serial match. The pairing
+# list itself comes from `duels-arena pairings --format matrix`, so adding an
+# agent to `duels_arena::leaderboard::LADDER` extends the nightly automatically
+# and this file never has to list agents.
+#
+# The release binary is built once, in `plan`, and shipped to the pairing jobs
+# as an artifact: 21 jobs each doing their own `cargo build --release` would
+# cost far more runner time than the matches do.
+
+on:
+  schedule:
+    # 03:17 UTC daily. Deliberately off the hour: GitHub's scheduled-workflow
+    # queue is heavily contended at :00, and a nightly that starts late is a
+    # nightly whose results land late.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      games:
+        description: 'Games per pairing (paired seeds, seat-swapped)'
+        required: false
+        default: '3000'
+      seed:
+        description: 'Base seed for the first paired seed of every pairing'
+        required: false
+        default: '1'
+      open_pr:
+        description: 'Open a pull request with the updated leaderboard'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # One nightly at a time: two overlapping runs would race on the leaderboard
+  # branch. A manual dispatch is allowed to cancel a scheduled run in flight.
+  group: nightly-arena
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.pairings.outputs.matrix }}
+      games: ${{ steps.settings.outputs.games }}
+      seed: ${{ steps.settings.outputs.seed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build duels-arena (release)
+        run: cargo build --release -p duels-arena
+      - name: Enumerate the round-robin pairings
+        id: pairings
+        # Single-sourced from `duels_arena::leaderboard::pairings()`; this
+        # workflow never hard-codes an agent name.
+        run: |
+          matrix="$(./target/release/duels-arena pairings --format matrix)"
+          echo "Pairings: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - name: Resolve run settings
+        id: settings
+        run: |
+          games="${{ github.event.inputs.games }}"
+          seed="${{ github.event.inputs.seed }}"
+          # A scheduled run has no inputs, so fall back to the full-rigor
+          # defaults documented above.
+          echo "games=${games:-3000}" >> "$GITHUB_OUTPUT"
+          echo "seed=${seed:-1}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duels-arena-binary
+          path: target/release/duels-arena
+          retention-days: 3
+
+  pairing:
+    name: ${{ matrix.pairing.id }}
+    needs: plan
+    runs-on: ubuntu-latest
+    # Calibrated, not guessed. The slowest pairing is alphabeta vs mcts-uct
+    # (the only one with two search agents), measured on a GitHub-hosted
+    # 4-vCPU runner at 2,705 ms of single-threaded work per game. At the
+    # default 3,000 games that is ~8,100 CPU-seconds, which `play_paired_match`
+    # spreads across the runner's four cores in roughly 37 minutes. Every other
+    # pairing is faster - a 1-ply pair finishes in seconds. 120 minutes is
+    # therefore a ~3x margin, chosen to still fail reasonably promptly if a
+    # match ever hangs.
+    timeout-minutes: 120
+    strategy:
+      # One flaky or slow pairing should not throw away the other twenty; the
+      # aggregation job refuses to publish an incomplete round robin anyway, so
+      # a failure is reported rather than silently averaged over.
+      fail-fast: false
+      matrix:
+        pairing: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: duels-arena-binary
+      - name: Make the runner executable
+        run: chmod +x duels-arena
+      - name: Play ${{ matrix.pairing.agent_a }} vs ${{ matrix.pairing.agent_b }}
+        # Every pairing runs at nodes:2000. The five 1-ply agents take
+        # `_budget` in `Agent::choose` and never read it, so this is also
+        # exactly their nodes:1 ladder budget - see
+        # `duels_arena::leaderboard`, whose `one_ply_agents_ignore_their_budget`
+        # test proves it by playing games rather than by asserting it here.
+        run: |
+          ./duels-arena match \
+            --agent-a "${{ matrix.pairing.agent_a }}" \
+            --agent-b "${{ matrix.pairing.agent_b }}" \
+            --games "${{ needs.plan.outputs.games }}" \
+            --budget nodes:2000 \
+            --seed "${{ needs.plan.outputs.seed }}" \
+            --out "results/${{ matrix.pairing.file }}" \
+            | tee match.log
+      - name: Summarize this pairing
+        if: always()
+        run: |
+          {
+            echo "## ${{ matrix.pairing.agent_a }} vs ${{ matrix.pairing.agent_b }}"
+            echo ''
+            echo '```'
+            cat match.log 2>/dev/null || echo '(the match produced no output)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pairing-${{ matrix.pairing.id }}
+          path: results/
+          retention-days: 14
+
+  leaderboard:
+    name: leaderboard
+    needs: [plan, pairing]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same token the pull request is opened with, so the branch push and
+          # the PR are attributed to one identity.
+          token: ${{ secrets.NIGHTLY_ARENA_TOKEN || secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: duels-arena-binary
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pairing-*
+          path: nightly-results
+      - name: Fit the joint Elo table and render the leaderboard
+        run: |
+          chmod +x bin/duels-arena
+          bin/duels-arena leaderboard \
+            --results-dir nightly-results \
+            --out-json arena/leaderboard.json \
+            --out-md arena/leaderboard.md \
+            --commit "${{ github.sha }}" \
+            | tee leaderboard.log
+      - name: Publish the leaderboard to the run summary
+        run: cat arena/leaderboard.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Open a pull request with the updated leaderboard
+        if: github.event_name == 'schedule' || github.event.inputs.open_pr == 'true'
+        env:
+          # `main` is protected by the `main-protection` ruleset with an empty
+          # `bypass_actors` list, so *nothing* - this workflow's token
+          # included - can push to it directly. A pull request is therefore not
+          # a stylistic preference here, it is the only mechanism available.
+          #
+          # GitHub deliberately does not trigger workflows from events authored
+          # by GITHUB_TOKEN, so a PR opened with it will sit without the
+          # required `gate` check having run. Set a `NIGHTLY_ARENA_TOKEN`
+          # secret (a PAT with `repo` scope) to have CI start on its own; the
+          # PR body says which token opened it, and what to do if `gate` is
+          # missing.
+          GH_TOKEN: ${{ secrets.NIGHTLY_ARENA_TOKEN || secrets.GITHUB_TOKEN }}
+          USED_PAT: ${{ secrets.NIGHTLY_ARENA_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          # `git status --porcelain`, not `git diff`: on the very first run
+          # after this workflow lands the files may be untracked, which
+          # `git diff` reports as no change at all.
+          if [ -z "$(git status --porcelain -- arena/leaderboard.json arena/leaderboard.md)" ]; then
+            echo 'The nightly round robin reproduced the committed leaderboard exactly; no pull request opened.' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          branch="nightly-arena/leaderboard-$(date -u +%Y%m%d-%H%M%S)"
+          # Attribute the commit to the Actions bot, matching how GitHub
+          # attributes every other automated commit; this repository has no
+          # other bot identity to match.
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$branch"
+          git add arena/leaderboard.json arena/leaderboard.md
+          git commit \
+            -m 'arena: refresh the nightly leaderboard' \
+            -m 'Automated: a full 21-pairing round robin at nodes:2000, refit with duels_arena::elo::fit_joint_elo. Generated by .github/workflows/nightly-arena.yml.'
+          git push origin "$branch"
+
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo 'Automated nightly round robin: every registered agent, every pairing, at its production budget.'
+            echo 'Ratings are refit jointly across all 21 head-to-head records (see `duels_arena::elo::fit_joint_elo`).'
+            echo ''
+            echo "Run: $run_url"
+            if [ "$USED_PAT" != 'true' ]; then
+              echo ''
+              echo '> **CI note:** this PR was opened with the default `GITHUB_TOKEN`, so GitHub will not have'
+              echo '> started the required `gate` check on it. Close and reopen the PR (or push any commit to its'
+              echo '> branch) to run CI, or add a `NIGHTLY_ARENA_TOKEN` secret so future nightlies trigger it'
+              echo '> automatically.'
+            fi
+          } > pr-body.md
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title 'arena: refresh the nightly leaderboard' \
+            --body-file pr-body.md \
+            | tee -a "$GITHUB_STEP_SUMMARY"

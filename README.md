@@ -23,8 +23,11 @@ submits `Action`s back, never implementing rules logic itself.
     players implement against (`CONTRACT_VERSION = 2`).
   - `crates/agents/random` — `RandomAgent`, the first concrete `Agent`:
     uniformly picks among the actions it's offered.
-  - `crates/duels-arena` — placeholder binary; the future tournament/Elo
-    runner for pitting agents against each other.
+  - `crates/duels-arena` — the tournament runner: paired-seed seat-swapped
+    matches, logistic Elo (pairwise and jointly over a whole round robin),
+    SPRT, and the leaderboard published at
+    [`arena/leaderboard.md`](arena/leaderboard.md), refreshed nightly by
+    `.github/workflows/nightly-arena.yml`.
   - `crates/duels-server` — the server-authoritative game server: a
     room-based REST + WebSocket API (`axum`) that drives games with
     `duels-core`'s engine as the sole source of truth for legality and
@@ -121,7 +124,9 @@ crates/
     tests/                  cost_engine, golden_scenarios, properties
     benches/                apply/legal_actions throughput
   duels-agents-api/         Agent trait, AgentSpec, Budget
-  duels-arena/              tournament/Elo runner (placeholder)
+  duels-arena/              tournament runner, Elo, SPRT, leaderboard
+    src/elo.rs                logistic Elo: pairwise, and joint over a round robin
+    src/leaderboard.rs        the ladder, the anchor, the champion, arena/leaderboard.*
   duels-server/             room-based REST + WebSocket game server
     src/protocol.rs          the wire contract (ts-rs-derived TypeScript bindings)
     src/room.rs               room/seat model and the apply-then-drive-agents game loop
