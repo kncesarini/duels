@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useGameStore } from "./store";
 import Home from "./components/Home";
 import Game from "./components/Game";
+import { IconSprite } from "./lib/icons";
 
 export default function App() {
   const roomId = useGameStore((s) => s.roomId);
@@ -14,8 +15,9 @@ export default function App() {
   }, [loadCatalog, loadAgents]);
 
   return (
-    <div className="min-h-screen">
+    <>
+      <IconSprite />
       {roomId ? <Game /> : <Home />}
-    </div>
+    </>
   );
 }

@@ -168,31 +168,184 @@ fn resource_payment(
 pub(crate) fn min_trade_cost(
     need: [u8; NUM_RESOURCES],
     prices: [u16; NUM_RESOURCES],
+    choice_raw: u8,
+    choice_manufactured: u8,
+    discount: u8,
+) -> u16 {
+    min_trade_plan(need, prices, choice_raw, choice_manufactured, discount).1
+}
+
+/// [`min_trade_cost`], but also reporting *how* each unit was covered.
+///
+/// The total it returns is literally where `min_trade_cost`'s answer comes
+/// from, so an itemisation a UI renders can never disagree with the coins
+/// the engine charges.
+fn min_trade_plan(
+    need: [u8; NUM_RESOURCES],
+    prices: [u16; NUM_RESOURCES],
     mut choice_raw: u8,
     mut choice_manufactured: u8,
     mut discount: u8,
-) -> u16 {
+) -> ([ResourceLine; NUM_RESOURCES], u16) {
     // Expand into individual units, most expensive first. A cost never asks
     // for more than 3 of one resource, so this is at most a handful.
     let mut order: [usize; NUM_RESOURCES] = std::array::from_fn(|i| i);
     order.sort_unstable_by(|&a, &b| prices[b].cmp(&prices[a]));
 
+    let mut lines: [ResourceLine; NUM_RESOURCES] = std::array::from_fn(|i| ResourceLine {
+        unit_price: prices[i],
+        ..ResourceLine::default()
+    });
     let mut total = 0u16;
     for &r in &order {
         let resource = Resource::ALL[r];
         for _ in 0..need[r] {
             if resource.is_raw() && choice_raw > 0 {
                 choice_raw -= 1;
+                lines[r].from_choice += 1;
             } else if !resource.is_raw() && choice_manufactured > 0 {
                 choice_manufactured -= 1;
+                lines[r].from_choice += 1;
             } else if discount > 0 {
                 discount -= 1;
+                lines[r].from_discount += 1;
             } else {
                 total += prices[r];
+                lines[r].bought += 1;
             }
         }
     }
-    total
+    (lines, total)
+}
+
+/// How the units of one resource of a printed cost get paid for.
+///
+/// `required == produced + from_choice + from_discount + bought`, and the
+/// coins owed for this one resource are `bought * unit_price`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResourceLine {
+    /// Units the printed cost demands.
+    pub required: u8,
+    /// Units covered by the player's own unconditional production.
+    pub produced: u8,
+    /// Units covered by a "produce one of your choice" source.
+    pub from_choice: u8,
+    /// Units covered by an Architecture / Masonry rebate.
+    pub from_discount: u8,
+    /// Units that have to be bought from the bank.
+    pub bought: u8,
+    /// What one bought unit of this resource costs this player right now.
+    pub unit_price: u16,
+}
+
+/// A [`Cost`] with the arithmetic behind it spelled out, resource by
+/// resource.
+///
+/// Purely an *explanation* of a cost the engine already computes: `cost` is
+/// exactly what [`card_cost`] / [`wonder_cost`] return for the same
+/// arguments, so a UI showing "1 papyrus bought at 3¢" and a UI showing the
+/// net total can never drift apart. Nothing in the engine consumes this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaymentPlan {
+    /// Per-resource itemisation, indexed like [`Resource::ALL`].
+    pub lines: [ResourceLine; NUM_RESOURCES],
+    /// The printed coin cost, owed to the bank on top of any trade.
+    pub coin_cost: u16,
+    /// The resulting cost, identical to [`card_cost`] / [`wonder_cost`].
+    pub cost: Cost,
+}
+
+impl PaymentPlan {
+    /// A plan for something that costs nothing at all.
+    fn free(via_chain: bool) -> Self {
+        Self {
+            lines: [ResourceLine::default(); NUM_RESOURCES],
+            coin_cost: 0,
+            cost: Cost {
+                coins: 0,
+                trade: 0,
+                via_chain,
+            },
+        }
+    }
+}
+
+/// [`card_cost`], itemised: which units of the printed cost `player`'s own
+/// city covers, and which have to be bought, at what price each.
+pub fn card_payment_plan(state: &GameState, player: Player, card: CardId) -> PaymentPlan {
+    let def = card.def();
+    let me = state.player(player);
+
+    if let Some(prereq) = def.chain_from {
+        if me.has_built(prereq) {
+            return PaymentPlan::free(true);
+        }
+    }
+
+    let discount = if def.kind == CardType::Civilian
+        && me.has_token_with(|t| t.discount == Some(DiscountTarget::CivilianBuildings))
+    {
+        2
+    } else {
+        0
+    };
+    payment_plan(
+        state,
+        player,
+        def.resource_cost,
+        u16::from(def.coin_cost),
+        discount,
+    )
+}
+
+/// [`wonder_cost`], itemised. See [`card_payment_plan`].
+pub fn wonder_payment_plan(state: &GameState, player: Player, wonder: WonderId) -> PaymentPlan {
+    let def = wonder.def();
+    let me = state.player(player);
+    let discount = if me.has_token_with(|t| t.discount == Some(DiscountTarget::Wonders)) {
+        2
+    } else {
+        0
+    };
+    payment_plan(
+        state,
+        player,
+        def.resource_cost,
+        u16::from(def.coin_cost),
+        discount,
+    )
+}
+
+fn payment_plan(
+    state: &GameState,
+    player: Player,
+    resource_cost: [u8; NUM_RESOURCES],
+    coin_cost: u16,
+    discount: u8,
+) -> PaymentPlan {
+    let me = state.player(player);
+    let production = me.production();
+    let prices = trade_prices(state, player);
+    let mut need = [0u8; NUM_RESOURCES];
+    for i in 0..NUM_RESOURCES {
+        need[i] = resource_cost[i].saturating_sub(production[i]);
+    }
+    let (choice_raw, choice_manufactured) = me.choice_sources();
+    let (mut lines, trade) =
+        min_trade_plan(need, prices, choice_raw, choice_manufactured, discount);
+    for i in 0..NUM_RESOURCES {
+        lines[i].required = resource_cost[i];
+        lines[i].produced = resource_cost[i].min(production[i]);
+    }
+    PaymentPlan {
+        lines,
+        coin_cost,
+        cost: Cost {
+            coins: coin_cost + trade,
+            trade,
+            via_chain: false,
+        },
+    }
 }
 
 /// A convenience view of what a player can and cannot afford, for a UI or a

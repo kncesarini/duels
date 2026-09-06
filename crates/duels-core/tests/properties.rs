@@ -30,7 +30,7 @@ use duels_core::data::CardId;
 use duels_core::observation::SlotView;
 use duels_core::state::{Phase, MAX_WONDERS_BUILT};
 use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards, StateBuilder};
-use duels_core::{engine, scoring, GameState, Player};
+use duels_core::{cost, engine, scoring, GameState, Player};
 use proptest::prelude::*;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -131,6 +131,36 @@ fn check_invariants(state: &GameState, ctx: &str) {
         .check_invariants()
         .unwrap_or_else(|e| panic!("{ctx}: sample_state produced an invalid state: {e}"));
 
+    // --- cost itemisation --------------------------------------------------
+    // R-037: a `PaymentPlan` must always explain exactly the cost the engine
+    // would charge, for *either* player and whether or not it is their turn
+    // (the client's cost lens asks for both).
+    for &p in &[Player::One, Player::Two] {
+        for slot in 0..20u8 {
+            if let Some(card) = state.face_up_card(slot) {
+                let plan = cost::card_payment_plan(state, p, card);
+                assert_eq!(
+                    plan.cost,
+                    cost::card_cost(state, p, card),
+                    "{ctx}: plan for {card:?} disagrees with card_cost for {p:?}"
+                );
+                check_payment_plan(&plan, ctx);
+            }
+        }
+        for wonder in state.player(p).wonders() {
+            if state.player(p).has_built_wonder(wonder) {
+                continue;
+            }
+            let plan = cost::wonder_payment_plan(state, p, wonder);
+            assert_eq!(
+                plan.cost,
+                cost::wonder_cost(state, p, wonder),
+                "{ctx}: plan for {wonder:?} disagrees with wonder_cost for {p:?}"
+            );
+            check_payment_plan(&plan, ctx);
+        }
+    }
+
     // --- chance ------------------------------------------------------------
     if !state.is_over() {
         for a in actions.iter().take(3) {
@@ -151,6 +181,35 @@ fn check_invariants(state: &GameState, ctx: &str) {
             }
         }
     }
+}
+
+/// Every unit of a printed cost is accounted for exactly once, and the coins
+/// the lines add up to are the coins the plan reports.
+fn check_payment_plan(plan: &cost::PaymentPlan, ctx: &str) {
+    let mut trade = 0u16;
+    for line in &plan.lines {
+        assert_eq!(
+            line.required,
+            line.produced + line.from_choice + line.from_discount + line.bought,
+            "{ctx}: a payment line does not account for every unit: {line:?}"
+        );
+        trade += u16::from(line.bought) * line.unit_price;
+    }
+    if plan.cost.via_chain {
+        assert_eq!(plan.cost.coins, 0, "{ctx}: a chained build is not free");
+        assert_eq!(plan.cost.trade, 0, "{ctx}: a chained build charges trade");
+        return;
+    }
+    assert_eq!(
+        trade, plan.cost.trade,
+        "{ctx}: payment lines sum to {trade} but the plan reports {}",
+        plan.cost.trade
+    );
+    assert_eq!(
+        plan.cost.coins,
+        plan.coin_cost + plan.cost.trade,
+        "{ctx}: total is not printed coins plus trade"
+    );
 }
 
 /// Play a full game, checking invariants at every decision point.

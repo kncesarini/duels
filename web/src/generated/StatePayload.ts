@@ -2,9 +2,10 @@
 import type { Action } from "./Action";
 import type { ActionCost } from "./ActionCost";
 import type { Breakdown } from "./Breakdown";
-import type { Event } from "./Event";
 import type { Observation } from "./Observation";
+import type { PlayerView } from "./PlayerView";
 import type { SeatSpec } from "./SeatSpec";
+import type { StepPayload } from "./StepPayload";
 
 /**
  * The full state snapshot broadcast to every connection on a room: sent
@@ -17,6 +18,22 @@ export type StatePayload = {
  * [`duels_core::GameState::observation`].
  */
 observation: Observation, 
+/**
+ * Both players' derived views of the current position (production, trade
+ * prices, running VP, itemised costs), so the client can render either
+ * player's costs without owning a cost engine.
+ */
+views: [PlayerView, PlayerView], 
+/**
+ * Which structure slots are uncovered, from
+ * [`duels_core::observation::Observation::accessible_slots`]. A face-up
+ * slot that is not in this list is covered: still readable, not takeable.
+ * Sent rather than derived, because "what covers what" is a rule
+ * (`docs/rules-spec.md` R-010), not a drawing detail — and it has to be
+ * right even when it is not this browser's turn and `legal_actions` is
+ * therefore empty.
+ */
+accessible_slots: Array<number>, 
 /**
  * The current seat assignment, so the client knows whether the seat on
  * move is a human (and should show controls) or an agent (already
@@ -35,11 +52,18 @@ legal_actions: Array<Action>,
  */
 action_costs: Array<ActionCost>, 
 /**
- * What happened since the previous [`StatePayload`] (empty for the very
- * first one sent on connect). A UI can animate these; this milestone's
- * client just uses them for a lightweight log.
+ * What happened since the previous [`StatePayload`], one entry per
+ * applied action, in order. Empty only when nothing has happened yet.
+ * The client animates these in sequence and turns them into log entries.
  */
-events: Array<Event>, 
+steps: Array<StepPayload>, 
+/**
+ * True when `steps` is the room's *entire* history rather than what just
+ * happened — which is what a freshly connected (or reconnected, or
+ * reloaded) client is sent, so it can populate its log and its
+ * position-review history without replaying any animation.
+ */
+replay: boolean, 
 /**
  * The full victory-point breakdown, present once
  * `observation.result` is `Some`.

@@ -96,6 +96,57 @@ export function describeCardEffects(card: CardCatalogEntry, catalog?: Catalog): 
   return lines;
 }
 
+/** The one short phrase a card face prints under its main glyph, for the
+ * effects (commercial and guild) that have no single glyph of their own.
+ * Assembled from the same structured fields as the full sentences above, so
+ * no card ever gets hand-written text. */
+export function compactCardEffect(card: CardCatalogEntry): string {
+  if (card.produces_choice) {
+    return `1 ${RESOURCE_GROUP_LABEL[card.produces_choice]} of your choice, per payment`;
+  }
+  if (card.fixed_trade.length > 0) {
+    return `Buy ${card.fixed_trade.join(" & ")} at 1 coin`;
+  }
+  if (card.coins_per_own) {
+    return `+${card.coins_per_own[1]} coin${card.coins_per_own[1] === 1 ? "" : "s"} per ${lower(card.coins_per_own[0])} you own`;
+  }
+  if (card.coins_by_majority) {
+    return `+${card.coins_by_majority[1]} per ${lower(card.coins_by_majority[0])}, whoever has more`;
+  }
+  if (card.points_by_majority) {
+    return `${card.points_by_majority[1]} VP per ${lower(card.points_by_majority[0])}, whoever has more`;
+  }
+  return "";
+}
+
+/** The short effect line a built wonder tile prints. */
+export function compactWonderEffect(wonder: WonderCatalogEntry): string {
+  const bits: string[] = [];
+  if (wonder.coins > 0) bits.push(`+${wonder.coins}¢`);
+  if (wonder.opponent_loses_coins > 0) bits.push(`opponent −${wonder.opponent_loses_coins}¢`);
+  if (wonder.shields > 0) bits.push(`+${wonder.shields} shield${wonder.shields === 1 ? "" : "s"}`);
+  if (wonder.victory_points > 0) bits.push(`${wonder.victory_points} VP`);
+  if (wonder.produces_choice) bits.push(`1 ${RESOURCE_GROUP_LABEL[wonder.produces_choice]}`);
+  if (wonder.destroy) bits.push("destroy");
+  if (wonder.build_discarded_free) bits.push("build from discard");
+  if (wonder.choose_progress_token) bits.push("progress token");
+  if (wonder.play_again) bits.push("play again");
+  return bits.join(", ");
+}
+
+/** Short uppercase tags for a wonder, used in the draft. */
+export function wonderTags(wonder: WonderCatalogEntry): string[] {
+  const tags: string[] = [];
+  if (wonder.play_again) tags.push("extra turn");
+  if (wonder.shields > 0) tags.push("military");
+  if (wonder.destroy) tags.push("destroy");
+  if (wonder.victory_points > 0) tags.push(`VP ${wonder.victory_points}`);
+  if (wonder.coins > 0) tags.push(`+${wonder.coins} coins`);
+  if (wonder.build_discarded_free) tags.push("discard build");
+  if (wonder.choose_progress_token) tags.push("token");
+  return tags;
+}
+
 /** Every effect a wonder has, as short plain-English sentences. */
 export function describeWonderEffects(wonder: WonderCatalogEntry): string[] {
   const lines: string[] = [];
