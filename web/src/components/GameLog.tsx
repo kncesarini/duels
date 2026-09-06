@@ -36,11 +36,14 @@ export default function GameLog({
 }: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState<number | null>(null);
-  const [collapsedAges, setCollapsedAges] = useState<Set<number>>(new Set());
+  /** Ages the reader has opened or closed by hand; everything else follows
+   * the default of "past ages are collapsed, the current one is open". */
+  const [toggledAges, setToggledAges] = useState<Set<number>>(new Set());
   const [following, setFollowing] = useState(true);
   const [missed, setMissed] = useState(0);
   const body = useRef<HTMLDivElement>(null);
   const seen = useRef(entries.length);
+  const lastScrollToken = useRef(scrollToken);
 
   const shown = useMemo(
     () =>
@@ -54,6 +57,16 @@ export default function GameLog({
   );
 
   const currentAge = entries.length > 0 ? entries[entries.length - 1].age : 1;
+  const isCollapsed = (age: number) => (age < currentAge) !== toggledAges.has(age);
+
+  // Clicking the ticker jumps the log back to the newest move, whether or not
+  // the reader had scrolled away.
+  useEffect(() => {
+    if (scrollToken === lastScrollToken.current) return;
+    lastScrollToken.current = scrollToken;
+    setFollowing(true);
+    if (body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [scrollToken]);
 
   useEffect(() => {
     if (following && body.current) {
@@ -103,7 +116,7 @@ export default function GameLog({
     if (e.age !== lastAge) {
       lastAge = e.age;
       const age = e.age;
-      const collapsed = collapsedAges.has(age);
+      const collapsed = isCollapsed(age);
       const count = shown.filter((x) => x.age === age).length;
       rows.push(
         <button
@@ -111,7 +124,7 @@ export default function GameLog({
           type="button"
           className="agehd"
           onClick={() =>
-            setCollapsedAges((s) => {
+            setToggledAges((s) => {
               const next = new Set(s);
               if (next.has(age)) next.delete(age);
               else next.add(age);
@@ -126,7 +139,7 @@ export default function GameLog({
         </button>,
       );
     }
-    if (collapsedAges.has(e.age)) continue;
+    if (isCollapsed(e.age)) continue;
     rows.push(<Entry key={e.id} entry={e} seatNames={seatNames} compact={compact} expanded={expanded === e.id} onToggle={() => setExpanded(expanded === e.id ? null : e.id)} onReview={onReview} onHoverEntry={onHoverEntry} reviewing={reviewIndex !== null && reviewIndex === e.stepIndex} />);
   }
 
