@@ -7,7 +7,6 @@ import type { CardCatalogEntry } from "../generated/CardCatalogEntry";
 import type { WonderCatalogEntry } from "../generated/WonderCatalogEntry";
 import type { TokenCatalogEntry } from "../generated/TokenCatalogEntry";
 import type { CardType } from "../generated/CardType";
-import type { Science } from "../generated/Science";
 import type { ResourceAmounts } from "../generated/ResourceAmounts";
 
 export function cardById(catalog: Catalog, id: string): CardCatalogEntry | undefined {
@@ -22,6 +21,19 @@ export function tokenById(catalog: Catalog, id: string): TokenCatalogEntry | und
   return catalog.tokens.find((t) => t.id === id);
 }
 
+/** A card's display name, falling back to its id if the catalog is missing it. */
+export function cardName(catalog: Catalog | null, id: string): string {
+  return (catalog && cardById(catalog, id)?.name) ?? id;
+}
+
+export function wonderName(catalog: Catalog | null, id: string): string {
+  return (catalog && wonderById(catalog, id)?.name) ?? id;
+}
+
+export function tokenName(catalog: Catalog | null, id: string): string {
+  return (catalog && tokenById(catalog, id)?.name) ?? id;
+}
+
 export const CARD_TYPE_LABEL: Record<CardType, string> = {
   raw_material: "Raw material",
   manufactured_good: "Manufactured good",
@@ -32,26 +44,12 @@ export const CARD_TYPE_LABEL: Record<CardType, string> = {
   guild: "Guild",
 };
 
-/** Tailwind classes for a card colour, approximating the physical card backs. */
-export const CARD_TYPE_COLOR: Record<CardType, string> = {
-  raw_material: "bg-amber-800 text-amber-50 border-amber-950",
-  manufactured_good: "bg-stone-400 text-stone-900 border-stone-600",
-  civilian: "bg-sky-700 text-sky-50 border-sky-950",
-  scientific: "bg-emerald-700 text-emerald-50 border-emerald-950",
-  commercial: "bg-yellow-400 text-yellow-950 border-yellow-600",
-  military: "bg-red-700 text-red-50 border-red-950",
-  guild: "bg-purple-800 text-purple-50 border-purple-950",
-};
-
-export const SCIENCE_SYMBOL: Record<Science, string> = {
-  mortar: "⚖", // scales-ish stand-in
-  pendulum: "⏱",
-  inkwell: "✒",
-  wheel: "⚙",
-  sundial: "◔",
-  gyroscope: "ἰ",
-  balance: "⚜",
-};
+/** The CSS custom property carrying each card colour (see `index.css`). Type
+ * is never colour alone: every place this is used also prints the type's
+ * glyph and, outside the card face itself, its name. */
+export function typeColorVar(kind: CardType): string {
+  return `var(--${kind})`;
+}
 
 export const RESOURCE_SYMBOL: Record<keyof ResourceAmounts, string> = {
   wood: "W",

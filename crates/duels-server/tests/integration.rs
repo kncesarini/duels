@@ -252,3 +252,175 @@ async fn get_catalog_covers_every_card_wonder_and_token() {
     assert_eq!(catalog.wonders.len(), duels_core::data::NUM_WONDERS);
     assert_eq!(catalog.tokens.len(), duels_core::data::NUM_TOKENS);
 }
+
+/// Both seats' `PlayerView`s are computed for every position, and the one for
+/// the seat on move agrees exactly with the `ActionCost` the server already
+/// sent for the same slot — so the "cost lens" the client renders from
+/// `views` can never disagree with what a build would actually charge.
+///
+/// Also checks the thing that motivated `views` existing at all: somewhere in
+/// a real game the two seats price the *same* card differently (different
+/// production, different trade prices), which `action_costs` alone cannot
+/// express because it only ever covers the player on move.
+#[tokio::test]
+async fn player_views_price_every_slot_for_both_seats() {
+    let addr = spawn_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let create: CreateRoomResponse = client
+        .post(format!("{base}/rooms"))
+        .json(&CreateRoomRequest {
+            seats: [
+                SeatSpec::Human,
+                SeatSpec::Agent {
+                    name: "random".to_string(),
+                },
+            ],
+            seed: Some(7),
+        })
+        .send()
+        .await
+        .expect("POST /rooms")
+        .json()
+        .await
+        .expect("decode CreateRoomResponse");
+
+    let ws_url = format!("ws://{addr}/rooms/{}/ws", create.room_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("connect");
+
+    let mut saw_a_disagreement = false;
+    let mut decisions = 0u32;
+    loop {
+        let msg = ws.next().await.expect("closed").expect("ws error");
+        let WsMessage::Text(text) = msg else { continue };
+        let ServerMessage::State(state) = serde_json::from_str(&text).expect("json") else {
+            panic!("unexpected Error message: {text}");
+        };
+
+        let mover = state.observation.current_player.index();
+        for cost in &state.action_costs {
+            if let duels_server::protocol::ActionCost::Build { slot, coins, .. } = cost {
+                let view = state.views[mover]
+                    .slot_costs
+                    .iter()
+                    .find(|s| s.slot == *slot)
+                    .unwrap_or_else(|| panic!("no view for face-up slot {slot}"));
+                assert_eq!(
+                    view.plan.coins, *coins,
+                    "views and action_costs disagree on slot {slot}"
+                );
+            }
+        }
+        // Every face-up slot is priced for *both* seats, always.
+        let face_up = state
+            .observation
+            .slots
+            .iter()
+            .filter(|s| s.card().is_some())
+            .count();
+        for view in &state.views {
+            assert_eq!(view.slot_costs.len(), face_up);
+        }
+        for a in &state.views[0].slot_costs {
+            for b in &state.views[1].slot_costs {
+                if a.slot == b.slot && a.plan.coins != b.plan.coins {
+                    saw_a_disagreement = true;
+                }
+            }
+        }
+
+        if state.observation.result.is_some() {
+            break;
+        }
+        let Some(action) = state.legal_actions.first().copied() else {
+            continue;
+        };
+        ws.send(WsMessage::Text(
+            serde_json::to_string(&ClientMessage::Action { action }).expect("serialize"),
+        ))
+        .await
+        .expect("send");
+        decisions += 1;
+        assert!(decisions < 500, "game did not terminate in time");
+    }
+    assert!(
+        saw_a_disagreement,
+        "the two seats never priced the same card differently in a whole game"
+    );
+}
+
+/// A client connecting mid-game is replayed the room's whole history, so a
+/// reload restores the game log and the position history instead of starting
+/// them empty. Live broadcasts, by contrast, carry only what just happened.
+#[tokio::test]
+async fn a_late_connection_is_replayed_the_whole_history() {
+    let addr = spawn_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let create: CreateRoomResponse = client
+        .post(format!("{base}/rooms"))
+        .json(&CreateRoomRequest {
+            seats: [SeatSpec::Human, SeatSpec::Human],
+            seed: Some(11),
+        })
+        .send()
+        .await
+        .expect("POST /rooms")
+        .json()
+        .await
+        .expect("decode CreateRoomResponse");
+
+    let ws_url = format!("ws://{addr}/rooms/{}/ws", create.room_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("connect");
+
+    let mut applied = 0usize;
+    loop {
+        let msg = ws.next().await.expect("closed").expect("ws error");
+        let WsMessage::Text(text) = msg else { continue };
+        let ServerMessage::State(state) = serde_json::from_str(&text).expect("json") else {
+            panic!("unexpected Error message: {text}");
+        };
+        if applied == 0 {
+            assert!(state.replay, "the first snapshot should be a replay");
+            assert!(state.steps.is_empty(), "nothing has happened yet");
+        } else {
+            assert!(!state.replay, "a live broadcast is not a replay");
+            assert_eq!(state.steps.len(), 1, "one human action, one step");
+            assert!(state.steps[0].action.is_some());
+        }
+        if applied == 6 {
+            break;
+        }
+        let action = *state.legal_actions.first().expect("a legal action");
+        ws.send(WsMessage::Text(
+            serde_json::to_string(&ClientMessage::Action { action }).expect("serialize"),
+        ))
+        .await
+        .expect("send");
+        applied += 1;
+    }
+
+    // A second connection to the same room gets everything that happened.
+    let (mut ws2, _resp) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("reconnect");
+    loop {
+        let msg = ws2.next().await.expect("closed").expect("ws error");
+        let WsMessage::Text(text) = msg else { continue };
+        let ServerMessage::State(state) = serde_json::from_str(&text).expect("json") else {
+            panic!("unexpected Error message: {text}");
+        };
+        assert!(state.replay);
+        assert_eq!(state.steps.len(), 6, "the whole history is replayed");
+        assert_eq!(
+            state.steps.last().expect("a step").observation,
+            state.observation,
+            "the last replayed step is the current position"
+        );
+        return;
+    }
+}

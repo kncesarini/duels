@@ -56,9 +56,12 @@ describe("useGameStore", () => {
       roomId: null,
       mode: null,
       status: "idle",
-      payload: null,
+      latest: null,
       errorMessage: null,
-      eventLog: [],
+      history: [],
+      entries: [],
+      displayedIndex: -1,
+      playback: null,
       pending: false,
     });
   });
@@ -67,7 +70,7 @@ describe("useGameStore", () => {
     const s = useGameStore.getState();
     expect(s.status).toBe("idle");
     expect(s.roomId).toBeNull();
-    expect(s.payload).toBeNull();
+    expect(s.latest).toBeNull();
   });
 
   it("leaveGame resets connection state back to idle", () => {
@@ -111,9 +114,12 @@ describe("useGameStore reconnect behavior", () => {
       roomId: null,
       mode: null,
       status: "idle",
-      payload: null,
+      latest: null,
       errorMessage: null,
-      eventLog: [],
+      history: [],
+      entries: [],
+      displayedIndex: -1,
+      playback: null,
       pending: false,
     });
   });

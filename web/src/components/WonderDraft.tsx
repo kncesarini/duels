@@ -1,68 +1,120 @@
-import type { Observation } from "../generated/Observation";
-import type { Catalog } from "../generated/Catalog";
-import type { Action } from "../generated/Action";
-import { WonderChip } from "./CardChip";
-import { wonderById } from "../lib/catalogHelpers";
+// The wonder draft: the one full-screen phase, because there is no table
+// state yet. It keeps the card colours and type language so nothing has to be
+// re-learned when the table appears.
 
-interface WonderDraftProps {
+import type { Action } from "../generated/Action";
+import type { Catalog } from "../generated/Catalog";
+import type { Observation } from "../generated/Observation";
+import { resourceEntries, wonderById } from "../lib/catalogHelpers";
+import { describeWonderEffects, wonderTags } from "../lib/effectText";
+import { Ico } from "../lib/icons";
+import { seatIndex } from "../lib/cost";
+import type { Resource } from "../generated/Resource";
+
+interface Props {
   observation: Observation;
   catalog: Catalog;
   legal: Action[];
-  onSubmit: (action: Action) => void;
-  /** True while a previously-submitted action's reply hasn't arrived yet
-   * (see `useGameStore`'s `pending`). Offered wonders disable during this
-   * window so a slow reply reads as "still working", not "unresponsive". */
-  pending: boolean;
+  seatNames: [string, string];
+  onSubmit: (a: Action) => void;
+  busy: boolean;
 }
 
-export default function WonderDraft({ observation, catalog, legal, onSubmit, pending }: WonderDraftProps) {
-  const pickable = new Set(
-    legal.filter((a): a is Action & { type: "PickWonder" } => a.type === "PickWonder").map((a) => a.wonder),
-  );
+/** The pick order of one draft round: first, second, second, first. Printed
+ * on the rulebook's draft diagram; shown here only as a caption. */
+const ROUND_ORDER = [0, 1, 1, 0];
+
+export default function WonderDraft({ observation, catalog, legal, seatNames, onSubmit, busy }: Props) {
+  const round = observation.draft_step < 4 ? 1 : 2;
+  const stepInRound = observation.draft_step % 4;
+  const firstIdx = seatIndex(observation.draft_first);
+  const order = ROUND_ORDER.map((o) => (round === 1 ? o : 1 - o)).map((o) => (o === 0 ? firstIdx : 1 - firstIdx));
+  const picker = seatIndex(observation.current_player);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-4">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold">Wonder draft</h2>
-        <p className="text-sm text-stone-600">
-          Pick {pickable.size > 0 ? "" : "-"} draft step {observation.draft_step + 1} of 8. {observation.undrafted_wonder_pool.length}{" "}
-          wonder{observation.undrafted_wonder_pool.length === 1 ? "" : "s"} not yet revealed.
-          {pending && " Submitting..."}
-        </p>
+    <div className="draft" data-testid="draft">
+      <div className="round">
+        <b className="cz" style={{ fontSize: 15 }}>
+          Draft round {round} of 2
+        </b>{" "}
+        · pick order: {order.map((o) => seatNames[o]).join(", ")} · now:{" "}
+        <b style={{ color: picker === 0 ? "var(--you)" : "var(--opp)" }}>{seatNames[picker]}</b>
+        {" · "}
+        pick {stepInRound + 1} of 4
       </div>
 
-      <div className="flex flex-wrap justify-center gap-3">
+      <div className="offer">
         {observation.offered_wonders.map((id) => {
           const wonder = wonderById(catalog, id);
           if (!wonder) return null;
-          const canPick = pickable.has(id) && !pending;
+          const action = legal.find((a) => a.type === "PickWonder" && a.wonder === id);
+          const cost = resourceEntries(wonder.resource_cost);
+          const base = cost.reduce((n, [, k]) => n + k * 2, 0) + wonder.coin_cost;
           return (
-            <WonderChip
+            <button
               key={id}
-              wonder={wonder}
-              onClick={canPick ? () => onSubmit({ type: "PickWonder", wonder: id }) : undefined}
-              disabled={!canPick}
-            />
+              type="button"
+              className="wcard"
+              disabled={!action || busy}
+              onClick={() => action && onSubmit(action)}
+              data-testid={`wonder-${id}`}
+            >
+              <h3>{wonder.name}</h3>
+              <div style={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+                {cost.flatMap(([r, n]) =>
+                  Array.from({ length: n }, (_, i) => <Ico key={`${r}${i}`} id={r as Resource} className={r} title={r} />),
+                )}
+                {wonder.coin_cost > 0 && <Ico id="coin" className="coin" title="coins" />}
+                <span className="mono" style={{ marginLeft: 6, color: "var(--mute)", fontSize: 10 }}>
+                  ≈ {base}¢ at base prices
+                </span>
+              </div>
+              <div>
+                {describeWonderEffects(wonder).map((line) => (
+                  <div key={line}>{line}</div>
+                ))}
+              </div>
+              <div className="tags">
+                {wonderTags(wonder).map((t) => (
+                  <span key={t}>{t}</span>
+                ))}
+              </div>
+            </button>
           );
         })}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        {(["one", "two"] as const).map((p, i) => (
-          <div key={p} className="rounded-lg border border-stone-300 bg-white p-3">
-            <div className="mb-2 text-sm font-semibold">Player {i === 0 ? "One" : "Two"}'s wonders</div>
-            <div className="flex flex-wrap gap-1.5">
-              {observation.players[i].wonders.map((w) => {
-                const wonder = wonderById(catalog, w);
-                return wonder ? <WonderChip key={w} wonder={wonder} disabled /> : null;
-              })}
-              {observation.players[i].wonders.length === 0 && (
-                <span className="text-xs text-stone-400">none yet</span>
-              )}
-            </div>
-          </div>
+      <div className="slots">
+        {[0, 1].map((i) => (
+          <ContentsRow key={i} name={seatNames[i]} colour={i === 0 ? "var(--you)" : "var(--opp)"} ids={observation.players[i].wonders} catalog={catalog} />
         ))}
       </div>
+      <div style={{ color: "var(--mute)", fontSize: 11 }}>
+        Each player ends with four wonders; only seven of the eight can ever be built.
+      </div>
     </div>
+  );
+}
+
+function ContentsRow({
+  name,
+  colour,
+  ids,
+  catalog,
+}: {
+  name: string;
+  colour: string;
+  ids: string[];
+  catalog: Catalog;
+}) {
+  return (
+    <>
+      <div style={{ color: colour, fontWeight: 600 }}>{name}</div>
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className={`dslot ${ids[i] ? "filled" : ""}`}>
+          {ids[i] ? (wonderById(catalog, ids[i])?.name ?? ids[i]) : "—"}
+        </div>
+      ))}
+    </>
   );
 }

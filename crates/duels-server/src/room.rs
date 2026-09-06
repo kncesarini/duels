@@ -11,7 +11,10 @@ use duels_core::{engine, scoring, Event, GameState};
 use rand::{rngs::StdRng, SeedableRng};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
-use crate::protocol::{ActionCost, RoomInfo, RoomStatus, SeatSpec, ServerMessage, StatePayload};
+use crate::protocol::{
+    ActionCost, CostLine, CostPlan, PlayerView, RoomInfo, RoomStatus, SeatSpec, ServerMessage,
+    SlotCostView, StatePayload, StepPayload, WonderCostView,
+};
 
 /// Monotonic counter backing both room ids and (when the client doesn't
 /// supply one) game seeds. An `AtomicU64` rather than `rand::thread_rng` or
@@ -88,6 +91,12 @@ struct RoomInner {
     /// Per-seat `Budget` for agent seats, chosen once at room creation by
     /// [`interactive_budget`] (irrelevant, but harmless, for human seats).
     budgets: [Budget; 2],
+    /// Every action applied to this room so far, in order. Replayed in full
+    /// to a freshly connected client so a reload restores the game log and
+    /// the position history rather than starting them empty. Bounded by the
+    /// length of a game (a little over sixty actions), so it never grows
+    /// without limit.
+    history: Vec<StepPayload>,
 }
 
 /// One room: two seats playing a single game, plus a broadcast channel every
@@ -123,6 +132,7 @@ impl Room {
                 rng,
                 agents,
                 budgets,
+                history: Vec::new(),
             }),
             tx,
         }))
@@ -138,7 +148,9 @@ impl Room {
     /// freshly connected client or `GET /rooms/:id`.
     pub async fn snapshot(&self) -> StatePayload {
         let inner = self.inner.lock().await;
-        build_payload(&inner.state, &self.seats, Vec::new())
+        let mut payload = build_payload(&inner.state, &self.seats, inner.history.clone());
+        payload.replay = true;
+        payload
     }
 
     /// Basic metadata, for `GET /rooms/:id`.
@@ -170,9 +182,12 @@ impl Room {
             return Err("that action is not currently legal".to_string());
         }
         let RoomInner { state, rng, .. } = &mut *inner;
-        let mut events = engine::apply(state, action, rng).map_err(|e| e.to_string())?;
-        events.extend(drive_agents(&mut inner).await);
-        let payload = build_payload(&inner.state, &self.seats, events);
+        let actor = state.current_player();
+        let events = engine::apply(state, action, rng).map_err(|e| e.to_string())?;
+        let mut steps = vec![step(&inner.state, actor, action, events)];
+        steps.extend(drive_agents(&mut inner).await);
+        inner.history.extend(steps.iter().cloned());
+        let payload = build_payload(&inner.state, &self.seats, steps);
         drop(inner);
         let _ = self.tx.send(ServerMessage::State(Box::new(payload)));
         Ok(())
@@ -183,8 +198,9 @@ impl Room {
     /// after the room is created.
     pub async fn kick_off(self: &Arc<Self>) {
         let mut inner = self.inner.lock().await;
-        let events = drive_agents(&mut inner).await;
-        let payload = build_payload(&inner.state, &self.seats, events);
+        let steps = drive_agents(&mut inner).await;
+        inner.history.extend(steps.iter().cloned());
+        let payload = build_payload(&inner.state, &self.seats, steps);
         drop(inner);
         let _ = self.tx.send(ServerMessage::State(Box::new(payload)));
     }
@@ -193,8 +209,8 @@ impl Room {
 /// While the game isn't over and the seat on move is an `Agent`, ask it to
 /// choose (on a blocking task, per the M2 spec) and apply the result,
 /// repeating until either a human seat is on move or the game ends.
-async fn drive_agents(inner: &mut RoomInner) -> Vec<Event> {
-    let mut events = Vec::new();
+async fn drive_agents(inner: &mut RoomInner) -> Vec<StepPayload> {
+    let mut steps = Vec::new();
     loop {
         if inner.state.is_over() {
             break;
@@ -219,8 +235,9 @@ async fn drive_agents(inner: &mut RoomInner) -> Vec<Event> {
         .expect("agent task panicked");
         inner.agents[idx] = Some(agent);
 
+        let actor = inner.state.current_player();
         match engine::apply(&mut inner.state, action, &mut inner.rng) {
-            Ok(ev) => events.extend(ev),
+            Ok(ev) => steps.push(step(&inner.state, actor, action, ev)),
             Err(e) => {
                 // The `Agent` contract guarantees a legal return value; this
                 // would indicate a bug in the agent, not a client mistake.
@@ -230,7 +247,93 @@ async fn drive_agents(inner: &mut RoomInner) -> Vec<Event> {
             }
         }
     }
-    events
+    steps
+}
+
+/// Package one applied action, the events it produced and the position it
+/// left behind.
+fn step(
+    state: &GameState,
+    actor: duels_core::Player,
+    action: duels_core::Action,
+    events: Vec<Event>,
+) -> StepPayload {
+    StepPayload {
+        actor: Some(actor),
+        action: Some(action),
+        events,
+        observation: state.observation(),
+        views: player_views(state),
+        accessible_slots: state.observation().accessible_slots(),
+    }
+}
+
+/// Both players' derived views of `state`. See [`PlayerView`].
+fn player_views(state: &GameState) -> [PlayerView; 2] {
+    [
+        player_view(state, duels_core::Player::One),
+        player_view(state, duels_core::Player::Two),
+    ]
+}
+
+fn player_view(state: &GameState, player: duels_core::Player) -> PlayerView {
+    use duels_core::cost;
+    let me = state.player(player);
+    let slot_costs = (0..duels_core::layout::SLOTS as u8)
+        .filter_map(|slot| {
+            let card = state.face_up_card(slot)?;
+            Some(SlotCostView {
+                slot,
+                card,
+                plan: cost_plan(cost::card_payment_plan(state, player, card), me.coins()),
+            })
+        })
+        .collect();
+    let wonder_costs = me
+        .wonders()
+        .filter(|w| !me.has_built_wonder(*w))
+        .map(|wonder| WonderCostView {
+            wonder,
+            plan: cost_plan(cost::wonder_payment_plan(state, player, wonder), me.coins()),
+        })
+        .collect();
+    PlayerView {
+        production: me.production().into(),
+        trade_prices: cost::trade_prices(state, player).into(),
+        distinct_science: me.distinct_science(),
+        vp_now: scoring::breakdown(state, player),
+        discard_reward: cost::discard_reward(state, player),
+        slot_costs,
+        wonder_costs,
+    }
+}
+
+/// Flatten a `duels_core::cost::PaymentPlan` onto the wire, dropping the
+/// resources the printed cost does not ask for.
+fn cost_plan(plan: duels_core::cost::PaymentPlan, coins: u16) -> CostPlan {
+    use duels_core::data::Resource;
+    CostPlan {
+        lines: plan
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.required > 0)
+            .map(|(i, l)| CostLine {
+                resource: Resource::ALL[i],
+                required: l.required,
+                produced: l.produced,
+                from_choice: l.from_choice,
+                from_discount: l.from_discount,
+                bought: l.bought,
+                unit_price: l.unit_price,
+            })
+            .collect(),
+        coin_cost: plan.coin_cost,
+        coins: plan.cost.coins,
+        trade: plan.cost.trade,
+        via_chain: plan.cost.via_chain,
+        affordable: coins >= plan.cost.coins,
+    }
 }
 
 /// Costs for the `Build`/`Discard`/`BuildWonder` entries of `legal`, computed
@@ -269,16 +372,23 @@ fn action_costs(state: &GameState, legal: &[duels_core::Action]) -> Vec<ActionCo
         .collect()
 }
 
-fn build_payload(state: &GameState, seats: &[SeatSpec; 2], events: Vec<Event>) -> StatePayload {
+fn build_payload(
+    state: &GameState,
+    seats: &[SeatSpec; 2],
+    steps: Vec<StepPayload>,
+) -> StatePayload {
     let legal = engine::legal_actions(state);
     let action_costs = action_costs(state, &legal);
     let breakdown = state.result().map(|_| scoring::score(state));
     StatePayload {
         observation: state.observation(),
+        views: player_views(state),
+        accessible_slots: state.observation().accessible_slots(),
         seats: seats.clone(),
         legal_actions: legal,
         action_costs,
-        events,
+        steps,
+        replay: false,
         breakdown,
     }
 }

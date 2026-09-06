@@ -88,6 +88,165 @@ pub struct RoomInfo {
     pub turn: u32,
 }
 
+/// Per-unit trade prices, `{ wood, clay, stone, glass, papyrus }`, straight
+/// from [`duels_core::cost::trade_prices`]: what this player pays the bank
+/// (or, under the Economy token, the opponent) for one unit of each resource
+/// right now.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResourcePrices {
+    /// Coins for one wood.
+    pub wood: u16,
+    /// Coins for one clay.
+    pub clay: u16,
+    /// Coins for one stone.
+    pub stone: u16,
+    /// Coins for one glass.
+    pub glass: u16,
+    /// Coins for one papyrus.
+    pub papyrus: u16,
+}
+
+impl From<[u16; duels_core::data::NUM_RESOURCES]> for ResourcePrices {
+    fn from(a: [u16; duels_core::data::NUM_RESOURCES]) -> Self {
+        Self {
+            wood: a[0],
+            clay: a[1],
+            stone: a[2],
+            glass: a[3],
+            papyrus: a[4],
+        }
+    }
+}
+
+/// How one resource of a printed cost gets paid for, from
+/// [`duels_core::cost::ResourceLine`]. Only resources the cost actually
+/// demands appear in a [`CostPlan`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CostLine {
+    /// Which resource.
+    pub resource: duels_core::data::Resource,
+    /// Units the printed cost demands.
+    pub required: u8,
+    /// Units the player's own production covers.
+    pub produced: u8,
+    /// Units a "produce one of your choice" source covers.
+    pub from_choice: u8,
+    /// Units an Architecture / Masonry rebate covers.
+    pub from_discount: u8,
+    /// Units that must be bought.
+    pub bought: u8,
+    /// Coins per bought unit.
+    pub unit_price: u16,
+}
+
+/// What building one specific thing would cost one specific player, itemised.
+///
+/// Every field comes from [`duels_core::cost::PaymentPlan`], so the client can
+/// render "1 papyrus, bought at 3¢" and the net total without ever computing
+/// a price itself — and, crucially, can render the same card's cost from
+/// *either* player's point of view (the "cost lens" of the UI spec), which
+/// [`ActionCost`] cannot express because it only covers the player on move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CostPlan {
+    /// One entry per resource the printed cost demands, in
+    /// `duels_core::data::Resource::ALL` order.
+    pub lines: Vec<CostLine>,
+    /// The printed coin cost, owed on top of any trade.
+    pub coin_cost: u16,
+    /// Total coins owed.
+    pub coins: u16,
+    /// The portion of `coins` that is a trade payment.
+    pub trade: u16,
+    /// Whether a chain symbol makes this free.
+    pub via_chain: bool,
+    /// Whether this player's treasury covers `coins` right now. (Affordability
+    /// alone does not make an action legal — only `legal_actions` does; this
+    /// exists so an unaffordable card can be shown as such to *either* player.)
+    pub affordable: bool,
+}
+
+/// What one face-up structure slot would cost one player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SlotCostView {
+    /// The slot.
+    pub slot: u8,
+    /// The card visible there.
+    pub card: CardId,
+    /// The itemised cost for this view's player.
+    pub plan: CostPlan,
+}
+
+/// What one of a player's drafted, unbuilt wonders would cost them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WonderCostView {
+    /// The wonder.
+    pub wonder: WonderId,
+    /// The itemised cost for this view's player.
+    pub plan: CostPlan,
+}
+
+/// Everything derived from the rules that a UI wants to show *per player*,
+/// computed server-side for both seats.
+///
+/// The [`Observation`] carries the raw public state (coins, built cards,
+/// science counts); this carries the numbers you would otherwise have to
+/// re-derive with rules knowledge — current production including wonder and
+/// "choice" sources, the trade prices each player faces, the running victory
+/// point total, and the itemised cost of every buildable thing from *this*
+/// player's point of view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlayerView {
+    /// Unconditional production, per resource.
+    pub production: ResourceAmounts,
+    /// What one unit of each resource costs this player to buy right now.
+    pub trade_prices: ResourcePrices,
+    /// How many distinct scientific symbols this player holds.
+    pub distinct_science: u8,
+    /// The victory points this player would score if the game ended now,
+    /// from `duels_core::scoring::breakdown`.
+    pub vp_now: Breakdown,
+    /// Coins this player would get for discarding a card right now.
+    pub discard_reward: u16,
+    /// The itemised cost of every face-up slot, for this player.
+    pub slot_costs: Vec<SlotCostView>,
+    /// The itemised cost of every drafted, unbuilt wonder, for this player.
+    pub wonder_costs: Vec<WonderCostView>,
+}
+
+/// One applied action, with everything it changed and the position it left
+/// behind.
+///
+/// A single [`StatePayload`] can carry several of these (a human move
+/// followed by however many agent moves the server resolved before handing
+/// control back), and a client that wants to *play the moves back* rather
+/// than snap to the final state needs them separated: which events belong to
+/// which action, who acted, and what the board looked like after each one.
+/// Keeping the per-step [`Observation`] also lets the client render an
+/// earlier position for review without asking the server for it again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StepPayload {
+    /// Who acted, or `None` for a step the engine took on its own.
+    pub actor: Option<duels_core::Player>,
+    /// The action applied.
+    pub action: Option<Action>,
+    /// Everything that happened as a result, in rules order.
+    pub events: Vec<Event>,
+    /// The public state immediately after this step.
+    pub observation: Observation,
+    /// Both players' derived views immediately after this step.
+    pub views: [PlayerView; 2],
+    /// The slots that could be taken in this position (see
+    /// [`StatePayload::accessible_slots`]).
+    pub accessible_slots: Vec<u8>,
+}
+
 /// The coin cost or reward of one of the current legal actions, computed
 /// server-side from `duels_core::cost` (and
 /// [`duels_core::cost::discard_reward`] for `Discard`) so the client never
@@ -153,6 +312,18 @@ pub struct StatePayload {
     /// The public view of the game, straight from
     /// [`duels_core::GameState::observation`].
     pub observation: Observation,
+    /// Both players' derived views of the current position (production, trade
+    /// prices, running VP, itemised costs), so the client can render either
+    /// player's costs without owning a cost engine.
+    pub views: [PlayerView; 2],
+    /// Which structure slots are uncovered, from
+    /// [`duels_core::observation::Observation::accessible_slots`]. A face-up
+    /// slot that is not in this list is covered: still readable, not takeable.
+    /// Sent rather than derived, because "what covers what" is a rule
+    /// (`docs/rules-spec.md` R-010), not a drawing detail — and it has to be
+    /// right even when it is not this browser's turn and `legal_actions` is
+    /// therefore empty.
+    pub accessible_slots: Vec<u8>,
     /// The current seat assignment, so the client knows whether the seat on
     /// move is a human (and should show controls) or an agent (already
     /// resolved server-side by the time this message arrives).
@@ -164,10 +335,15 @@ pub struct StatePayload {
     /// Coin cost/reward for the `Build`/`Discard`/`BuildWonder` entries of
     /// `legal_actions`, computed server-side.
     pub action_costs: Vec<ActionCost>,
-    /// What happened since the previous [`StatePayload`] (empty for the very
-    /// first one sent on connect). A UI can animate these; this milestone's
-    /// client just uses them for a lightweight log.
-    pub events: Vec<Event>,
+    /// What happened since the previous [`StatePayload`], one entry per
+    /// applied action, in order. Empty only when nothing has happened yet.
+    /// The client animates these in sequence and turns them into log entries.
+    pub steps: Vec<StepPayload>,
+    /// True when `steps` is the room's *entire* history rather than what just
+    /// happened — which is what a freshly connected (or reconnected, or
+    /// reloaded) client is sent, so it can populate its log and its
+    /// position-review history without replaying any animation.
+    pub replay: bool,
     /// The full victory-point breakdown, present once
     /// `observation.result` is `Some`.
     pub breakdown: Option<[Breakdown; 2]>,
@@ -354,12 +530,17 @@ pub struct Catalog {
     pub military: MilitaryCatalog,
     /// Slot geometry for ages I, II and III, indexed by `age - 1`.
     pub layouts: [AgeStructureLayout; 3],
+    /// The scientific symbols in the order `PublicPlayer::science` counts
+    /// them, from `duels_core::data::Science::ALL`. Sent rather than
+    /// restated client-side, so a display can never line its symbols up
+    /// against the wrong counts.
+    pub science_order: Vec<duels_core::data::Science>,
 }
 
 /// `{ wood, clay, stone, glass, papyrus }`, named rather than a positional
 /// array so the client never has to know `duels_core::data::Resource`'s
 /// index order.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ResourceAmounts {
     /// Units of wood.

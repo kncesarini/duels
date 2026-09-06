@@ -174,6 +174,20 @@ pub enum Science {
 }
 
 impl Science {
+    /// Every symbol, in the order [`Science::index`] uses — which is the
+    /// order of `PlayerState::science` and of the `[u8; NUM_SCIENCE]` array
+    /// an `Observation` carries. Anything that has to line a display up with
+    /// those counts should read this rather than restate the order.
+    pub const ALL: [Science; NUM_SCIENCE] = [
+        Science::Mortar,
+        Science::Pendulum,
+        Science::Inkwell,
+        Science::Wheel,
+        Science::Sundial,
+        Science::Gyroscope,
+        Science::Balance,
+    ];
+
     /// Index into a `[_; NUM_SCIENCE]` array.
     #[inline]
     pub const fn index(self) -> usize {
@@ -1319,6 +1333,16 @@ mod tests {
     #[test]
     fn embedded_data_parses_and_validates() {
         try_load().expect("data/*.json should parse and validate");
+    }
+
+    /// `Science::ALL` is what a UI lines its science row up against, so it
+    /// must stay in exactly the order `index()` (and therefore every
+    /// `[_; NUM_SCIENCE]` array) uses.
+    #[test]
+    fn science_all_is_in_index_order() {
+        for (i, s) in Science::ALL.iter().enumerate() {
+            assert_eq!(s.index(), i, "{s:?} is out of order in Science::ALL");
+        }
     }
 
     #[test]
