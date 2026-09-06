@@ -80,6 +80,20 @@ struct SideProfile {
     /// Every game, not just losses.
     science_symbols: f64,
     pawn_distance: f64,
+    /// Games in which this side finished holding at least one guild.
+    guild_games: u32,
+    /// Guilds built, over every game.
+    guilds: u32,
+    /// The majority count each of those guilds actually scored on, summed —
+    /// `duels_core::scoring::majority_count`, which is the higher of the two
+    /// players' counts and so is what the guild pays out at.
+    guild_basis: f64,
+    /// Victory points those guilds actually paid, summed.
+    guild_vp: f64,
+    /// Guilds that reached a *city*, either side's, over every game — recorded
+    /// identically on both profiles, so it reads as "of the three guilds dealt,
+    /// how many were bought at all".
+    guilds_in_play: u32,
 }
 
 fn kind_index(kind: VictoryKind) -> usize {
@@ -111,6 +125,32 @@ impl SideProfile {
             Player::Two => -f64::from(state.conflict()),
         };
         self.pawn_distance += signed;
+
+        // Guilds. `phased` before round five never priced one on the menu —
+        // every guild prints zero points and zero coins, so its pricer read a
+        // face-up guild as a costly card worth nothing — and so neither fought
+        // for one nor denied one. This is the diagnostic that says whether that
+        // changed, and at what majority count the guilds it buys actually pay.
+        let s = duels_core::data::statics();
+        let mine_guilds = me.built_mask() & s.guild_mask;
+        let both = (state.player(Player::One).built_mask()
+            | state.player(Player::Two).built_mask())
+            & s.guild_mask;
+        self.guilds_in_play += both.count_ones();
+        self.guilds += mine_guilds.count_ones();
+        if mine_guilds != 0 {
+            self.guild_games += 1;
+        }
+        let mut mask = mine_guilds;
+        while mask != 0 {
+            let card = duels_core::data::CardId::from_index(mask.trailing_zeros() as usize);
+            mask &= mask - 1;
+            if let Some((target, per)) = card.def().points_by_majority {
+                let count = f64::from(scoring::majority_count(state, target));
+                self.guild_basis += count;
+                self.guild_vp += count * f64::from(per);
+            }
+        }
 
         match result {
             GameResult::Win { winner, kind } if winner == seat => {
@@ -209,6 +249,20 @@ fn report(name: &str, p: &SideProfile) {
         "  overall            {:.2} distinct symbols, pawn {:+.2} from centre",
         mean(p.science_symbols, p.games),
         mean(p.pawn_distance, p.games)
+    );
+    println!(
+        "  guilds             {} built in {} games ({:.1}% of games), \
+         mean majority count {:.2}, {:.2} VP/game   [{:.2} of the 3 dealt reached a city]",
+        p.guilds,
+        p.games,
+        pct(p.guild_games, p.games),
+        if p.guilds == 0 {
+            0.0
+        } else {
+            p.guild_basis / f64::from(p.guilds)
+        },
+        mean(p.guild_vp, p.games),
+        mean(f64::from(p.guilds_in_play), p.games),
     );
     println!(
         "  in its {} losses  pawn {:+.2}, military VP conceded {:.2}, VP margin {:+.2}, symbols {:.2}",

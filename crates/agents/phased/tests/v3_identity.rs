@@ -29,9 +29,7 @@
 //! left. Between them the two tests say: one thing changed at `Config::v3()`,
 //! it is the thing that was meant to change, and nothing else did.
 
-use duels_agent_phased::{
-    expected_value, menu, terms, Config, EvalWeights, PendingModel, Root, WonderModel,
-};
+use duels_agent_phased::{expected_value, menu, terms, Config, PendingModel, Root, WonderModel};
 use duels_core::data::WonderId;
 use duels_core::scoring::{self, GameResult};
 use duels_core::testing::StateBuilder;
@@ -283,8 +281,10 @@ fn config_v3_switches_off_every_round_four_option() {
     assert!(!v3.destroy_replace_discount);
     // ...and everything round three did not touch is still at its own default,
     // so this is a statement about the code and not about a coincidence of
-    // weights.
-    assert_eq!(v3.eval, EvalWeights::default());
+    // weights. Against `Config::v4().eval` rather than `EvalWeights::default()`
+    // — from round five on the current defaults include weights this snapshot
+    // has to hold at zero, which `tests/v4_identity.rs` pins.
+    assert_eq!(v3.eval, Config::v4().eval);
     assert_eq!(v3.rails, Config::default().rails);
     assert_eq!(
         v3.menu_shield_pricing,

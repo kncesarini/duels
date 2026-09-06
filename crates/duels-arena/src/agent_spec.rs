@@ -50,7 +50,12 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`v3`/`default`), the pending-effect model
+//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`default`), guild pricing
+//!   (`guild`, `unpriced`/`projected`) and the guild projection weight
+//!   (`guildproj`), the menu floor (`menufloor`, `none`/`discard`/
+//!   `discardwonder`), the menu's soft affordability width (`afford`), the
+//!   supply weighting (`supply`, `raw`/`dealt`), the yellow-density term
+//!   (`yellow`, with `discardrate`), the pending-effect model
 //!   (`pending`, `unresolved`/`completed`), the wonder model (`wonder`,
 //!   `flat`/`budget`, with `wturns` and `wextra`), the destroy-replacement
 //!   discount (`destroy_replace`/`destroyrepl`, `on`/`off`), the terminal rails
@@ -91,8 +96,9 @@ use duels_agent_mcts_uct::{
     Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
 };
 use duels_agent_phased::{
-    Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MenuShieldPricing,
-    MilitaryModel, PendingModel, PhasedAgent, RailModel, WonderModel,
+    Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, GuildPricing, MenuFloor,
+    MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent, RailModel, SupplyModel,
+    WonderModel,
 };
 use duels_agents_api::Agent;
 
@@ -318,9 +324,38 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v1" => cfg = PhasedConfig::v1(),
                 "v2" => cfg = PhasedConfig::v2(),
                 "v3" => cfg = PhasedConfig::v3(),
+                "v4" => cfg = PhasedConfig::v4(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
+            "guild" | "guild_pricing" => {
+                cfg.guild_pricing = match v {
+                    "unpriced" | "off" => GuildPricing::Unpriced,
+                    "projected" | "on" => GuildPricing::Projected,
+                    other => return Err(format!("phased: unknown guild \"{other}\"")),
+                }
+            }
+            "guild_projection" | "guildproj" => cfg.eval.guild_projection = parse_field(k, v)?,
+            "menu_floor" | "menufloor" => {
+                cfg.menu_floor = match v {
+                    "none" | "off" => MenuFloor::None,
+                    "discard" => MenuFloor::Discard,
+                    "discardwonder" | "discard_and_wonder" => MenuFloor::DiscardAndWonder,
+                    other => return Err(format!("phased: unknown menu_floor \"{other}\"")),
+                }
+            }
+            "menu_afford_soft" | "afford" => cfg.menu_afford_soft = parse_field(k, v)?,
+            "supply" | "supply_model" => {
+                cfg.supply_model = match v {
+                    "raw" => SupplyModel::Raw,
+                    "dealt" => SupplyModel::Dealt,
+                    other => return Err(format!("phased: unknown supply_model \"{other}\"")),
+                }
+            }
+            "yellow_equity" | "yellow" => cfg.eval.yellow_equity = parse_field(k, v)?,
+            "yellow_discard_rate" | "discardrate" => {
+                cfg.eval.yellow_discard_rate = parse_field(k, v)?
+            }
             "pending" | "pending_model" => {
                 cfg.pending_model = match v {
                     "unresolved" | "off" => PendingModel::Unresolved,
@@ -717,11 +752,13 @@ mod tests {
         assert_eq!(parse_phased_config("base=v2").unwrap(), PhasedConfig::v2());
         assert_eq!(parse_phased_config("").unwrap(), PhasedConfig::default());
         // The round-three keys, and their "off" values reproducing v2's --
-        // round four's `pending=unresolved` included, since `v2()` is built on
-        // `v3()` and so carries every later option at its own off value too.
+        // round four's `pending=unresolved` and round five's six included,
+        // since `v2()` is built on `v3()` on `v4()` and so carries every later
+        // option at its own off value too.
         let off = parse_phased_config(
             "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
-             pending=unresolved",
+             pending=unresolved,guild=unpriced,guildproj=0,menufloor=none,afford=0,\
+             supply=raw,yellow=0",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -740,7 +777,11 @@ mod tests {
             parse_phased_config("pending=unresolved,wonder=flat,destroyrepl=off,base=v3").unwrap();
         assert_eq!(off, PhasedConfig::v3());
         assert_eq!(
-            parse_phased_config("pending=unresolved,wonder=flat,destroyrepl=off").unwrap(),
+            parse_phased_config(
+                "pending=unresolved,wonder=flat,destroyrepl=off,guild=unpriced,guildproj=0,\
+                 menufloor=none,afford=0,supply=raw,yellow=0"
+            )
+            .unwrap(),
             PhasedConfig::v3()
         );
         let on = parse_phased_config("wonder=budget,destroyrepl=on,wturns=3,wextra=2").unwrap();
@@ -752,6 +793,35 @@ mod tests {
         assert!(parse_phased_config("wonder=lavish").is_err());
         assert!(parse_phased_config("destroyrepl=perhaps").is_err());
         assert_ne!(PhasedConfig::v3(), PhasedConfig::default());
+
+        // The round-five keys, and their "off" values reproducing v4's.
+        assert_eq!(parse_phased_config("base=v4").unwrap(), PhasedConfig::v4());
+        assert_eq!(
+            parse_phased_config(
+                "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0"
+            )
+            .unwrap(),
+            PhasedConfig::v4()
+        );
+        let on = parse_phased_config(
+            "guild=projected,guildproj=0.5,menufloor=discardwonder,afford=2.5,supply=dealt,\
+             yellow=0.75,discardrate=0.3",
+        )
+        .unwrap();
+        assert_eq!(on.guild_pricing, GuildPricing::Projected);
+        assert_eq!(on.eval.guild_projection, 0.5);
+        assert_eq!(on.menu_floor, MenuFloor::DiscardAndWonder);
+        assert_eq!(on.menu_afford_soft, 2.5);
+        assert_eq!(on.supply_model, SupplyModel::Dealt);
+        assert_eq!(on.eval.yellow_equity, 0.75);
+        assert_eq!(on.eval.yellow_discard_rate, 0.3);
+        assert_eq!(
+            parse_phased_config("menufloor=discard").unwrap().menu_floor,
+            MenuFloor::Discard
+        );
+        assert!(parse_phased_config("guild=freehand").is_err());
+        assert!(parse_phased_config("menufloor=basement").is_err());
+        assert!(parse_phased_config("supply=plentiful").is_err());
     }
 
     #[test]

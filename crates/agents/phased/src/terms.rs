@@ -11,8 +11,9 @@
 //! accessors and cost/scoring engines. Nothing re-implements a rule.
 
 use duels_core::cost;
-use duels_core::data::{self, CardId, Resource, TokenId, WonderId, NUM_RESOURCES};
-use duels_core::scoring::Breakdown;
+use duels_core::data::NUM_RESOURCES;
+use duels_core::data::{self, CardId, CardType, CountTarget, Resource, TokenId, WonderId};
+use duels_core::scoring::{self, Breakdown};
 use duels_core::state::{Phase, MAX_WONDERS_BUILT};
 use duels_core::{GameState, Player};
 use duels_strategy::board::Board;
@@ -20,7 +21,7 @@ use duels_strategy::masks::{iter_cards, masks, DECISIONS_PER_AGE};
 use duels_strategy::military::signed_distance;
 use duels_strategy::science::token_value;
 
-use crate::{EvalWeights, ScienceWeights};
+use crate::{EvalWeights, ScienceWeights, SupplyModel};
 
 /// The largest number of units of one resource the development term prices.
 ///
@@ -120,12 +121,51 @@ pub struct DevSupply {
     /// off `data/cards.json`), so this goes to exactly zero once Ages I and II
     /// are gone, and an Age III destroy is priced as the permanent loss it is.
     pub sources: [f64; NUM_RESOURCES],
+    /// What fraction of the same pool each card colour makes up, indexed by
+    /// [`duels_core::data::CardType::index`].
+    ///
+    /// The colour-wise companion to [`DevSupply::f`], weighted exactly the same
+    /// way, and read for exactly one reason: a guild scores on *how many cards
+    /// of one colour end up in the leading city*, so projecting that count
+    /// forward needs the rate at which the remaining pool prints that colour.
+    /// See [`GuildTable`].
+    pub kind_f: [f64; data::CardType::ALL.len()],
 }
 
 impl DevSupply {
-    /// Read the supply statistics off a root position's board.
+    /// Read the supply statistics off a root position's board, with every pool
+    /// entry weighted equally — the pre-existing behaviour.
     pub fn of(board: &Board) -> DevSupply {
+        DevSupply::of_with(board, SupplyModel::Raw)
+    }
+
+    /// [`DevSupply::of`] with the pool weighting explicit.
+    ///
+    /// # Why the weighting is a question at all
+    ///
+    /// The pool is the current age's unknown cards *plus every whole deck not
+    /// yet dealt*, and a whole deck is not what reaches the table. Setup deals
+    /// [`duels_core::layout::SLOTS`] cards per age out of a larger pool: 20
+    /// of Ages I and II's 23, and — Age III being the only age with guilds — 17
+    /// of its 20 plain cards plus 3 of its 7 guilds, the rest going back in the
+    /// box unseen (`duels_core::engine::new_game`, and
+    /// `duels_core::state::GUILDS_IN_PLAY`).
+    ///
+    /// [`SupplyModel::Raw`] ignores that and counts every undealt card once,
+    /// which mildly over-weights Age III's guilds — seven of them in the
+    /// statistics where three will be dealt — and so mildly over-states what
+    /// the remaining pool will charge for the resources guilds happen to ask
+    /// for. [`SupplyModel::Dealt`] weights each undealt entry by its own age's
+    /// dealt fraction instead.
+    ///
+    /// The current age's unknown pool is weighted `1` under both, unchanged:
+    /// those cards are already on the table, face down, and
+    /// [`duels_strategy::context::Expectations::p_hidden`] is the right
+    /// discount for "is this one of them", which is a different question from
+    /// "will this ever be dealt".
+    pub fn of_with(board: &Board, model: SupplyModel) -> DevSupply {
         let s = data::statics();
+        let m = masks();
         let mut pool = board.unknown_pool;
         for age in board.undealt_ages() {
             if age >= 1 && usize::from(age) <= s.age_masks.len() {
@@ -134,22 +174,45 @@ impl DevSupply {
         }
 
         let pool_size = pool.count_ones();
-        let mut counts = [[0u32; NUM_RESOURCES]; MAX_UNITS];
+        // The weight one pool entry carries in the statistics below. `Raw`
+        // makes every one exactly `1.0`, so the sums are exact integers and
+        // reproduce the previous `u32` counts bit for bit.
+        let entry_weight = |card: CardId| -> f64 {
+            match model {
+                SupplyModel::Raw => 1.0,
+                SupplyModel::Dealt => {
+                    if board.unknown_pool & (1u128 << card.index()) != 0 {
+                        1.0
+                    } else if s.guild_mask & (1u128 << card.index()) != 0 {
+                        m.age_supply(card.def().age).guild_dealt_fraction()
+                    } else {
+                        m.age_supply(card.def().age).plain_dealt_fraction()
+                    }
+                }
+            }
+        };
+
+        let mut counts = [[0.0f64; NUM_RESOURCES]; MAX_UNITS];
+        let mut kind_counts = [0.0f64; data::CardType::ALL.len()];
+        let mut pool_weight = 0.0f64;
         for card in iter_cards(pool) {
+            let w = entry_weight(card);
+            pool_weight += w;
+            kind_counts[card.def().kind.index()] += w;
             let cost = card.def().resource_cost;
             for (r, &need) in cost.iter().enumerate() {
                 for (k, row) in counts.iter_mut().enumerate() {
                     if u32::from(need) >= (k + 1) as u32 {
-                        row[r] += 1;
+                        row[r] += w;
                     }
                 }
             }
         }
 
-        let scale = if pool_size == 0 {
+        let scale = if pool_size == 0 || pool_weight <= 0.0 {
             0.0
         } else {
-            1.0 / f64::from(pool_size)
+            1.0 / pool_weight
         };
         let production = production_mask();
         let total = production.count_ones();
@@ -184,7 +247,8 @@ impl DevSupply {
         }
 
         DevSupply {
-            f: std::array::from_fn(|k| std::array::from_fn(|r| f64::from(counts[k][r]) * scale)),
+            f: std::array::from_fn(|k| std::array::from_fn(|r| counts[k][r] * scale)),
+            kind_f: std::array::from_fn(|i| kind_counts[i] * scale),
             pool_size,
             production_lock_in: if total == 0 {
                 1.0
@@ -193,6 +257,19 @@ impl DevSupply {
             },
             sources,
         }
+    }
+
+    /// What fraction of the remaining pool is of colour `kind`.
+    #[inline]
+    pub fn kind_fraction(&self, kind: CardType) -> f64 {
+        self.kind_f[kind.index()]
+    }
+
+    /// What fraction of the remaining pool is brown or grey — the Shipowners
+    /// Guild's category, which is two colours rather than one.
+    #[inline]
+    pub fn raw_and_manufactured_fraction(&self) -> f64 {
+        self.kind_f[CardType::RawMaterial.index()] + self.kind_f[CardType::ManufacturedGood.index()]
     }
 }
 
@@ -1072,28 +1149,10 @@ impl WonderBudget {
         chain: &crate::menu::ChainTable,
         e: &EvalWeights,
     ) -> WonderBudget {
-        let slots = wonder_slots_left(state);
-        let unbuilt = [
-            unbuilt_wonders(state, Player::One),
-            unbuilt_wonders(state, Player::Two),
-        ];
-        let total_unbuilt = unbuilt[0] + unbuilt[1];
-
         let mut p_build = [0.0f64; 2];
         let mut power = [[0.0f64; data::NUM_WONDERS]; 2];
         for p in Player::ALL {
-            let u = unbuilt[p.index()];
-            let cap_share = if total_unbuilt <= 0.0 {
-                0.0
-            } else {
-                (slots / total_unbuilt).min(1.0)
-            };
-            let turn_factor = if u <= 0.0 {
-                0.0
-            } else {
-                (decisions_left(state, p) / (u * e.wonder_turns_per_wonder)).min(1.0)
-            };
-            p_build[p.index()] = cap_share * turn_factor;
+            p_build[p.index()] = wonder_p_build(state, p, e);
 
             let ps = state.player(p);
             for w in ps.wonders() {
@@ -1118,6 +1177,38 @@ impl WonderBudget {
     pub fn power(&self, p: Player, w: WonderId) -> f64 {
         self.power[p.index()][w.index()]
     }
+}
+
+/// `p_build(p)`: the chance any one of `p`'s drafted-but-unbuilt wonders is
+/// actually built before the game ends.
+///
+/// ```text
+/// p_build(p)  = cap_share(p) · turn_factor(p)
+/// cap_share   = min(1, slots_left / (U_p + U_opp))
+/// turn_factor = min(1, decisions_left(p) / (U_p · turns_per_wonder))
+/// ```
+///
+/// Factored out of [`WonderBudget::of`] because it is a **standalone
+/// probability estimate** and two unrelated things want it: the wonder budget
+/// itself, and [`GuildTable`], which has to project how many wonders the
+/// Builders Guild will end up counting. Callable whatever
+/// [`crate::WonderModel`] is in force — nothing about it depends on how the
+/// evaluation happens to price a wonder's *effects*.
+pub fn wonder_p_build(state: &GameState, p: Player, e: &EvalWeights) -> f64 {
+    let slots = wonder_slots_left(state);
+    let u = unbuilt_wonders(state, p);
+    let total_unbuilt = u + unbuilt_wonders(state, p.other());
+    let cap_share = if total_unbuilt <= 0.0 {
+        0.0
+    } else {
+        (slots / total_unbuilt).min(1.0)
+    };
+    let turn_factor = if u <= 0.0 {
+        0.0
+    } else {
+        (decisions_left(state, p) / (u * e.wonder_turns_per_wonder)).min(1.0)
+    };
+    cap_share * turn_factor
 }
 
 /// `Σ_unbuilt p_build(w) · power_p(w)` over the wonders `p` still holds in
@@ -1244,6 +1335,248 @@ fn expected_best_of_three(state: &GameState, p: Player) -> f64 {
     } else {
         total / f64::from(draws)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Guilds
+// ---------------------------------------------------------------------------
+
+/// How many distinct [`CountTarget`]s exist: one per card colour, plus brown +
+/// grey together, wonders, and `floor(coins / 3)`.
+pub const NUM_COUNT_TARGETS: usize = data::CardType::ALL.len() + 3;
+
+/// A dense index for a [`CountTarget`], so the projections can live in an
+/// array rather than a map.
+#[inline]
+pub fn count_target_index(target: CountTarget) -> usize {
+    let n = data::CardType::ALL.len();
+    match target {
+        CountTarget::Cards(kind) => kind.index(),
+        CountTarget::RawAndManufactured => n,
+        CountTarget::Wonders => n + 1,
+        CountTarget::CoinsDiv3 => n + 2,
+    }
+}
+
+/// Every [`CountTarget`], in index order — the inverse of
+/// [`count_target_index`].
+fn all_count_targets() -> [CountTarget; NUM_COUNT_TARGETS] {
+    let n = data::CardType::ALL.len();
+    std::array::from_fn(|i| {
+        if i < n {
+            CountTarget::Cards(data::CardType::ALL[i])
+        } else if i == n {
+            CountTarget::RawAndManufactured
+        } else if i == n + 1 {
+            CountTarget::Wonders
+        } else {
+            CountTarget::CoinsDiv3
+        }
+    })
+}
+
+/// What each majority count is projected to be *at the end of the game*, read
+/// once from the root position.
+///
+/// # Why a guild needs a projection at all
+///
+/// [`duels_core::scoring::breakdown`] scores a built guild at `per_vp ×
+/// max(c_me, c_opp)` on the board **as it stands**, which is correct at scoring
+/// time and badly wrong as a forward estimate: a Scientists Guild taken in the
+/// first half of Age III is bought for the green cards both cities are *going
+/// to* have, not the ones they have when it goes up. Nothing in this crate
+/// projected that, and [`crate::menu::TakeValue`] did not price a guild at all
+/// — every guild card has `victory_points == 0` and `coins == 0`, because a
+/// guild scores through `points_by_majority` / `coins_by_majority` instead, so
+/// the menu priced every face-up guild at `−cost × coin_marginal`, a strictly
+/// negative number. The agent therefore never fought for a guild and never
+/// denied one.
+///
+/// ```text
+/// Ĝ(t) = max( c_1 + Δ_1(t),  c_2 + Δ_2(t) )
+/// Δ_p(t) = ρ_t · take_rate · decisions_left(p)      for a colour, or brown+grey
+///        = U_p · p_build(p)                          for wonders
+///        = 0                                         for coins / 3
+/// ```
+///
+/// `ρ_t` is [`DevSupply::kind_fraction`] — the rate at which the *remaining*
+/// pool prints that colour, from the same pool walk every other development
+/// price uses. `p_build` is [`wonder_p_build`], the same probability
+/// [`WonderModel::Budget`](crate::WonderModel::Budget) rations wonders with,
+/// called directly rather than through the budget so it is available whatever
+/// wonder model is in force.
+///
+/// **Root-fixed**, like every other price in this crate: computed once per
+/// decision and held constant across every candidate, so a move that adds a
+/// green card is credited once — through the card — rather than twice, through
+/// the card and again through the basis its own guild scores on.
+///
+/// The `max` is what makes the whole thing a *race* with no special-casing.
+/// Both players read the same `Ĝ`, because the rule pays the guild's owner on
+/// the higher of the two counts whether or not it is their own, so a guild is
+/// worth the same to whoever ends up with it, and denial falls out of the menu
+/// differencing the two sides' menus rather than out of a denial rule.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuildTable {
+    hat: [f64; NUM_COUNT_TARGETS],
+    live: [f64; NUM_COUNT_TARGETS],
+}
+
+impl GuildTable {
+    /// An all-zero table, for when guild pricing is switched off. Never read.
+    pub fn empty() -> GuildTable {
+        GuildTable {
+            hat: [0.0; NUM_COUNT_TARGETS],
+            live: [0.0; NUM_COUNT_TARGETS],
+        }
+    }
+
+    /// Read the projections off the root position.
+    pub fn of(state: &GameState, supply: &DevSupply, e: &EvalWeights) -> GuildTable {
+        let n_take: [f64; 2] =
+            Player::ALL.map(|p| (e.development_take_rate * decisions_left(state, p)).max(0.0));
+        let wonder_add: [f64; 2] =
+            Player::ALL.map(|p| unbuilt_wonders(state, p) * wonder_p_build(state, p, e));
+
+        let mut hat = [0.0f64; NUM_COUNT_TARGETS];
+        let mut live = [0.0f64; NUM_COUNT_TARGETS];
+        for target in all_count_targets() {
+            let i = count_target_index(target);
+            // The engine's own majority accessor, not a second copy of the
+            // rule.
+            live[i] = f64::from(scoring::majority_count(state, target));
+            let rho = match target {
+                CountTarget::Cards(kind) => supply.kind_fraction(kind),
+                CountTarget::RawAndManufactured => supply.raw_and_manufactured_fraction(),
+                // Wonders are not dealt from the card pool, and coins have no
+                // pool at all.
+                CountTarget::Wonders | CountTarget::CoinsDiv3 => 0.0,
+            };
+            hat[i] = Player::ALL
+                .map(|p| {
+                    let now = f64::from(state.player(p).count(target));
+                    let delta = match target {
+                        CountTarget::Wonders => wonder_add[p.index()],
+                        CountTarget::CoinsDiv3 => 0.0,
+                        _ => rho * n_take[p.index()],
+                    };
+                    now + delta
+                })
+                .into_iter()
+                .fold(f64::NEG_INFINITY, f64::max);
+        }
+        GuildTable { hat, live }
+    }
+
+    /// `Ĝ(target)`: the projected end-of-game majority count.
+    #[inline]
+    pub fn hat(&self, target: CountTarget) -> f64 {
+        self.hat[count_target_index(target)]
+    }
+
+    /// `max(c_1, c_2)(target)` on the root board, which is what a guild's
+    /// *immediate* coin payout is settled on and what
+    /// [`duels_core::scoring::breakdown`] already credits a built guild's
+    /// points at.
+    #[inline]
+    pub fn live(&self, target: CountTarget) -> f64 {
+        self.live[count_target_index(target)]
+    }
+
+    /// What one guild card is worth in victory points to a player whose
+    /// marginal coin is `coin_marginal`, projections included.
+    ///
+    /// Zero for every card that is not a guild, because only a guild carries a
+    /// `by_majority` effect.
+    pub fn card_value(&self, card: CardId, coin_marginal: f64) -> f64 {
+        let def = card.def();
+        let mut v = 0.0;
+        if let Some((target, per)) = def.points_by_majority {
+            v += f64::from(per) * self.hat(target);
+        }
+        if let Some((target, per)) = def.coins_by_majority {
+            // Paid once, on the spot, out of the board as it stands — not a
+            // projection, and so priced on `live` rather than on `hat`.
+            v += f64::from(per) * self.live(target) * coin_marginal;
+        }
+        v
+    }
+
+    /// `Σ_{built guilds of p} per_vp · (Ĝ(t) − live(t))`: the forward
+    /// *increment* on the guilds `p` has already built.
+    ///
+    /// [`duels_core::scoring::breakdown`] — which [`card_and_token_vp`] reads —
+    /// already credits those guilds at `per_vp × live(t)`, so this term adds
+    /// only the part the snapshot cannot see, and adding the whole projection
+    /// would double the half that is already there.
+    ///
+    /// `built(p)` is read on the post-action state, so a candidate that takes a
+    /// guild is credited for it; every price is root-fixed.
+    pub fn projection(&self, state: &GameState, p: Player) -> f64 {
+        let mask = state.player(p).built_mask() & data::statics().guild_mask;
+        if mask == 0 {
+            return 0.0;
+        }
+        let mut out = 0.0;
+        for card in iter_cards(mask) {
+            if let Some((target, per)) = card.def().points_by_majority {
+                let i = count_target_index(target);
+                out += f64::from(per) * (self.hat[i] - self.live[i]);
+            }
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Yellow density
+// ---------------------------------------------------------------------------
+
+/// How often a decision is actually spent on [`duels_core::Action::Discard`],
+/// **measured** rather than guessed.
+///
+/// `examples/discard_rate.rs` plays whole self-play games and counts, over the
+/// decisions at which a discard was legal at all (so the wonder draft, the
+/// start-of-age first-player choice and the pending resolutions are excluded —
+/// they would deflate the rate for a reason that has nothing to do with how
+/// willing a player is to discard). Over 200 `phased` self-play games on each
+/// of three disjoint seed ranges it reads **0.2489 / 0.2499 / 0.2467**, so the
+/// constant is 0.249 and the third decimal is the only one worth writing down.
+///
+/// It is strongly age-dependent — 0.18 in Age I, 0.31 in Age II, 0.26 in Age
+/// III — and that is *not* modelled here: a per-age rate is a strictly better
+/// model and an untested one, and this term already carries enough new
+/// modelling to be measured on its own.
+pub const DISCARD_RATE_PER_DECISION: f64 = 0.249;
+
+/// `yellow_equity(p)`: what `p`'s commercial cards are worth for the discards
+/// they have not made yet.
+///
+/// [`duels_core::cost::discard_reward`] is `2 + the player's own commercial
+/// cards`, so every yellow card in a city raises the payout of **every future
+/// discard that city makes** by one coin. The post-action coin pile already
+/// flows through [`coin_points`] and [`coin_liquidity`] exactly, so a discard
+/// this player has just made is priced correctly; what was entirely unpriced is
+/// the forward half — a yellow-heavy city should value discard-as-income and
+/// discard-as-denial more highly than a yellow-poor one, and did not.
+///
+/// ```text
+/// yellow_equity(p) = coin_marginal_p · yellows(p) · rate · decisions_left(p)
+/// ```
+///
+/// `rate` is [`DISCARD_RATE_PER_DECISION`]. `coin_marginal` is root-fixed; the
+/// yellow count and the decision budget are read on the post-action state,
+/// which is exactly the part a move changes.
+pub fn yellow_equity(state: &GameState, p: Player, coin_marginal: f64, rate: f64) -> f64 {
+    let yellows = f64::from(
+        state
+            .player(p)
+            .count(CountTarget::Cards(CardType::Commercial)),
+    );
+    if yellows == 0.0 {
+        return 0.0;
+    }
+    coin_marginal * yellows * rate * decisions_left(state, p)
 }
 
 /// Cash on hand, capped: what it takes to actually *pay* for the race card
@@ -1586,28 +1919,7 @@ mod tests {
         let build = |mine: &[&str]| -> f64 {
             let st = StateBuilder::new()
                 .age(2)
-                .deal(&[
-                    "sawmill",
-                    "brickyard",
-                    "shelf-quarry",
-                    "glassblower",
-                    "drying-room",
-                    "walls",
-                    "horse-breeders",
-                    "barracks",
-                    "archery-range",
-                    "parade-ground",
-                    "library",
-                    "dispensary",
-                    "school",
-                    "laboratory",
-                    "courthouse",
-                    "statue",
-                    "temple",
-                    "aqueduct",
-                    "rostrum",
-                    "forum",
-                ])
+                .deal(&AGE_TWO_DEAL)
                 .built(Player::One, mine)
                 .coins(Player::One, 20)
                 .coins(Player::Two, 20)
@@ -1720,5 +2032,448 @@ mod tests {
         for (r, &n) in supply.sources.iter().enumerate() {
             assert_eq!(n, 0.0, "Age III still expects to print resource {r}");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Guilds
+    // -----------------------------------------------------------------
+
+    /// Twenty of Age II's twenty-three cards, dealt into a real structure, so
+    /// some slots are genuinely face down.
+    const AGE_TWO_DEAL: [&str; 20] = [
+        "sawmill",
+        "brickyard",
+        "shelf-quarry",
+        "glassblower",
+        "drying-room",
+        "walls",
+        "horse-breeders",
+        "barracks",
+        "archery-range",
+        "parade-ground",
+        "library",
+        "dispensary",
+        "school",
+        "laboratory",
+        "courthouse",
+        "statue",
+        "temple",
+        "aqueduct",
+        "rostrum",
+        "forum",
+    ];
+
+    /// The `CardId` with this slug.
+    fn card(slug: &str) -> CardId {
+        CardId::from_slug(slug).unwrap_or_else(|| panic!("no card {slug:?}"))
+    }
+
+    /// **Why guild pricing was needed at all**, asserted rather than argued:
+    /// every guild in the game prints zero victory points and zero coins, so
+    /// the two fields [`crate::menu::TakeValue::free_value`] starts from say a
+    /// guild is worth nothing, and the pricer's answer for a face-up guild was
+    /// therefore always `-cost x coin_marginal` — strictly negative.
+    #[test]
+    fn every_guild_scores_through_a_majority_and_not_through_printed_points() {
+        let guilds: Vec<CardId> = iter_cards(data::statics().guild_mask).collect();
+        assert_eq!(guilds.len(), 7, "the base game prints seven guilds");
+        for g in guilds {
+            let def = g.def();
+            assert_eq!(def.kind, CardType::Guild, "{}", def.id);
+            assert_eq!(def.age, 3, "{} is not an Age III card", def.id);
+            assert_eq!(
+                def.victory_points, 0,
+                "{} prints victory points, so the premise is wrong",
+                def.id
+            );
+            assert_eq!(def.coins, 0, "{} prints coins", def.id);
+            assert!(
+                def.points_by_majority.is_some() || def.coins_by_majority.is_some(),
+                "{} scores through neither majority effect",
+                def.id
+            );
+        }
+    }
+
+    /// The category each of the seven keys off, and what its printed cost
+    /// actually demands — read off `data/cards.json` through the loader rather
+    /// than from anybody's memory of the rulebook, because getting the mapping
+    /// wrong would price a guild against the wrong colour and nothing else in
+    /// the crate would notice.
+    #[test]
+    fn the_seven_guilds_key_off_the_categories_the_card_data_prints() {
+        /// `(slug, points_by_majority, coins_by_majority, needs glass, needs papyrus)`
+        type Row = (
+            &'static str,
+            Option<(CountTarget, u8)>,
+            Option<(CountTarget, u8)>,
+            bool,
+            bool,
+        );
+        let want: [Row; 7] = [
+            (
+                "merchants-guild",
+                Some((CountTarget::Cards(CardType::Commercial), 1)),
+                Some((CountTarget::Cards(CardType::Commercial), 1)),
+                true,
+                true,
+            ),
+            (
+                "shipowners-guild",
+                Some((CountTarget::RawAndManufactured, 1)),
+                Some((CountTarget::RawAndManufactured, 1)),
+                true,
+                true,
+            ),
+            (
+                "builders-guild",
+                Some((CountTarget::Wonders, 2)),
+                None,
+                true,
+                false,
+            ),
+            (
+                "magistrate-s-guild",
+                Some((CountTarget::Cards(CardType::Civilian), 1)),
+                Some((CountTarget::Cards(CardType::Civilian), 1)),
+                false,
+                true,
+            ),
+            (
+                "scientists-guild",
+                Some((CountTarget::Cards(CardType::Scientific), 1)),
+                Some((CountTarget::Cards(CardType::Scientific), 1)),
+                false,
+                false,
+            ),
+            (
+                "moneylenders-guild",
+                Some((CountTarget::CoinsDiv3, 1)),
+                None,
+                false,
+                false,
+            ),
+            (
+                "tacticians-guild",
+                Some((CountTarget::Cards(CardType::Military), 1)),
+                Some((CountTarget::Cards(CardType::Military), 1)),
+                false,
+                true,
+            ),
+        ];
+
+        // Every guild in the data is covered, so a new one could not be added
+        // without this test noticing.
+        let mut covered = 0u128;
+        for (slug, points, coins, glass, papyrus) in want {
+            let c = card(slug);
+            covered |= 1u128 << c.index();
+            let def = c.def();
+            assert_eq!(def.points_by_majority, points, "{slug}: points_by_majority");
+            assert_eq!(def.coins_by_majority, coins, "{slug}: coins_by_majority");
+            let cost = def.resource_cost;
+            assert_eq!(
+                cost[Resource::Glass.index()] > 0,
+                glass,
+                "{slug}: glass in the printed cost"
+            );
+            assert_eq!(
+                cost[Resource::Papyrus.index()] > 0,
+                papyrus,
+                "{slug}: papyrus in the printed cost"
+            );
+        }
+        assert_eq!(
+            covered,
+            data::statics().guild_mask,
+            "the table above does not cover exactly the guilds in the data"
+        );
+
+        // Two of the seven need a manufactured good of *both* kinds, which is
+        // why an Age III guild is often unaffordable rather than merely
+        // expensive, and why denying one matters.
+        for slug in ["merchants-guild", "shipowners-guild"] {
+            let cost = card(slug).def().resource_cost;
+            assert!(cost[Resource::Glass.index()] > 0 && cost[Resource::Papyrus.index()] > 0);
+        }
+    }
+
+    /// `hat` really is a projection: it is never below the count the board
+    /// shows today, and the categories with no pool to draw from do not move.
+    #[test]
+    fn the_projection_never_falls_below_the_live_count_and_coins_never_move() {
+        let st = StateBuilder::new()
+            .age(2)
+            .built(Player::One, &["tavern", "brewery", "theater"])
+            .built(Player::Two, &["altar", "baths"])
+            .coins(Player::One, 11)
+            .coins(Player::Two, 4)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&st));
+        let e = EvalWeights::default();
+        let g = GuildTable::of(&st, &supply, &e);
+
+        for target in all_count_targets() {
+            assert!(
+                g.hat(target) >= g.live(target),
+                "{target:?}: hat {} below live {}",
+                g.hat(target),
+                g.live(target)
+            );
+        }
+
+        // `floor(coins / 3)` has no supply and no projection: the Moneylenders
+        // Guild is priced on the board exactly as it stands.
+        assert_eq!(
+            g.hat(CountTarget::CoinsDiv3).to_bits(),
+            g.live(CountTarget::CoinsDiv3).to_bits()
+        );
+        assert_eq!(g.live(CountTarget::CoinsDiv3), 3.0, "max(11/3, 4/3)");
+
+        // ...and a colour with a pool behind it does move.
+        assert!(
+            g.hat(CountTarget::Cards(CardType::Civilian))
+                > g.live(CountTarget::Cards(CardType::Civilian)),
+            "Age II still deals blue cards, so the blue count must project upwards"
+        );
+    }
+
+    /// **The Shipowners Guild cannot project at all in Age III**, and that is a
+    /// property of the card data rather than of this model: Age III prints no
+    /// brown or grey card (`no_production_source_survives_into_age_three`
+    /// counts it off `data/cards.json`), so by the time the guild is on the
+    /// table neither city can add another one and `ρ_(brown+grey)` is exactly
+    /// zero. The guild is therefore priced on the board as it stands, which is
+    /// correct rather than a limitation — every other guild's category can
+    /// still grow.
+    #[test]
+    fn the_shipowners_guild_projects_nothing_in_age_three_because_nothing_is_left_to_deal() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "shipowners-guild"), (19, "palace")])
+            .built(Player::One, &["lumber-yard", "glassworks", "press"])
+            .built(Player::Two, &["quarry"])
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&st));
+        assert_eq!(supply.raw_and_manufactured_fraction(), 0.0);
+        let g = GuildTable::of(&st, &supply, &EvalWeights::default());
+        assert_eq!(
+            g.hat(CountTarget::RawAndManufactured).to_bits(),
+            g.live(CountTarget::RawAndManufactured).to_bits()
+        );
+        assert_eq!(g.live(CountTarget::RawAndManufactured), 3.0);
+
+        // ...whereas in Age I, with Age II's three brown and two grey cards
+        // still to be dealt, the same category has a pool behind it and does
+        // project.
+        let earlier = StateBuilder::new()
+            .age(1)
+            .built(Player::One, &["lumber-yard", "glassworks", "press"])
+            .built(Player::Two, &["quarry"])
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&earlier));
+        assert!(supply.raw_and_manufactured_fraction() > 0.0);
+        let g = GuildTable::of(&earlier, &supply, &EvalWeights::default());
+        assert!(g.hat(CountTarget::RawAndManufactured) > g.live(CountTarget::RawAndManufactured));
+    }
+
+    /// The Builders Guild's projection comes from [`wonder_p_build`], and goes
+    /// to exactly the live count once the seven-wonder cap has closed — at
+    /// which point no further wonder can be built by anybody.
+    #[test]
+    fn the_builders_guild_projects_off_the_wonder_build_probability() {
+        // Age II with a full structure, so both players still have plenty of
+        // decisions to spend on a wonder — `p_build`'s `turn_factor` is the
+        // binding constraint late in Age III, and this test is about the other
+        // half of it.
+        let open = StateBuilder::new()
+            .age(2)
+            .deal(&AGE_TWO_DEAL)
+            .wonders(Player::One, &["the-colossus", "the-sphinx"])
+            .wonders_built(Player::One, &["the-pyramids"])
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+            .build();
+        let e = EvalWeights::default();
+        let supply = DevSupply::of(&Board::of(&open));
+        let g = GuildTable::of(&open, &supply, &e);
+        assert_eq!(g.live(CountTarget::Wonders), 1.0, "one wonder is up");
+        assert!(wonder_p_build(&open, Player::One, &e) > 0.0);
+        assert!(
+            g.hat(CountTarget::Wonders) > g.live(CountTarget::Wonders),
+            "two unbuilt wonders with slots and turns left must raise the \
+             Builders Guild's basis: {} vs {}",
+            g.hat(CountTarget::Wonders),
+            g.live(CountTarget::Wonders)
+        );
+
+        let full = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace"), (19, "circus")])
+            .wonders(Player::One, &["the-pyramids"])
+            .wonders_built(
+                Player::One,
+                &["the-colossus", "the-sphinx", "the-hanging-gardens"],
+            )
+            .wonders_built(
+                Player::Two,
+                &[
+                    "piraeus",
+                    "the-appian-way",
+                    "the-great-lighthouse",
+                    "the-mausoleum",
+                ],
+            )
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&full));
+        let g = GuildTable::of(&full, &supply, &e);
+        assert_eq!(wonder_p_build(&full, Player::One, &e), 0.0);
+        assert_eq!(
+            g.hat(CountTarget::Wonders).to_bits(),
+            g.live(CountTarget::Wonders).to_bits(),
+            "with every slot gone the Builders Guild counts what is already up"
+        );
+    }
+
+    /// The forward increment on a *built* guild adds only what the snapshot
+    /// cannot see — `scoring::breakdown` already credits `per_vp x live`.
+    #[test]
+    fn the_built_guild_projection_is_only_the_part_the_snapshot_misses() {
+        let st = StateBuilder::new()
+            .age(3)
+            .built(Player::One, &["scientists-guild", "workshop"])
+            .built(Player::Two, &["apothecary", "dispensary"])
+            .coins(Player::One, 9)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&st));
+        let e = EvalWeights::default();
+        let g = GuildTable::of(&st, &supply, &e);
+
+        let target = CountTarget::Cards(CardType::Scientific);
+        let want = g.hat(target) - g.live(target);
+        assert_eq!(
+            g.projection(&st, Player::One).to_bits(),
+            want.to_bits(),
+            "one guild at one point per unit is exactly the increment"
+        );
+        // The opponent holds no guild, so they get nothing from the term.
+        assert_eq!(g.projection(&st, Player::Two), 0.0);
+        // And `breakdown` really is already paying the live half, so the two
+        // together are the whole projection rather than a double count.
+        assert_eq!(
+            f64::from(scoring::breakdown(&st, Player::One).guilds),
+            g.live(target),
+        );
+    }
+
+    /// `card_value` is the two channels of the rule and nothing else: points on
+    /// the *projected* count, coins on the *live* one.
+    #[test]
+    fn a_guild_card_is_priced_on_the_projection_for_points_and_the_board_for_coins() {
+        let st = StateBuilder::new()
+            .age(3)
+            .built(Player::One, &["tavern", "brewery"])
+            .built(Player::Two, &["theater"])
+            .coins(Player::One, 12)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&st));
+        let e = EvalWeights::default();
+        let g = GuildTable::of(&st, &supply, &e);
+
+        let yellow = CountTarget::Cards(CardType::Commercial);
+        let coin_marginal = 0.25;
+        let want = g.hat(yellow) + g.live(yellow) * coin_marginal;
+        assert_eq!(
+            g.card_value(card("merchants-guild"), coin_marginal)
+                .to_bits(),
+            want.to_bits()
+        );
+
+        // The Builders Guild pays two points per wonder and no coins at all.
+        let builders = g.card_value(card("builders-guild"), coin_marginal);
+        assert_eq!(
+            builders.to_bits(),
+            (2.0 * g.hat(CountTarget::Wonders)).to_bits()
+        );
+
+        // Nothing that is not a guild is priced here.
+        for slug in ["palace", "lumber-yard", "theater"] {
+            assert_eq!(g.card_value(card(slug), coin_marginal), 0.0, "{slug}");
+        }
+    }
+
+    /// A yellow-heavy city really does value its future discards more.
+    #[test]
+    fn yellow_equity_rises_with_the_commercial_cards_in_the_city() {
+        let build = |cards: &[&str]| {
+            StateBuilder::new()
+                .age(2)
+                .deal(&AGE_TWO_DEAL)
+                .built(Player::One, cards)
+                .coins(Player::One, 10)
+                .current(Player::One)
+                .build()
+        };
+        let none = build(&["theater"]);
+        let some = build(&["theater", "tavern", "brewery"]);
+        let rate = DISCARD_RATE_PER_DECISION;
+        assert_eq!(yellow_equity(&none, Player::One, 0.3, rate), 0.0);
+        let two = yellow_equity(&some, Player::One, 0.3, rate);
+        assert!(two > 0.0, "two yellow cards must be worth something: {two}");
+        // Exactly linear in the count, which is what the rule is: every yellow
+        // card adds one coin to every future discard.
+        assert_eq!(
+            two.to_bits(),
+            (0.3 * 2.0 * rate * decisions_left(&some, Player::One)).to_bits()
+        );
+    }
+
+    /// The dealt-fraction weighting really does move the supply statistics, and
+    /// moves them in the direction the setup rule says: Age III's guilds are
+    /// three of seven, so a pool that treats all seven as certain over-weights
+    /// whatever they ask for.
+    #[test]
+    fn weighting_the_undealt_pool_by_its_dealt_fraction_changes_the_statistics() {
+        // Age I, so Ages II and III are both wholly undealt.
+        let st = StateBuilder::new().age(1).build();
+        let board = Board::of(&st);
+        let raw = DevSupply::of_with(&board, SupplyModel::Raw);
+        let dealt = DevSupply::of_with(&board, SupplyModel::Dealt);
+        assert_eq!(
+            DevSupply::of(&board),
+            raw,
+            "the one-argument constructor must still be the raw one"
+        );
+        assert_ne!(raw.f, dealt.f, "the weighting changed nothing at all");
+        assert!(
+            dealt.kind_fraction(CardType::Guild) < raw.kind_fraction(CardType::Guild),
+            "seven guilds counted where three are dealt: {} vs {}",
+            raw.kind_fraction(CardType::Guild),
+            dealt.kind_fraction(CardType::Guild)
+        );
+        // The colour fractions are a distribution, under either weighting.
+        for s in [raw, dealt] {
+            let total: f64 = CardType::ALL.iter().map(|&k| s.kind_fraction(k)).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-9,
+                "colour fractions sum to {total}"
+            );
+        }
+        // The exact rates the setup rule prints.
+        let m = masks();
+        assert_eq!(m.age_supply(3).guild_dealt_fraction(), 3.0 / 7.0);
+        assert_eq!(m.age_supply(3).plain_dealt_fraction(), 17.0 / 20.0);
+        assert_eq!(m.age_supply(1).plain_dealt_fraction(), 20.0 / 23.0);
+        assert_eq!(m.age_supply(1).guild_dealt_fraction(), 0.0);
     }
 }
