@@ -322,7 +322,7 @@ use duels_core::{engine, Action, Observation};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-pub use rollout::RolloutWeights;
+pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode};
 
 /// Monte Carlo Tree Search with UCT selection and explicit chance nodes.
@@ -771,6 +771,135 @@ mod tests {
             }
             assert!(decisions > 20, "the game was too short to prove much");
         }
+    }
+
+    /// The equivalence that makes the race option safe to add, and the twin of
+    /// the two above: with [`RaceWeights::NEUTRAL`] the agent is move-for-move
+    /// the agent this crate shipped before race weights existed, driven by the
+    /// verbatim pre-race `pick`/`play_out` in `rollout::legacy`.
+    ///
+    /// Whole seeded games again. The rollout policy is where nearly every RNG
+    /// draw a search makes happens, so a single extra or reordered draw would
+    /// desynchronise the two streams within one playout and change a move long
+    /// before the game ended.
+    #[test]
+    fn race_neutral_is_biased_move_for_move() {
+        for seed in 0..8u64 {
+            let cfg = Config {
+                race: RaceWeights::NEUTRAL,
+                ..Config::default()
+            };
+            assert_eq!(cfg.rollout, RolloutWeights::BIASED);
+            let mut agent = MctsAgent::with_config(seed, cfg);
+            let mut legacy_rng = StdRng::seed_from_u64(seed);
+
+            let mut state = engine::new_game(seed ^ 0xC0FF_EE00);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+            let mut decisions = 0u32;
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let budget = 24 + u64::from(decisions % 7);
+                let got = agent.choose(&obs, &legal, Budget::Nodes(budget));
+                let want = legacy_choose(&mut legacy_rng, cfg, &obs, &legal, budget);
+                assert_eq!(
+                    got, want,
+                    "seed {seed}, decision {decisions}: RaceWeights::NEUTRAL changed the move"
+                );
+                engine::apply(&mut state, got, &mut rng).expect("a legal action");
+                decisions += 1;
+                assert!(decisions < 5_000);
+            }
+            assert!(decisions > 20, "the game was too short to prove much");
+        }
+    }
+
+    /// A race variant must not change *what* the agent is allowed to do: full
+    /// seeded games from both seats, every variant, no panic and no illegal
+    /// move.
+    #[test]
+    fn every_race_variant_plays_full_games_without_incident() {
+        for (i, race) in [
+            RaceWeights::NEUTRAL,
+            RaceWeights::TIER1_ONLY,
+            RaceWeights::mild(),
+            RaceWeights::MEDIUM,
+            RaceWeights::strong(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut wins = 0u32;
+            for seed in 0..6u64 {
+                let seat = if seed % 2 == 0 {
+                    Player::One
+                } else {
+                    Player::Two
+                };
+                let mut mcts = MctsAgent::with_config(
+                    seed ^ 0x0BAD_1DEA,
+                    Config {
+                        race,
+                        ..Config::default()
+                    },
+                );
+                let mut opponent = RandomAgent::new(seed ^ 0x5EED_5EED);
+                let mut state = engine::new_game(seed + 700 * i as u64);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+                loop {
+                    let legal = engine::legal_actions(&state);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    let obs = state.observation();
+                    let action = if state.current_player() == seat {
+                        mcts.choose(&obs, &legal, CI_BUDGET)
+                    } else {
+                        opponent.choose(&obs, &legal, CI_BUDGET)
+                    };
+                    assert!(
+                        legal.contains(&action),
+                        "{} returned {action:?}",
+                        race.name()
+                    );
+                    engine::apply(&mut state, action, &mut rng).expect("a legal action");
+                }
+                let result = state.result().expect("a finished game has a result");
+                if result.winner() == Some(seat) {
+                    wins += 1;
+                }
+                assert!(mcts.total_simulations() > 0);
+            }
+            println!(
+                "race={}: {wins}/6 against random at {CI_BUDGET:?}",
+                race.name()
+            );
+        }
+    }
+
+    /// The spec string a results file records has to name the race variant, or
+    /// an arena run cannot be told apart from the baseline after the fact.
+    #[test]
+    fn the_spec_reports_the_race_variant() {
+        let describe = |race| {
+            MctsAgent::with_config(
+                1,
+                Config {
+                    race,
+                    ..Config::default()
+                },
+            )
+            .spec()
+            .params
+        };
+        assert!(describe(RaceWeights::NEUTRAL).contains("race=neutral"));
+        assert!(describe(RaceWeights::TIER1_ONLY).contains("race=tier1_only"));
+        assert!(describe(RaceWeights::mild()).contains("race=mild"));
+        assert!(describe(RaceWeights::MEDIUM).contains("race=medium"));
+        assert!(describe(RaceWeights::strong()).contains("race=strong"));
     }
 
     /// A prior mode must not change *what* the agent is allowed to do: full

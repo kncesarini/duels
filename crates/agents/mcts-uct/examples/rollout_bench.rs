@@ -34,7 +34,7 @@
 //! doc comment in `rollout.rs` for a worked example of a candidate that did
 //! *not* clear that bar).
 
-use duels_agent_mcts_uct::{Config, MctsAgent, RolloutWeights};
+use duels_agent_mcts_uct::{Config, MctsAgent, RaceWeights, RolloutWeights};
 use duels_agents_api::{Agent, Budget};
 use duels_core::{engine, Player};
 use rand::rngs::StdRng;
@@ -44,44 +44,81 @@ use rand::SeedableRng;
 struct Candidate {
     name: &'static str,
     weights: RolloutWeights,
+    race: RaceWeights,
 }
 
-const CANDIDATES: &[Candidate] = &[
-    Candidate {
-        name: "uniform",
-        weights: RolloutWeights::UNIFORM,
-    },
-    Candidate {
-        name: "biased (kind-only)",
-        weights: RolloutWeights::BIASED,
-    },
-    Candidate {
-        name: "smart (per-card)",
-        weights: RolloutWeights::SMART,
-    },
-    // A deliberately milder version of `SMART`, to check whether the
-    // aggressiveness of the multipliers (rather than the idea itself) is
-    // what made `SMART` lose to uniform in the first measurement. Not part
-    // of the public API — constructed here ad hoc for this one comparison.
-    Candidate {
-        name: "smart-mild",
-        weights: RolloutWeights {
-            build: 4.0,
-            wonder: 2.0,
-            discard: 1.0,
-            chain_free_mult: 2.0,
-            new_symbol_mult: 1.2,
-            pair_complete_mult: 1.75,
+fn candidates() -> Vec<Candidate> {
+    vec![
+        Candidate {
+            name: "uniform",
+            weights: RolloutWeights::UNIFORM,
+            race: RaceWeights::NEUTRAL,
         },
-    },
-];
+        Candidate {
+            name: "biased (kind-only)",
+            weights: RolloutWeights::BIASED,
+            race: RaceWeights::NEUTRAL,
+        },
+        Candidate {
+            name: "smart (per-card)",
+            weights: RolloutWeights::SMART,
+            race: RaceWeights::NEUTRAL,
+        },
+        // A deliberately milder version of `SMART`, to check whether the
+        // aggressiveness of the multipliers (rather than the idea itself) is
+        // what made `SMART` lose to uniform in the first measurement. Not part
+        // of the public API — constructed here ad hoc for this one comparison.
+        Candidate {
+            name: "smart-mild",
+            weights: RolloutWeights {
+                build: 4.0,
+                wonder: 2.0,
+                discard: 1.0,
+                chain_free_mult: 2.0,
+                new_symbol_mult: 1.2,
+                pair_complete_mult: 1.75,
+            },
+            race: RaceWeights::NEUTRAL,
+        },
+        // The race-aware layer, on top of the shipped `BIASED` kind weights.
+        // These are the rows the affordability gate is read off: `MEDIUM` has
+        // to land within 5% of `biased (kind-only)`'s throughput to be worth
+        // measuring for strength at all.
+        Candidate {
+            name: "biased+race=tier1",
+            weights: RolloutWeights::BIASED,
+            race: RaceWeights::TIER1_ONLY,
+        },
+        Candidate {
+            name: "biased+race=mild",
+            weights: RolloutWeights::BIASED,
+            race: RaceWeights::mild(),
+        },
+        Candidate {
+            name: "biased+race=medium",
+            weights: RolloutWeights::BIASED,
+            race: RaceWeights::MEDIUM,
+        },
+        Candidate {
+            name: "biased+race=strong",
+            weights: RolloutWeights::BIASED,
+            race: RaceWeights::strong(),
+        },
+    ]
+}
 
 /// Simulations/second for `weights`, searching from a handful of distinct,
 /// non-trivial positions (not just the fixed opening) so the measurement
 /// reflects a realistic mix of tree shapes and legal-move counts.
-fn throughput(weights: RolloutWeights, time_ms: u64, positions: u32) -> (f64, u64) {
+fn throughput(
+    weights: RolloutWeights,
+    race: RaceWeights,
+    time_ms: u64,
+    positions: u32,
+) -> (f64, u64) {
     let cfg = Config {
         rollout: weights,
+        race,
         ..Config::default()
     };
     let mut total_sims = 0u64;
@@ -124,12 +161,14 @@ fn throughput(weights: RolloutWeights, time_ms: u64, positions: u32) -> (f64, u6
 /// losses).
 fn head_to_head(
     candidate: RolloutWeights,
+    candidate_race: RaceWeights,
     games: u64,
     time_ms: u64,
     base_seed: u64,
 ) -> (u32, u32, u32) {
     let cand_cfg = Config {
         rollout: candidate,
+        race: candidate_race,
         ..Config::default()
     };
     let base_cfg = Config {
@@ -185,22 +224,57 @@ fn main() {
     let time_ms: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(200);
     let base_seed: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(0);
 
-    println!("=== throughput at {time_ms}ms/move (mean over 24 positions) ===");
-    for c in CANDIDATES {
-        let (sims_per_sec, total_sims) = throughput(c.weights, time_ms, 24);
+    let candidates = candidates();
+
+    // Interleave the repeats so a drifting machine load hits every candidate
+    // alike rather than penalising whichever one happens to run last. The
+    // reported figure is the best of `REPEATS`, which is the least
+    // load-contaminated estimate available: contention can only ever make a
+    // measurement slower.
+    const REPEATS: u32 = 3;
+    let mut best: Vec<f64> = vec![0.0; candidates.len()];
+    let mut sims: Vec<u64> = vec![0; candidates.len()];
+    for _ in 0..REPEATS {
+        for (i, c) in candidates.iter().enumerate() {
+            let (sims_per_sec, total_sims) = throughput(c.weights, c.race, time_ms, 24);
+            if sims_per_sec > best[i] {
+                best[i] = sims_per_sec;
+                sims[i] = total_sims;
+            }
+        }
+    }
+
+    // The affordability gate is read against `BIASED` with no race layer, the
+    // shipped default: a race variant that cannot stay within a few percent of
+    // it is not worth measuring for strength, because a fixed *time* budget
+    // would take back more than the policy could plausibly add.
+    let baseline = candidates
+        .iter()
+        .position(|c| c.name == "biased (kind-only)")
+        .map(|i| best[i])
+        .unwrap_or(f64::NAN);
+
+    println!(
+        "=== throughput at {time_ms}ms/move (best of {REPEATS} x 24 positions), \
+         % of `biased (kind-only)` ==="
+    );
+    for (i, c) in candidates.iter().enumerate() {
         println!(
-            "  {:<20} {sims_per_sec:>10.0} sims/s   ({total_sims} sims total)",
-            c.name
+            "  {:<20} {:>10.0} sims/s   {:>6.1}% of baseline   ({} sims)",
+            c.name,
+            best[i],
+            100.0 * best[i] / baseline,
+            sims[i]
         );
     }
 
     println!();
     println!("=== head-to-head vs. uniform baseline, {games} games @ {time_ms}ms/move ===");
-    for c in CANDIDATES {
-        if c.weights == RolloutWeights::UNIFORM {
+    for c in &candidates {
+        if c.weights == RolloutWeights::UNIFORM && c.race.is_neutral() {
             continue;
         }
-        let (wins, draws, losses) = head_to_head(c.weights, games, time_ms, base_seed);
+        let (wins, draws, losses) = head_to_head(c.weights, c.race, games, time_ms, base_seed);
         let played = games as f64;
         println!(
             "  {:<20} {:.1}% win rate  ({wins}W {draws}D {losses}L of {games})",
