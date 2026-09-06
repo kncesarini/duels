@@ -35,6 +35,30 @@
 //! [`chain_equity`] needs no such rule: it reads only cities, the discard pile
 //! and the wonder-fodder pile, all of which stay public across an age
 //! boundary.
+//!
+//! # What `v_q` prices, and the one thing it used not to
+//!
+//! [`TakeValue::free_value`] is the whole of a card's worth to one player:
+//! printed points and coins, shields (differenced across both players — see
+//! [`MenuShieldPricing`]), a scientific symbol's place on the ladder,
+//! production against the resources the remaining pool will ask for, chain
+//! equity, and — from round five — the guild majority a purple card scores on
+//! and the future discards a yellow card pays for.
+//!
+//! Those last two were **missing entirely**, and the guild half was not a
+//! refinement but a sign error in effect: every guild in the game prints zero
+//! victory points and zero coins, so a face-up guild priced out at `−cost ×
+//! coin_marginal` — strictly negative, in every position, for both players. See
+//! [`crate::GuildPricing`] and [`crate::terms::GuildTable`].
+//!
+//! # The floor
+//!
+//! [`menu_term`]'s softmax used to return a hard zero when nothing on the board
+//! was affordable, which says an opponent one coin short of everything is in
+//! the same position as one whose turn is genuinely worthless. [`crate::MenuFloor`]
+//! adds the discard they can always take, and optionally the best wonder they
+//! can already pay for, as further entries in the same softmax. Off by default;
+//! the measurement is in the crate docs.
 
 use duels_core::data::{
     CardId, CardType, Resource, Science, NUM_CARDS, NUM_RESOURCES, NUM_SCIENCE,
