@@ -124,16 +124,13 @@ export default function Structure({
     <div className={`structure ${dimmed ? "dim" : ""}`}>
       <div className="shead">
       <div className="meta">
-        <b>Age {romanAge(observation.age)}</b> · {SHAPE[observation.age]}
-        <br />
-        <b>{availableCount}</b> available · <b>{affordable}</b> affordable for {lensName} · {faceDown} face-down
+        <b>Age {romanAge(observation.age)}</b> · {SHAPE[observation.age]} · <b>{availableCount}</b> available ·{" "}
+        <b>{affordable}</b> affordable for {lensName} · {faceDown} face-down
         {chained.length > 0 && (
-          <>
-            <br />
-            <span className="chain-hint">
-              <Ico id="link" /> {chained.join(", ")} free for {lensName}
-            </span>
-          </>
+          <span className="chain-hint">
+            {" · "}
+            <Ico id="link" /> {chained.join(", ")} free for {lensName}
+          </span>
         )}
       </div>
       <div className="legend" aria-hidden>

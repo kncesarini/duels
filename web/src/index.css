@@ -964,7 +964,7 @@ h4.section {
 .structure .meta {
   font-size: 10.5px;
   color: var(--mute);
-  line-height: 1.5;
+  line-height: 1.4;
   min-width: 0;
 }
 .structure .meta b {
@@ -2121,6 +2121,29 @@ h4.section {
   font-family: Cinzel, serif;
   font-size: 11px;
   background: var(--surf2);
+}
+
+/* A short desktop window (1280x800, say) has to give the structure enough
+ * height for the design's minimum 80x106 card, so the fixed chrome above and
+ * below it gives a little back rather than the cards shrinking further. */
+@media (min-width: 1280px) and (max-height: 880px) {
+  .centre {
+    grid-template-rows: 124px minmax(0, 1fr) 30px auto 150px;
+  }
+  .centre.reviewing {
+    grid-template-rows: auto 124px minmax(0, 1fr) 30px auto 150px;
+  }
+  .centre.drafting {
+    grid-template-rows: 124px minmax(0, 1fr) 150px;
+  }
+  .tray {
+    min-height: 104px;
+    padding: 6px 16px;
+  }
+  .strip {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
 }
 
 /* ---------------------------------------------------------- responsive --- */
