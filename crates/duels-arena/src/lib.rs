@@ -21,6 +21,12 @@
 //! - [`results_io`] serializes a match's [`match_runner::GameRecord`]s, plus
 //!   the derived tally/victory-breakdown/race-exposure summary, to a JSON
 //!   results file.
+//! - [`age_start_policy`] wraps any `Agent`, forcing its
+//!   `Phase::ChooseFirstPlayer` decisions to a fixed policy while leaving
+//!   every other decision untouched, so "does it matter who chooses to go
+//!   first at an age boundary" becomes an ordinary matchup (see
+//!   `examples/age_start_lab.rs`) instead of a change to any agent's own
+//!   evaluation code.
 //!
 //! Two examples go beyond what the CLI reports:
 //!
@@ -29,6 +35,8 @@
 //! - `examples/ensemble_lab.rs`, the root-determinization sweep behind both
 //!   search agents' ensembling docs, which reports each side's wall clock per
 //!   game and, with `--cost`, how much search a decision actually got.
+//! - `examples/age_start_lab.rs`, the age-start-policy measurement harness
+//!   described above.
 //!
 //! # Benchmarking on a quiet machine
 //!
@@ -63,6 +71,7 @@
 //!   report how much evidence a given run actually represents — read those
 //!   rather than a bare win percentage.
 
+pub mod age_start_policy;
 pub mod agent_registry;
 pub mod agent_spec;
 pub mod elo;
