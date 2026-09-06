@@ -112,6 +112,29 @@
 //! unlike `evaluate`, it needs no lookahead into what a candidate build might
 //! uncover, since `duels-strategy`'s own denial pricing already accounts for
 //! that inside `delta_m`.
+//!
+//! # A second, subtler hidden-information leak (and its fix)
+//!
+//! Because [`evaluate`]/[`expected_value`] are copied verbatim from
+//! `duels-agent-greedy-ev`, they inherited that crate's age-boundary leak
+//! too: the deny-chain-gift term is sound *within* one age (a newly-revealed
+//! slot from an ordinary Build/Discard is a real chance event
+//! [`expected_value`] properly averages over via [`engine::chance_outcomes`]),
+//! but a move that empties the current age's structure ends the age
+//! (`engine::end_age` → `start_age`), dealing a **brand new** structure from
+//! the next age's deck — cards invented wholesale by
+//! [`Observation::sample_state`], not enumerated as chance outcomes at all.
+//! Reading one of those cards would make an age-ending action's expected
+//! value depend on which throwaway world `choose` happened to sample. See
+//! `duels-agent-greedy-ev`'s module docs for the full write-up.
+//!
+//! The fix, mirrored exactly from that crate: [`StrategistAgent::choose`]
+//! records the *root* age off the base state before any candidate is
+//! applied, and threads it through
+//! [`expected_value`]/[`evaluate`]/[`tactical_term`] down to
+//! [`opponent_chain_gift_value`], which now returns `0.0` whenever
+//! `state.age() != root_age`. This is a strict correctness fix rather than a
+//! documented trade-off, so it changes the agent's default behavior.
 
 #![deny(clippy::disallowed_methods)]
 
@@ -311,6 +334,12 @@ impl Agent for StrategistAgent {
         // arbitrary world this sample invents; see `expected_value` and the
         // module docs.
         let base_state = obs.sample_state(&mut self.rng);
+        // The age of the position actually being decided, captured before any
+        // candidate is applied. Threaded down to `opponent_chain_gift_value`
+        // so it never reads a card dealt into a *different* age than this
+        // one — see the module docs' "second, subtler hidden-information
+        // leak" section.
+        let root_age = base_state.age();
         // Computed once per decision, on the same base state, and reused
         // across every candidate action below — mirroring how `evaluate`
         // itself is reused across candidates via `expected_value`.
@@ -318,7 +347,7 @@ impl Agent for StrategistAgent {
 
         let mut scored: Vec<(Action, f64)> = Vec::with_capacity(legal.len());
         for &action in legal {
-            let ev = expected_value(&base_state, action, me, &self.weights);
+            let ev = expected_value(&base_state, action, me, &self.weights, root_age);
             let prior = strategy_term(&base_state, action, &s, &self.weights);
             scored.push((action, ev + prior));
         }
@@ -373,20 +402,26 @@ pub fn strategy_term(state: &GameState, action: Action, s: &Stance, weights: &Ev
 /// majority of actions, which reveal nothing), applies each one via
 /// [`engine::apply_with_outcome`] to its own copy of `state`, scores the
 /// result for `me`, and returns the probability-weighted average.
-pub fn expected_value(state: &GameState, action: Action, me: Player, weights: &EvalWeights) -> f64 {
+pub fn expected_value(
+    state: &GameState,
+    action: Action,
+    me: Player,
+    weights: &EvalWeights,
+    root_age: u8,
+) -> f64 {
     let outcomes = engine::chance_outcomes(state, action);
     let mut acc = 0.0;
     for (outcome, prob) in &outcomes {
         let mut next = *state;
         let value = match engine::apply_with_outcome(&mut next, action, outcome) {
-            Ok(_) => evaluate(&next, me, weights),
+            Ok(_) => evaluate(&next, me, weights, root_age),
             Err(_) => {
                 // `action` came from `legal_actions` for `state` and
                 // `outcome` from `chance_outcomes` for the same `(state,
                 // action)`, so this should be unreachable. Fall back to
                 // scoring the pre-action state rather than silently dropping
                 // probability mass from the expectation.
-                evaluate(state, me, weights)
+                evaluate(state, me, weights, root_age)
             }
         };
         acc += prob * value;
@@ -400,7 +435,7 @@ pub fn expected_value(state: &GameState, action: Action, me: Player, weights: &E
 /// this function: it is added separately, per candidate action, by
 /// [`strategy_term`], since it needs the pre-action state and a precomputed
 /// [`Stance`] rather than a resulting state.
-pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights) -> f64 {
+pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights, root_age: u8) -> f64 {
     if let Some(result) = state.result() {
         return match result {
             GameResult::Win { winner, .. } if winner == me => weights.instant_result,
@@ -414,7 +449,7 @@ pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights) -> f64 {
         + science_term(state, me, opp, weights)
         + vp_term(state, me, opp, weights)
         + economy_term(state, me, opp, weights)
-        + tactical_term(state, me, weights)
+        + tactical_term(state, me, weights, root_age)
 }
 
 /// Military track position plus an escalating push-towards-the-capital
@@ -544,8 +579,18 @@ fn economy_term(state: &GameState, me: Player, opp: Player, w: &EvalWeights) -> 
 /// Total "value" of every accessible, face-up card the opponent could build
 /// for free on their very next turn via a chain symbol they already own.
 /// Zero unless it will genuinely be the opponent's turn next.
-fn opponent_chain_gift_value(state: &GameState, me: Player) -> f64 {
-    if state.phase() != Phase::Turn || state.current_player() != me.other() {
+///
+/// Also zero whenever `state.age() != root_age`: a move that ends the current
+/// age deals a brand-new structure (`engine::end_age` → `start_age`) from the
+/// next age's deck, and those cards are hidden information invented wholesale
+/// by [`Observation::sample_state`], not a real chance event enumerated by
+/// [`engine::chance_outcomes`]. See the module docs' "second, subtler
+/// hidden-information leak" section.
+fn opponent_chain_gift_value(state: &GameState, me: Player, root_age: u8) -> f64 {
+    if state.phase() != Phase::Turn
+        || state.current_player() != me.other()
+        || state.age() != root_age
+    {
         return 0.0;
     }
     let opp = me.other();
@@ -566,8 +611,8 @@ fn opponent_chain_gift_value(state: &GameState, me: Player) -> f64 {
     value
 }
 
-fn tactical_term(state: &GameState, me: Player, w: &EvalWeights) -> f64 {
-    -opponent_chain_gift_value(state, me) * w.deny_chain_gift
+fn tactical_term(state: &GameState, me: Player, w: &EvalWeights, root_age: u8) -> f64 {
+    -opponent_chain_gift_value(state, me, root_age) * w.deny_chain_gift
 }
 
 #[cfg(test)]
@@ -592,11 +637,20 @@ mod tests {
 
     /// The full per-candidate score `choose` uses: `evaluate`'s chance
     /// expectation plus the strategy prior, exactly as `choose` computes it.
+    /// `root_age` is `state`'s own age, matching how `choose` derives it.
     fn full_score(state: &GameState, action: Action, me: Player, weights: &EvalWeights) -> f64 {
         let s = stance(state, me);
-        expected_value(state, action, me, weights) + strategy_term(state, action, &s, weights)
+        let root_age = state.age();
+        expected_value(state, action, me, weights, root_age)
+            + strategy_term(state, action, &s, weights)
     }
 
+    /// Sweeps *every* legal action (not just the one with the largest
+    /// `chance_outcomes` distribution), mirroring `duels-agent-greedy-ev`'s
+    /// own strengthened version of this test: the age-boundary leak that
+    /// crate's `root_age` fix addresses only shows up on an action that ends
+    /// the current age, which is never the action with the most chance
+    /// outcomes.
     #[test]
     fn expected_value_does_not_depend_on_the_sampled_base_state() {
         let weights = EvalWeights::default();
@@ -612,50 +666,99 @@ mod tests {
                 if legal.is_empty() {
                     continue;
                 }
-                let Some(action) = legal
-                    .iter()
-                    .copied()
-                    .max_by_key(|&a| engine::chance_outcomes(&st, a).len())
-                    .filter(|&a| engine::chance_outcomes(&st, a).len() > 1)
-                else {
-                    continue;
-                };
-                found_a_multi_outcome_case = true;
 
                 let obs = st.observation();
                 let me = obs.current_player;
 
                 let mut rng_a = StdRng::seed_from_u64(seed * 1000 + steps as u64);
                 let state_a = obs.sample_state(&mut rng_a);
-                let ev_a = expected_value(&state_a, action, me, &weights);
+                let root_age = state_a.age();
 
                 let mut rng_b = StdRng::seed_from_u64(0xFFFF_FFFF_0000_0000 ^ seed ^ steps as u64);
                 let state_b = obs.sample_state(&mut rng_b);
-                let ev_b = expected_value(&state_b, action, me, &weights);
+                assert_eq!(state_b.age(), root_age);
 
-                assert_eq!(
-                    ev_a, ev_b,
-                    "seed {seed} steps {steps}: expected value of {action:?} depended on the \
-                     sampled base state: {ev_a} vs {ev_b}"
-                );
+                for &action in &legal {
+                    if engine::chance_outcomes(&st, action).len() > 1 {
+                        found_a_multi_outcome_case = true;
+                    }
 
-                // The strategy term reads only public information too, so it
-                // must be equally independent of the sampled base state.
-                let s_a = stance(&state_a, me);
-                let s_b = stance(&state_b, me);
-                let prior_a = strategy_term(&state_a, action, &s_a, &weights);
-                let prior_b = strategy_term(&state_b, action, &s_b, &weights);
-                assert_eq!(
-                    prior_a, prior_b,
-                    "seed {seed} steps {steps}: strategy term for {action:?} depended on the \
-                     sampled base state: {prior_a} vs {prior_b}"
-                );
+                    let ev_a = expected_value(&state_a, action, me, &weights, root_age);
+                    let ev_b = expected_value(&state_b, action, me, &weights, root_age);
+
+                    assert_eq!(
+                        ev_a, ev_b,
+                        "seed {seed} steps {steps}: expected value of {action:?} depended on the \
+                         sampled base state: {ev_a} vs {ev_b}"
+                    );
+
+                    // The strategy term reads only public information too, so
+                    // it must be equally independent of the sampled base
+                    // state.
+                    let s_a = stance(&state_a, me);
+                    let s_b = stance(&state_b, me);
+                    let prior_a = strategy_term(&state_a, action, &s_a, &weights);
+                    let prior_b = strategy_term(&state_b, action, &s_b, &weights);
+                    assert_eq!(
+                        prior_a, prior_b,
+                        "seed {seed} steps {steps}: strategy term for {action:?} depended on the \
+                         sampled base state: {prior_a} vs {prior_b}"
+                    );
+                }
             }
         }
 
         assert!(
             found_a_multi_outcome_case,
             "test setup bug: never found a candidate action with more than one chance outcome"
+        );
+    }
+
+    /// A direct, deterministic demonstration of the age-boundary leak
+    /// `root_age` fixes, independent of chance — see
+    /// `duels-agent-greedy-ev`'s test of the same name for why a real random
+    /// walk essentially never exercises this specific term (`end_age` only
+    /// continues straight into `Phase::Turn` when the conflict pawn is
+    /// exactly centred).
+    ///
+    /// `lighthouse_world` and `harmless_world` stand in for two different
+    /// worlds `Observation::sample_state` could have invented for the same
+    /// public observation of a position one action before an age boundary:
+    /// same age, same phase, same current player, same built cards — they
+    /// differ *only* in which card the next age's structure happens to
+    /// expose in the taker's one open slot.
+    #[test]
+    fn opponent_chain_gift_value_does_not_leak_a_card_from_a_different_age() {
+        let weights = EvalWeights::default();
+        let me = Player::One;
+
+        let world = |exposed_card: &str| -> GameState {
+            StateBuilder::new()
+                .age(2)
+                .phase(Phase::Turn)
+                .current(Player::Two)
+                .built(Player::Two, &["tavern"])
+                .open_slots(&[(0, exposed_card)])
+                .build()
+        };
+        let lighthouse_world = world("lighthouse");
+        let harmless_world = world("lumber-yard");
+        assert!(lighthouse_world.result().is_none() && harmless_world.result().is_none());
+
+        let with_matching_root_age = evaluate(&lighthouse_world, me, &weights, 2)
+            - evaluate(&harmless_world, me, &weights, 2);
+        assert!(
+            with_matching_root_age.abs() > f64::EPSILON,
+            "test setup bug: the two hand-crafted worlds scored identically even before any \
+             root_age guard was applied, so this test cannot demonstrate the leak"
+        );
+
+        let root_age = 1u8;
+        assert_eq!(
+            evaluate(&lighthouse_world, me, &weights, root_age),
+            evaluate(&harmless_world, me, &weights, root_age),
+            "evaluate depended on which card a later age exposed, even though root_age (1) \
+             predates that age — the age-boundary hidden-information leak is back"
         );
     }
 
@@ -854,9 +957,12 @@ mod tests {
         let draw = finish(&["palace"], &["town-hall"]);
         let loss = finish(&[], &["palace"]);
 
-        let win_score = evaluate(&win, Player::One, &weights);
-        let draw_score = evaluate(&draw, Player::One, &weights);
-        let loss_score = evaluate(&loss, Player::One, &weights);
+        // All three states are already game-over, so `evaluate` returns via
+        // its terminal-result branch before `root_age` is ever consulted;
+        // the value passed here is irrelevant.
+        let win_score = evaluate(&win, Player::One, &weights, win.age());
+        let draw_score = evaluate(&draw, Player::One, &weights, draw.age());
+        let loss_score = evaluate(&loss, Player::One, &weights, loss.age());
 
         assert_eq!(win_score, weights.instant_result);
         assert_eq!(draw_score, 0.0);
