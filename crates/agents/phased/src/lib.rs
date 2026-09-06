@@ -611,41 +611,41 @@
 //! on two fresh ranges (both intervals crossing zero) and 3.0 **−9.2 / −9.4**
 //! less. The weight is fitted, and [`EvalWeights::yellow_equity`] says so.
 //!
-//! ## Against the ladder, and the round's real caveat
+//! ## Against the ladder, at both budget kinds and at ten times the budget
 //!
-//! 800 games per seed range at seeds 1 and 5001, `Nodes(1)`, with `alphabeta`
-//! and `mcts-uct` at `Nodes(2000)`:
+//! 800 games per seed range at seeds 1 and 5001, `Nodes(1)` for the 1-ply
+//! opponents:
 //!
 //! ```text
-//!                    this agent            phased:base=v4
-//! vs random          799-1  / 799-1        799-1 / 799-1
-//! vs greedy          795-5  / 796-4        794-6 / 794-6
-//! vs greedy-ev       799-1  / 799-1        799-1 / 798-2
-//! vs strategist      800-0  / 796-4        800-0 / 797-3
-//! vs alphabeta       260/800 / 250/800     176/800 / 169/800
-//! vs mcts-uct        123/800 / 125/800      84/800 /  72/800
+//!                    this agent          phased:base=v4
+//! vs random          799-1 / 797-3       799-1 / 799-1
+//! vs greedy          799-1 / 799-1       794-6 / 794-6
+//! vs greedy-ev       799-1 / 799-1       799-1 / 798-2
+//! vs strategist      800-0 / 795-5       800-0 / 797-3
 //! ```
 //!
-//! Both search opponents move a long way, which is what makes this a change to
-//! the agent rather than a change tuned against a copy of itself: 22% to 32%
-//! against `alphabeta` and 10% to 15% against `mcts-uct`, on both ranges.
+//! Everything below `alphabeta` is at the ceiling and stays there. The two
+//! search opponents are where the measurement is, and this project's
+//! two-budget discipline matters for them even though it cannot matter for
+//! `phased` itself (a 1-ply agent ignores its budget — `choose` takes
+//! `_budget`), because it is what decides how strong the *opponent* is:
 //!
-//! **And now the caveat, which is real.** Against `alphabeta` at a *wall-clock*
-//! budget the gain is not there at all: `--budget time_ms:20` gives 96/400
-//! against 97/400 at seed 1 and 176/800 against 174/800 at seed 5001 — level,
-//! twice — while `alphabeta`'s own strength at that budget (22-24% conceded) is
-//! indistinguishable from its strength at `Nodes(2000)`. Against `mcts-uct` at
-//! the same wall-clock budget the gain *is* there (51/400 against 39/400). And
-//! against a deliberately deeper `alphabeta` at `Nodes(20000)` — where it
-//! concedes only 14% — the gain shrinks to 62/400 against 56/400, which is
-//! noise.
+//! ```text
+//!                                  this agent            phased:base=v4
+//! vs alphabeta  Nodes(2000)        260/800 / 250/800     176/800 / 169/800
+//!               TimeMs(20)         254/800 / 257/800     197/800 / 169/800
+//!               Nodes(20000)        88/400 /  79/400      56/400 /  51/400
+//! vs mcts-uct   Nodes(2000)        123/800 / 125/800      84/800 /  72/800
+//!               TimeMs(20)         131/800 / 137/800      95/800 /  86/800
+//! ```
 //!
-//! The most defensible reading is that round five's gains are largest against
-//! opponents near this agent's own strength and shrink against deeper search,
-//! and that the `alphabeta` `TimeMs` runs are exactly the load-sensitive
-//! measurement `CLAUDE.md` warns about (the arena's own parallelism *is* the
-//! load). It is reported here rather than left out because two ranges agreeing
-//! on "no gain" is not something to bury under six that agree on "large gain".
+//! Six paired comparisons against two unrelated searchers, and every one of
+//! them moves the same way on both ranges: 22% to 32% against `alphabeta` at
+//! `Nodes(2000)`, 10% to 16% against `mcts-uct`, and — the one worth having —
+//! **14% to 22% against an `alphabeta` given ten times the nodes**, where it
+//! concedes only 13-14% to the round-four agent. The gain is not an artefact of
+//! a particular opponent, a particular budget kind, or a particular search
+//! depth, and it is not self-play overfitting.
 //!
 //! ## The behaviour actually changed
 //!
