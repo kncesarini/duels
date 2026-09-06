@@ -806,3 +806,5 @@ mod tests {
         }
     }
 }
+
+// Smoke test for .github/workflows/ai-candidate.yml. This branch is never merged.
