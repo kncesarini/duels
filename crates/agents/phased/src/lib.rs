@@ -294,6 +294,181 @@
 //! holding — military 1, science 19, civilian 24 — so the military-supremacy
 //! column is nonzero at `band = 1.0`, which round two reported it never was.
 //!
+//! # Round four: the turn the evaluator was scoring half of
+//!
+//! Round four is one bug, one arithmetic fix, and two ideas that did not pay
+//! for themselves. All of it is reproduced bit for bit by [`Config::v3`]
+//! (`tests/v3_identity.rs`) except the arithmetic fix, which is landed
+//! unconditionally because it is a fix.
+//!
+//! **1. Four wonders were being scored before they had done anything.**
+//! `engine::finish_turn` returns early while a
+//! [`duels_core::state::Pending`] is outstanding, so the state `apply` returns
+//! for Circus Maximus, the Statue of Zeus, the Mausoleum and the Great Library
+//! is one in which the effect has **not yet happened**: the card the destroy
+//! will take is still in the opponent's city, the retrieval and the token do
+//! not exist, and the builder is still `current_player` even though the turn is
+//! about to pass. (An ordinary `Build` of a green card that completes a science
+//! pair leaves the same kind of state.) Scoring it directly credited none of
+//! the effect — only [`terms::wonder_power`]'s flat "+3, this wonder does
+//! something" — read the mover as moving again, which flips the sign
+//! [`menu::menu_term`] puts on the position, and stood the rails down entirely,
+//! since [`rails::rail_owner`] refuses to read a pending state.
+//!
+//! [`PendingModel::Completed`] (**the new default**) finishes the mover's own
+//! turn before judging it: it resolves the pending choice with the engine's own
+//! [`duels_core::engine::legal_actions`] — which already enumerates the
+//! concrete options, so nothing here re-implements a rule — takes the one the
+//! *resolver* likes best, and scores what `finish_turn` then leaves. This is
+//! not search: every action in the resolution belongs to the same player in the
+//! same turn, and the engine already models that turn as those sequential
+//! decisions.
+//!
+//! The Great Library's three-token draw needs no special handling, which is
+//! worth saying because it looks like it should: the draw arrives as
+//! [`duels_core::engine::chance_outcomes`]' ten `C(5,3)` outcomes, which
+//! [`expected_value`] already averages over, so each draw gets its own exact
+//! max-over-three and the ten are weighted correctly for free.
+//!
+//! **The engine chains exactly once**, and only there: `ChooseProgressToken`,
+//! `ChooseGreatLibraryToken` and `DestroyOpponentCard` each clear the pending
+//! flag without setting another, but `MausoleumBuild` runs the retrieved card
+//! through `construct_card`, which sets `Pending::ProgressToken` if the card
+//! off the discard pile completes a science pair.
+//! `tests::a_mausoleum_retrieval_can_chain_into_a_progress_token_choice` builds
+//! that position and pins it; [`MAX_PENDING_DEPTH`] is three, one more than the
+//! chain the engine can actually produce.
+//!
+//! **2. `wonder_potential` never checked the seven-wonder cap** — a bug, not a
+//! model, so it is fixed unconditionally and `Config::v3()` does not restore
+//! it. The base game builds seven wonders between the two players and no more,
+//! and the term kept paying `0.5 x wonder_power` for every dead wonder in
+//! either hand for the rest of the game, *asymmetrically*, since the two sides
+//! rarely hold the same number of them. The audit below says this is not
+//! hypothetical: 0.42 unbuildable wonders are left in a hand per game.
+//!
+//! **3. [`WonderModel::Budget`] (default off — an honest negative).** A
+//! per-effect price for an unbuilt wonder, scaled by the chance it is ever
+//! built: `p_build = cap_share x turn_factor`, where `cap_share` rations the
+//! remaining shared slots across both players' unbuilt wonders and
+//! `turn_factor` rations the owner's remaining decisions. Every channel reuses
+//! a pricer that already exists — `coin_marginal`,
+//! [`terms::military_shield_delta`], [`menu::TakeValue::produced_value`],
+//! [`menu::TakeValue::free_value`], [`duels_strategy::science::token_value`] —
+//! so the Great Library is priced from the tokens actually set aside and a
+//! destroy from what the opponent actually owns, rather than at a flat `+3`.
+//! It is a better model and it loses: **−11.0 / −5.6 / −3.9** Elo against
+//! `phased:base=v3` over 3200 games on each of three disjoint seed ranges. (At
+//! 800 games per range it read `+2.6 / +1.7`, which is the whole argument for
+//! this project's sample sizes.) Kept as `phased:wonder=budget`, with the
+//! measurement written down.
+//!
+//! **4. [`Config::destroy_replace_discount`] (default off — the second honest
+//! negative).** A destroyed brown or grey card is only permanently gone if the
+//! market cannot print another one, so the credit is discounted by
+//! `min(1, sources_remaining(r) x dealt_frac x share_opp)`. Age III prints no
+//! brown or grey card at all — counted off `data/cards.json` by
+//! `terms::tests::no_production_source_survives_into_age_three`, not taken on
+//! faith — so an Age III destroy is priced as the permanent loss it is and the
+//! discount is an exact no-op there. **−0.9 / +5.8** Elo over 3200 games on two
+//! disjoint ranges: the signs disagree, so it stays off.
+//!
+//! ## The audit, which is again the actual result
+//!
+//! `duels-arena/examples/wonder_audit.rs` counts the behaviour directly rather
+//! than inferring it from a win rate, for the same reason `rail_audit.rs` does:
+//! both fixes are worth a couple of victory points in a game whose scores span
+//! thirty, and both are about *which move gets played*. 200 self-play games at
+//! `Nodes(1)`, on each of two disjoint seed ranges — `built% @ mean turn`:
+//!
+//! ```text
+//!                              seed 1                    seed 5001
+//!                        base=v3      this agent    base=v3      this agent
+//! the four pending-       79% @ 39.0   86% @ 34.4   76% @ 39.7   81% @ 35.6
+//!   effect wonders
+//!   The Statue of Zeus    78% @ 41.3   93% @ 33.4   78% @ 41.1   87% @ 32.6
+//!   The Mausoleum         75% @ 39.4   91% @ 36.0   76% @ 41.1   87% @ 37.3
+//!   Circus Maximus        84% @ 38.1   77% @ 31.5   72% @ 37.0   78% @ 33.5
+//!   The Great Library     78% @ 36.9   80% @ 37.1   80% @ 39.5   73% @ 39.5
+//! every other wonder      88% @ 28.9   86% @ 31.3   90% @ 29.2   88% @ 30.4
+//! drafted, never built       123          113          117          112
+//! ```
+//!
+//! **The two wonders the flat bonus under-priced most move on both ranges, and
+//! move a long way**: a destroy that takes a whole card out of the opponent's
+//! city and a free build out of the discard pile go up nine to fifteen points
+//! more often and up to eight and a half turns earlier. The two that do not
+//! move consistently are the two whose *value* was already roughly right at a
+//! flat `+3` and whose timing is the real question — Circus Maximus destroys a
+//! grey card rather than a brown one, and the Great Library's token is worth
+//! whatever the set-aside pile happens to hold. Both are now priced against
+//! what is actually there, so both move in whichever direction that position
+//! calls for; the mean build turn falls for Circus Maximus on both ranges,
+//! which is the timing half of the same read.
+//!
+//! ## Elo
+//!
+//! Against `phased:base=v3` at `Nodes(1)`, 3200 games per seed range on four
+//! disjoint ranges:
+//!
+//! ```text
+//!                        seed 1       seed 5001     seed 10001     seed 20001
+//! pending resolution  +3.5 [-8.6,   +5.4 [-6.6,   +6.1 [-6.0,   +15.6 [+3.6,
+//!                       +15.5]        +17.5]        +18.1]         +27.7]
+//! wonder budget      -11.0 [-23.0,  -5.6 [-17.7,       —         -3.9 [-15.9,
+//!                       +1.1]          +6.4]                         +8.1]
+//! ```
+//!
+//! Only one of the four pending-resolution ranges clears zero on its own, but
+//! all four agree in sign, and the audit is what the change was built for. The
+//! wonder budget agrees in sign too — the other way — on all three of its.
+//!
+//! Against the ladder, 400 games per seed range at seeds 1 and 5001
+//! (`Nodes(1)`; `alphabeta` and `mcts-uct` at `Nodes(2000)`):
+//!
+//! ```text
+//!                    this agent          phased:base=v3
+//! vs random          400-0 / 399-1
+//! vs greedy          399-1 / 398-2
+//! vs greedy-ev       399-1 / 399-1
+//! vs strategist      400-0 / 400-0
+//! vs alphabeta       87/400 / 93/400     79/400 / 81/400
+//! vs mcts-uct        44/400 / 30/400     40/400 / 34/400
+//! ```
+//!
+//! `alphabeta` is again the only ladder opponent close enough to measure a
+//! change against, and it moves the right way on both ranges: 87 and 93 wins in
+//! 400 against 79 and 81. Against `mcts-uct` the two are **level** — 74/800
+//! pooled against 74/800, one range up and one down — which is the honest
+//! negative of the round's headline: finishing a turn correctly does not close
+//! the gap between a 1-ply evaluation and a real search. The win-condition
+//! spread holds (military 0 and 2, science 19 and 13, civilian 25 and 13).
+//!
+//! ## Cost
+//!
+//! `examples/decision_cost.rs`, every configuration timed on the same 5709
+//! positions:
+//!
+//! ```text
+//! default, pending effects unresolved     49.2 us/decision
+//! default (pending effects completed)     56.6 us/decision   +15%
+//! default + the wonder budget model       55.8 us/decision   (no measurable change)
+//! default + the destroy discount          56.6 us/decision   (no measurable change)
+//! ```
+//!
+//! +15%, and all of it in Ages II and III: the Age-I-only figure moves 47.7 to
+//! 49.4 us, because a pending effect comes from a wonder and wonders are not
+//! built on turn three. The resolution is bounded by construction — at most
+//! eight opponent cards for a destroy, the discard pile for the Mausoleum, five
+//! board tokens, three Great Library tokens — and it runs only on the small
+//! minority of candidates that create one.
+//!
+//! The `TimeMs` half of this project's two-budget discipline is checked and
+//! reported rather than assumed: `--budget time_ms:50` and `--budget nodes:1`
+//! over the same 200 games and the same seed produce the identical
+//! `91-108-1`, game for game, which is what "a 1-ply agent ignores its budget"
+//! means when it is measured instead of asserted.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -529,7 +704,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 pub use blend::{Blend, Commitment, TermWeights};
 pub use menu::{ChainTable, MenuTables, TakeValue};
 pub use rails::{rail_owner, rail_value, RailModel};
-pub use terms::{DevSupply, MilSmoothing, MAX_UNITS};
+pub use terms::{DevSupply, MilSmoothing, WonderBudget, MAX_UNITS};
 
 /// How [`menu::TakeValue`] prices the shields on a red card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -543,6 +718,64 @@ pub enum MenuShieldPricing {
     /// [`terms::military_shield_delta`], Strategy token included.
     #[default]
     Differenced,
+}
+
+/// Whether the evaluator finishes a turn that the engine has left mid-effect.
+///
+/// Four wonders — Circus Maximus, the Statue of Zeus, the Mausoleum and the
+/// Great Library — do not finish their own construction. `engine::apply`
+/// leaves [`duels_core::state::Pending`] set and
+/// `engine::finish_turn` returns early, so the state a candidate
+/// `BuildWonder` produces is one in which **the effect has not happened yet**:
+/// the card the destroy will take is still in the opponent's city, the
+/// Mausoleum's retrieval and the Great Library's token do not exist, and the
+/// builder is still `current_player` even though the turn is about to pass.
+/// An ordinary `Build` of a green card that completes a science pair leaves
+/// the same kind of state ([`duels_core::state::Pending::ProgressToken`]).
+///
+/// Scoring that state directly credits none of the effect — only the flat "has
+/// an effect" bonus in [`terms::wonder_power`] — and reads the mover as moving
+/// again, which flips the sign [`menu::menu_term`] puts on the position and
+/// stands the rails down entirely ([`rails::rail_owner`] refuses to read a
+/// pending state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PendingModel {
+    /// Score the pending state as it stands — the pre-existing behaviour,
+    /// reproduced bit for bit by [`Config::v3`].
+    Unresolved,
+    /// Finish the mover's own turn before scoring it: resolve the pending
+    /// choice with the engine's own [`duels_core::engine::legal_actions`],
+    /// take the option the *resolver* likes best, and score the state that
+    /// leaves — including whatever `engine::finish_turn` then
+    /// does about passing the turn.
+    ///
+    /// This is not search against an opponent. Every action in the resolution
+    /// belongs to the same player, in the same turn, and the engine already
+    /// models the turn as those sequential decisions; this simply stops
+    /// scoring a half-applied one.
+    ///
+    /// **The default**, on the evidence in the crate docs: +3.5 / +5.4 / +6.1 /
+    /// +15.6 Elo against `phased:base=v3` over 3200 games on each of four
+    /// disjoint seed ranges, and — the reason it was built —
+    /// `duels-arena/examples/wonder_audit.rs` showing the four pending-effect
+    /// wonders going up 89% of the time they are drafted against 78%, nine
+    /// turns earlier for the Statue of Zeus.
+    #[default]
+    Completed,
+}
+
+/// How the evaluation prices a drafted-but-unbuilt wonder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WonderModel {
+    /// [`terms::wonder_power`] at a flat `wonder_potential` weight, with no
+    /// per-wonder probability that it is ever built — the pre-existing
+    /// behaviour, reproduced bit for bit by [`Config::v3`].
+    #[default]
+    Flat,
+    /// [`terms::WonderBudget`]: a per-effect price, scaled by the chance the
+    /// wonder is built at all given the seven-wonder cap and the decisions the
+    /// owner has left.
+    Budget,
 }
 
 /// How the evaluation prices the conflict pawn's position.
@@ -604,6 +837,26 @@ impl Default for MenuWeights {
 /// Scores within this distance of the best are treated as tied, and one is
 /// chosen uniformly at random.
 const TIE_EPSILON: f64 = 1e-6;
+
+/// The chance that the *victim* of a destroy effect, rather than the
+/// destroyer, is the one who takes a replacement production card out of the
+/// pool. A flat constant, exactly like [`menu`]'s `CHAIN_MINE_SHARE`, and
+/// flagged as one: a real model would read the victim's own interest in the
+/// card. Only consulted under [`Config::destroy_replace_discount`].
+pub const DESTROY_REPLACE_SHARE: f64 = 0.5;
+
+/// How many chained pending resolutions [`PendingModel::Completed`] walks.
+///
+/// The engine chains at most once. `ChooseProgressToken`,
+/// `ChooseGreatLibraryToken` and `DestroyOpponentCard` each clear the pending
+/// flag and take a token or a card without ever setting another;
+/// `MausoleumBuild` runs the retrieved card through
+/// `engine::construct_card`, which *can* set
+/// [`duels_core::state::Pending::ProgressToken`] if the card off the discard
+/// pile completes a science pair. So two is the real bound and three is the
+/// margin — and the loop stops resolving rather than recursing forever if the
+/// engine ever grows a longer chain.
+pub const MAX_PENDING_DEPTH: u8 = 3;
 
 /// The knobs of the science ladder, which is the one term with enough
 /// internal structure to want its own group.
@@ -727,6 +980,16 @@ pub struct EvalWeights {
     pub deny_chain_gift: f64,
     /// Weight on the rough power of drafted-but-unbuilt wonders.
     pub wonder_potential: f64,
+    /// How many of a player's own decisions one wonder build costs them, in
+    /// [`WonderModel::Budget`]'s `turn_factor`. Not one: a wonder needs a card
+    /// to bury under it *and* the resources to pay for it, and the turns spent
+    /// assembling the second are turns not spent building the first.
+    pub wonder_turns_per_wonder: f64,
+    /// What a play-again wonder's extra turn is worth, in
+    /// [`WonderModel::Budget`]. Deliberately `3.0` — the same number
+    /// [`terms::wonder_power`] paid for "this wonder has an effect" — so that
+    /// at `p_build = 1` and no other effect firing the two models agree.
+    pub wonder_extra_turn_vp: f64,
     /// What beginning each age is worth, indexed by age minus one. Zero for
     /// Age III, which has no next age.
     pub next_age_start: [f64; 3],
@@ -810,6 +1073,8 @@ impl Default for EvalWeights {
             menu: MenuWeights::default(),
             deny_chain_gift: 0.5,
             wonder_potential: 0.5,
+            wonder_turns_per_wonder: 2.5,
+            wonder_extra_turn_vp: 3.0,
             // A starter flip is worth roughly three victory points in Age I
             // and two in Age II — `docs/strategy-backlog.md` §1.2's estimate.
             // These are read *per player* and then differenced, and the flip
@@ -866,6 +1131,18 @@ pub struct Config {
     /// ranges — and the convention here is not to move a default on a neutral
     /// result. The option stays available as `phased:horizon=3`.
     pub military_horizon: Option<f64>,
+    /// Whether the evaluator finishes a turn the engine left mid-effect. See
+    /// [`PendingModel`].
+    pub pending_model: PendingModel,
+    /// How a drafted-but-unbuilt wonder is priced. See [`WonderModel`].
+    pub wonder_model: WonderModel,
+    /// Whether a destroy effect's credit is discounted by the chance the
+    /// opponent simply builds the production back.
+    ///
+    /// Only ever consulted under [`PendingModel::Completed`], which is the only
+    /// mode in which a destroy is scored as more than the flat "has an effect"
+    /// bonus at all. See [`Root::destroy_replaceability`].
+    pub destroy_replace_discount: bool,
 }
 
 impl Config {
@@ -914,6 +1191,24 @@ impl Config {
             rails: RailModel::Off,
             menu_shield_pricing: MenuShieldPricing::OneSided,
             military_horizon: None,
+            ..Config::v3()
+        }
+    }
+
+    /// The configuration the *third* round of work shipped with: the pending
+    /// state scored as it stands, the flat wonder-power model, and no
+    /// destroy-replacement discount.
+    ///
+    /// `tests/v3_identity.rs` asserts this reproduces that agent's arithmetic
+    /// bit for bit — with **one deliberate exception**, documented there: the
+    /// seven-wonder cap in [`terms::wonder_potential`] is a bug fix rather
+    /// than a model, so it is landed unconditionally and `Config::v3()` does
+    /// not restore the old, uncapped sum.
+    pub fn v3() -> Config {
+        Config {
+            pending_model: PendingModel::Unresolved,
+            wonder_model: WonderModel::Flat,
+            destroy_replace_discount: false,
             ..Config::default()
         }
     }
@@ -926,7 +1221,8 @@ impl Config {
         let e = &self.eval;
         let b = &self.blend;
         format!(
-            "models={}/{}/{},rails={}/{:.0},shieldprice={},horizon={},lockin={:.2},\
+            "models={}/{}/{},pending={},wonder={}/{:.2}/{:.2},destroyrepl={},\
+             rails={}/{:.0},shieldprice={},horizon={},lockin={:.2},\
              menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
              smooth={:.2}@{:.1}|\
              mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
@@ -943,6 +1239,17 @@ impl Config {
                 EconomyModel::Legacy => "legacy",
                 EconomyModel::Bill => "bill",
             },
+            match self.pending_model {
+                PendingModel::Unresolved => "unresolved",
+                PendingModel::Completed => "completed",
+            },
+            match self.wonder_model {
+                WonderModel::Flat => "flat",
+                WonderModel::Budget => "budget",
+            },
+            e.wonder_turns_per_wonder,
+            e.wonder_extra_turn_vp,
+            u8::from(self.destroy_replace_discount),
             match self.rails {
                 RailModel::Off => "off",
                 RailModel::On => "on",
@@ -1016,6 +1323,10 @@ pub struct Root {
     age: u8,
     smoothing: MilSmoothing,
     menu: MenuTables,
+    wonders: terms::WonderBudget,
+    /// `replace_r`, indexed by [`duels_core::data::Resource::index`]. Empty
+    /// (all zero) unless [`Config::destroy_replace_discount`] is on.
+    replace: [f64; duels_core::data::NUM_RESOURCES],
 }
 
 impl Root {
@@ -1091,6 +1402,17 @@ impl Root {
         } else {
             ChainTable::of(state, &ctx.board, &ctx.expected, &take)
         };
+        let wonders = if config.wonder_model == WonderModel::Budget {
+            terms::WonderBudget::of(state, &take, &chain, &config.eval)
+        } else {
+            terms::WonderBudget::empty()
+        };
+        let replace = if config.destroy_replace_discount {
+            std::array::from_fn(|r| (supply.sources[r] * DESTROY_REPLACE_SHARE).min(1.0))
+        } else {
+            [0.0; duels_core::data::NUM_RESOURCES]
+        };
+
         let menu = if config.eval.menu.lambda == 0.0 {
             MenuTables::unpriced(state, take, chain)
         } else {
@@ -1098,6 +1420,8 @@ impl Root {
         };
 
         Root {
+            wonders,
+            replace,
             deny_scale: 1.0 + (config.eval.deny_opponent_commit_boost - 1.0) * commit_opp.s,
             supply,
             age: state.age(),
@@ -1151,6 +1475,53 @@ impl Root {
         &self.supply
     }
 
+    /// The root-fixed wonder budget. All zero unless
+    /// [`WonderModel::Budget`] is in force.
+    #[inline]
+    pub fn wonders(&self) -> &terms::WonderBudget {
+        &self.wonders
+    }
+
+    /// How replaceable `card`'s production is: `0` for a card whose resources
+    /// the market can no longer print (every Age III destroy, since Age III
+    /// prints no brown or grey card — counted off `data/cards.json` by
+    /// `tests::production_is_completely_frozen_by_age_three`), rising towards
+    /// `1` when several undestroyed sources are still coming.
+    ///
+    /// ```text
+    /// replace_r = min(1, sources_remaining(r) · dealt_frac · share_opp)
+    /// replace(card) = min over the resources the card produces of replace_r
+    /// ```
+    ///
+    /// `sources_remaining · dealt_frac` is [`DevSupply::sources`], which
+    /// already discounts each pool card by the chance it is ever dealt.
+    /// `share_opp` is a flat [`DESTROY_REPLACE_SHARE`] — the chance the
+    /// *victim*, rather than the destroyer, is the one who ends up taking the
+    /// replacement. A real model would read the victim's own interest in the
+    /// card, exactly as [`menu::ChainTable`]'s `CHAIN_MINE_SHARE` would; both
+    /// are flat constants for the same reason and both are flagged as such.
+    ///
+    /// The `min` over the card's resources is the conservative direction: a
+    /// card is only fully replaceable if *everything* it produced can be
+    /// bought back.
+    ///
+    /// Zero throughout unless [`Config::destroy_replace_discount`] is on.
+    pub fn destroy_replaceability(&self, card: duels_core::data::CardId) -> f64 {
+        let mut out = 1.0f64;
+        let mut any = false;
+        for (r, &n) in card.def().produces.iter().enumerate() {
+            if n > 0 {
+                any = true;
+                out = out.min(self.replace[r]);
+            }
+        }
+        if any {
+            out
+        } else {
+            0.0
+        }
+    }
+
     /// The age the root position was in.
     ///
     /// Load-bearing for correctness, not a convenience: see
@@ -1187,12 +1558,26 @@ impl Root {
 /// term; otherwise every term is read for each player separately and
 /// differenced.
 pub fn evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
+    evaluate_at(state, me, root, MAX_PENDING_DEPTH)
+}
+
+/// [`evaluate`] with the remaining pending-resolution budget explicit.
+fn evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 {
     if let Some(result) = state.result() {
         return match result {
             GameResult::Win { winner, .. } if winner == me => root.config.eval.instant_result,
             GameResult::Win { .. } => -root.config.eval.instant_result,
             GameResult::Draw => 0.0,
         };
+    }
+    // Finish the mover's own turn before judging it. See [`PendingModel`].
+    if root.config.pending_model == PendingModel::Completed
+        && depth > 0
+        && state.pending().is_some()
+    {
+        if let Some(v) = resolve_pending(state, me, root, depth) {
+            return v;
+        }
     }
     // Rails B, C and C' — see [`rails`]. A rail *replaces* the weighted sum
     // rather than adding to it: the question it answers ("is this position
@@ -1212,6 +1597,74 @@ pub fn evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
     }
     player_value(state, me, root) - player_value(state, me.other(), root)
         + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
+}
+
+/// Finish a turn the engine left mid-effect, and score what it leaves.
+///
+/// The pending choice belongs to `state.current_player()` — every
+/// [`duels_core::state::Pending`] variant is created by that player's own
+/// action and resolved by them before the turn passes — so the option taken is
+/// the one *they* like best, whichever side `me` happens to be. That is what
+/// keeps the whole thing **antisymmetric**: the resolution picks the same
+/// option under `evaluate(s, me)` and `evaluate(s, me.other())`, because the
+/// key it maximises is the same number in both (`evaluate` is exactly
+/// antisymmetric, and `a - b` is exactly `-(b - a)` in IEEE-754), and the value
+/// it returns then negates with `me` like any other.
+///
+/// Returns `None` — and so falls back to scoring the pending state as it
+/// stands — only when the engine offers no legal resolution at all, which it
+/// never does: `legal_actions` is empty exactly when the game is over, and a
+/// finished game never carries a pending effect.
+fn resolve_pending(state: &GameState, me: Player, root: &Root, depth: u8) -> Option<f64> {
+    let resolver = state.current_player();
+    let sign = if resolver == me { 1.0 } else { -1.0 };
+    // A pending resolution reveals nothing: `engine::slots_revealed_by` is
+    // empty for every one of these actions (none of them takes a card out of
+    // the structure), so the single trivial outcome is the whole chance node.
+    let trivial = engine::Outcome::default();
+
+    // The destroy discount needs a reference to take a fraction *of*. The
+    // pending state's own score is the natural one: it is what the position is
+    // worth with the effect not yet applied, it is the same for every target,
+    // and at `replace = 0` the blend collapses to the resolved value exactly,
+    // so the knob is provably a no-op when it is switched off.
+    let discount = root.config.destroy_replace_discount
+        && matches!(
+            state.pending(),
+            Some(duels_core::state::Pending::Destroy { .. })
+        );
+    let unresolved = if discount {
+        player_value(state, me, root) - player_value(state, me.other(), root)
+            + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
+    } else {
+        0.0
+    };
+
+    let mut best: Option<(f64, f64)> = None;
+    for option in engine::legal_actions(state) {
+        let mut next = *state;
+        if engine::apply_with_outcome_unchecked(&mut next, option, &trivial).is_err() {
+            continue;
+        }
+        let mut value = evaluate_at(&next, me, root, depth - 1);
+        if discount {
+            if let Action::DestroyOpponentCard { card } = option {
+                let replace = root.destroy_replaceability(card);
+                // Guarded rather than multiplied by `1.0`: `u + (v - u) * 1.0`
+                // is not bit-identical to `v`, and this knob has to be an
+                // exact no-op wherever nothing can be replaced — which is
+                // every Age III destroy.
+                if replace > 0.0 {
+                    value = unresolved + (value - unresolved) * (1.0 - replace);
+                }
+            }
+        }
+        let key = sign * value;
+        if best.is_none_or(|(b, _)| key > b) {
+            best = Some((key, value));
+        }
+    }
+    best.map(|(_, value)| value)
 }
 
 /// Every term, read for one player and weighted by *that player's* root-fixed
@@ -1290,7 +1743,10 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     // --- never scaled -----------------------------------------------------
     let urgency = e.military_endgame_urgency * terms::military_urgency(state, p);
     let start = terms::next_age_start(state, p, e);
-    let wonders = e.wonder_potential * terms::wonder_potential(state, p);
+    let wonders = match c.wonder_model {
+        WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p),
+        WonderModel::Budget => terms::wonder_potential_budget(state, p, &root.wonders),
+    };
     // The opponent-menu term subsumes this one — a free chain build is just
     // one kind of high-value accessible card, and it is priced there properly
     // instead of at a flat `2 + VP`.
@@ -2449,5 +2905,395 @@ mod tests {
             engine::apply(&mut st, action, &mut rng).unwrap();
         }
         assert!(st.is_over(), "self-play did not finish");
+    }
+
+    // -----------------------------------------------------------------
+    // Round four: finishing a turn the engine left mid-effect.
+    // -----------------------------------------------------------------
+
+    fn wonder(slug: &str) -> duels_core::data::WonderId {
+        duels_core::data::WonderId::from_slug(slug).expect("a real wonder")
+    }
+
+    fn completed() -> Config {
+        Config {
+            pending_model: PendingModel::Completed,
+            ..Config::default()
+        }
+    }
+
+    /// A position where Player One can build `w` by burying the card in slot
+    /// 18, with both cities rich enough that cost is never the binding
+    /// constraint.
+    fn wonder_position(w: &str, opponent_city: &[&str]) -> GameState {
+        StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace"), (19, "clay-pool")])
+            .wonders(Player::One, &[w])
+            .built(Player::Two, opponent_city)
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build()
+    }
+
+    /// The bug, stated as a property of the engine rather than of this crate:
+    /// these four wonders really do come back from `apply` with the effect not
+    /// yet applied and the turn not yet passed.
+    #[test]
+    fn four_wonders_leave_the_engine_mid_effect() {
+        use duels_core::state::Pending;
+        let cases: [(&str, &[&str]); 3] = [
+            ("circus-maximus", &["glassworks", "press"]),
+            ("the-statue-of-zeus", &["lumber-yard", "clay-pit"]),
+            ("the-mausoleum", &[]),
+        ];
+        for (slug, city) in cases {
+            let mut st = wonder_position(slug, city);
+            if slug == "the-mausoleum" {
+                st = StateBuilder::new()
+                    .age(3)
+                    .open_slots(&[(18, "palace"), (19, "clay-pool")])
+                    .wonders(Player::One, &[slug])
+                    .discard(&["theater", "altar"])
+                    .coins(Player::One, 40)
+                    .coins(Player::Two, 40)
+                    .current(Player::One)
+                    .build();
+            }
+            let action = Action::BuildWonder {
+                slot: 18,
+                wonder: wonder(slug),
+            };
+            assert!(
+                engine::legal_actions(&st).contains(&action),
+                "{slug}: the build is not legal in the test position"
+            );
+            let mut next = st;
+            engine::apply_with_outcome(&mut next, action, &engine::Outcome::default()).unwrap();
+            assert!(
+                next.pending().is_some(),
+                "{slug}: the engine finished the effect after all"
+            );
+            assert_eq!(
+                next.current_player(),
+                Player::One,
+                "{slug}: the turn passed before the effect resolved"
+            );
+            assert!(matches!(
+                next.pending(),
+                Some(Pending::Destroy { .. } | Pending::MausoleumBuild)
+            ));
+        }
+    }
+
+    /// A destroy that takes a real card out of the opponent's city is worth
+    /// more than a destroy that has not happened yet — which is the whole of
+    /// bug one in one assertion.
+    #[test]
+    fn completing_the_turn_credits_a_destroy_the_unresolved_evaluation_misses() {
+        let st = wonder_position("circus-maximus", &["glassworks", "press"]);
+        let action = Action::BuildWonder {
+            slot: 18,
+            wonder: wonder("circus-maximus"),
+        };
+        let me = Player::One;
+
+        let flat = Root::new(&st, me, Config::v3());
+        let full = Root::new(&st, me, completed());
+        let before = expected_value(&st, action, me, &flat);
+        let after = expected_value(&st, action, me, &full);
+        assert!(
+            after > before,
+            "resolving the destroy should be worth something: {after} vs {before}"
+        );
+
+        // ...and the card it takes is the one that hurts most, not the first
+        // one in index order: the destroy resolution really does choose.
+        let mut resolved = st;
+        engine::apply_with_outcome(&mut resolved, action, &engine::Outcome::default()).unwrap();
+        let options = engine::legal_actions(&resolved);
+        assert_eq!(options.len(), 2, "two grey cards to choose between");
+        let scores: Vec<f64> = options
+            .iter()
+            .map(|&o| {
+                let mut s = resolved;
+                engine::apply_with_outcome(&mut s, o, &engine::Outcome::default()).unwrap();
+                evaluate(&s, me, &full)
+            })
+            .collect();
+        let best = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(
+            evaluate(&resolved, me, &full).to_bits(),
+            best.to_bits(),
+            "the resolution did not take the maximum over the real options"
+        );
+    }
+
+    /// The Mausoleum's retrieval is the one pending effect the engine can
+    /// **chain**: `construct_card` runs the retrieved card's own effects, and a
+    /// green card that completes a science pair sets a second pending choice.
+    /// [`MAX_PENDING_DEPTH`] exists for exactly this, and this is the test that
+    /// says the chain is real rather than hypothetical.
+    #[test]
+    fn a_mausoleum_retrieval_can_chain_into_a_progress_token_choice() {
+        use duels_core::state::Pending;
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace"), (19, "clay-pool")])
+            .wonders(Player::One, &["the-mausoleum"])
+            // One Wheel already in the city; the School in the discard pile
+            // carries the second, so retrieving it completes the pair.
+            .built(Player::One, &["apothecary"])
+            .discard(&["school"])
+            .board_tokens(&["law", "theology", "strategy"])
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build();
+
+        let mut after = st;
+        engine::apply_with_outcome(
+            &mut after,
+            Action::BuildWonder {
+                slot: 18,
+                wonder: wonder("the-mausoleum"),
+            },
+            &engine::Outcome::default(),
+        )
+        .unwrap();
+        assert_eq!(after.pending(), Some(Pending::MausoleumBuild));
+
+        let mut chained = after;
+        engine::apply_with_outcome(
+            &mut chained,
+            engine::legal_actions(&after)[0],
+            &engine::Outcome::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            chained.pending(),
+            Some(Pending::ProgressToken),
+            "the retrieval was supposed to complete a science pair"
+        );
+        assert_eq!(chained.current_player(), Player::One);
+
+        // The evaluator walks the whole chain, so the state it finally scores
+        // has no pending effect left and the turn really has passed.
+        let root = Root::new(&st, Player::One, completed());
+        let v = evaluate(&after, Player::One, &root);
+        assert!(v.is_finite());
+        // Resolving both levels is strictly better than stopping at the first:
+        // the token is worth something.
+        let one_level = evaluate_at(&after, Player::One, &root, 1);
+        assert!(
+            v > one_level,
+            "walking the chain to the end should be worth more than stopping \
+             one level in: {v} vs {one_level}"
+        );
+    }
+
+    /// The evaluation stays exactly zero-sum through a pending resolution.
+    #[test]
+    fn resolving_a_pending_effect_stays_antisymmetric() {
+        let st = wonder_position("circus-maximus", &["glassworks", "press"]);
+        let mut after = st;
+        engine::apply_with_outcome(
+            &mut after,
+            Action::BuildWonder {
+                slot: 18,
+                wonder: wonder("circus-maximus"),
+            },
+            &engine::Outcome::default(),
+        )
+        .unwrap();
+        assert!(after.pending().is_some());
+
+        for me in Player::ALL {
+            let root = Root::new(&st, me, completed());
+            let mine = evaluate(&after, me, &root);
+            let theirs = evaluate(&after, me.other(), &root);
+            assert_eq!(
+                mine.to_bits(),
+                (-theirs).to_bits(),
+                "the resolution is not antisymmetric: {mine} vs {theirs}"
+            );
+        }
+    }
+
+    /// The destroy discount is a *no-op* at its off value, and moves the score
+    /// towards the unresolved reference when there really is a replacement
+    /// coming.
+    #[test]
+    fn the_destroy_replacement_discount_only_bites_while_the_market_can_replace() {
+        let action = Action::BuildWonder {
+            slot: 18,
+            wonder: wonder("the-statue-of-zeus"),
+        };
+        // Age III: no brown or grey card left in the game, so nothing can be
+        // replaced and the discount must vanish.
+        let late = wonder_position("the-statue-of-zeus", &["lumber-yard", "clay-pit"]);
+        let plain = Root::new(&late, Player::One, completed());
+        let discounted = Root::new(
+            &late,
+            Player::One,
+            Config {
+                destroy_replace_discount: true,
+                ..completed()
+            },
+        );
+        assert_eq!(
+            expected_value(&late, action, Player::One, &plain).to_bits(),
+            expected_value(&late, action, Player::One, &discounted).to_bits(),
+            "an Age III destroy is permanent, so the discount must be exactly zero"
+        );
+        for r in 0..duels_core::data::NUM_RESOURCES {
+            assert_eq!(
+                discounted.replace[r], 0.0,
+                "Age III still thinks it can print production"
+            );
+        }
+
+        // Age I, with the whole brown supply still to come: the same destroy
+        // is worth strictly less than its undiscounted value.
+        let early = StateBuilder::new()
+            .age(1)
+            .open_slots(&[(18, "palace"), (19, "clay-pool")])
+            .wonders(Player::One, &["the-statue-of-zeus"])
+            .built(Player::Two, &["lumber-yard", "clay-pit"])
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build();
+        let plain = Root::new(&early, Player::One, completed());
+        let discounted = Root::new(
+            &early,
+            Player::One,
+            Config {
+                destroy_replace_discount: true,
+                ..completed()
+            },
+        );
+        assert!(
+            discounted.replace.iter().any(|&x| x > 0.0),
+            "Age I should still have production sources in the pool"
+        );
+        assert!(
+            expected_value(&early, action, Player::One, &discounted)
+                < expected_value(&early, action, Player::One, &plain),
+            "a replaceable destroy should be worth less than a permanent one"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Round four: the wonder budget.
+    // -----------------------------------------------------------------
+
+    /// `p_build` rations the seven shared slots and the owner's remaining
+    /// decisions, so an unbuilt wonder is not worth the same in a fresh Age I
+    /// as it is with one slot and two turns left.
+    #[test]
+    fn the_wonder_budget_rations_slots_and_turns() {
+        let budget = Config {
+            wonder_model: WonderModel::Budget,
+            ..Config::default()
+        };
+
+        // Fresh: eight unbuilt wonders, seven slots, a whole game of turns.
+        let fresh = StateBuilder::new()
+            .age(1)
+            .deal(&AGE_TWO_DEAL)
+            .wonders(
+                Player::One,
+                &["the-pyramids", "the-colossus", "the-sphinx", "piraeus"],
+            )
+            .wonders(
+                Player::Two,
+                &[
+                    "the-mausoleum",
+                    "the-great-library",
+                    "the-appian-way",
+                    "the-great-lighthouse",
+                ],
+            )
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+            .build();
+        let root = Root::new(&fresh, Player::One, budget);
+        let p = root.wonders().p_build(Player::One);
+        assert!(
+            p > 0.0 && p < 1.0,
+            "eight unbuilt wonders against seven slots should ration: {p}"
+        );
+        assert!(
+            terms::wonder_potential_budget(&fresh, Player::One, root.wonders()) > 0.0,
+            "an unbuilt wonder in Age I is worth something"
+        );
+
+        // Every slot gone: nothing left to ration.
+        let full = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(19, "clay-pool")])
+            .wonders(Player::One, &["the-pyramids"])
+            .wonders_built(
+                Player::One,
+                &["the-colossus", "the-sphinx", "the-hanging-gardens"],
+            )
+            .wonders_built(
+                Player::Two,
+                &[
+                    "piraeus",
+                    "the-appian-way",
+                    "the-great-lighthouse",
+                    "the-mausoleum",
+                ],
+            )
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let root = Root::new(&full, Player::One, budget);
+        assert_eq!(root.wonders().p_build(Player::One), 0.0);
+        assert_eq!(
+            terms::wonder_potential_budget(&full, Player::One, root.wonders()),
+            0.0
+        );
+    }
+
+    /// The per-effect price says something the flat one cannot: the Great
+    /// Library's token draw is priced from the tokens actually set aside, so
+    /// two different piles give two different answers — where
+    /// [`terms::wonder_power`] gives a flat `+3` for both.
+    #[test]
+    fn the_wonder_budget_prices_the_great_library_from_the_real_token_pile() {
+        let position = |aside: &[&str]| {
+            StateBuilder::new()
+                .age(2)
+                .deal(&AGE_TWO_DEAL)
+                .wonders(Player::One, &["the-great-library"])
+                .set_aside_tokens(aside)
+                .coins(Player::One, 20)
+                .coins(Player::Two, 20)
+                .current(Player::One)
+                .build()
+        };
+        let budget = Config {
+            wonder_model: WonderModel::Budget,
+            ..Config::default()
+        };
+        let rich = position(&["law", "theology", "mathematics", "philosophy", "urbanism"]);
+        let thin = position(&["masonry", "agriculture", "economy", "strategy", "urbanism"]);
+        let gl = wonder("the-great-library");
+        let a = Root::new(&rich, Player::One, budget);
+        let b = Root::new(&thin, Player::One, budget);
+        assert!(
+            a.wonders().power(Player::One, gl) != b.wonders().power(Player::One, gl),
+            "the token pile made no difference to the Great Library's price"
+        );
+        // The flat model cannot tell them apart at all.
+        assert_eq!(
+            terms::wonder_power(gl).to_bits(),
+            terms::wonder_power(gl).to_bits()
+        );
     }
 }
