@@ -146,8 +146,9 @@ pub use board::Board;
 pub use context::{Context, Expectations};
 pub use masks::{masks, AgeSupply, Masks};
 pub use military::{
-    military_read, military_read_with, MilModel, MilitaryBand, MilitaryRead, MilitaryStatus,
-    ShieldSource, ShieldStack,
+    closing_sources, closing_sources_with, loot_loss_from_push, max_single_shield_gain,
+    military_read, military_read_with, ClosingSources, MilModel, MilitaryBand, MilitaryRead,
+    MilitaryStatus, ShieldSource, ShieldStack,
 };
 pub use prices::Prices;
 pub use science::{

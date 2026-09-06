@@ -45,7 +45,11 @@ use duels_strategy::masks::masks;
 use duels_strategy::science::token_value;
 
 use crate::terms::{self, DevSupply, MilSmoothing, MAX_UNITS};
-use crate::{CoinModel, Config, MenuWeights, MilitaryModel};
+use crate::{CoinModel, Config, MenuShieldPricing, MenuWeights, MilitaryModel};
+
+/// The largest shield gain one card can carry: the biggest printed red card
+/// plus the Strategy token's bonus. The `shield_delta` table is sized to it.
+const MAX_SHIELD_STEP: usize = 4;
 
 /// Everything `v_q(card)` needs, read once from the root position for one
 /// player.
@@ -53,9 +57,20 @@ use crate::{CoinModel, Config, MenuWeights, MilitaryModel};
 pub struct TakeValue {
     /// The player whose pricing context this is.
     pub player: Player,
-    /// What one more shield is worth to them, right now: the local slope of
-    /// the military model at the root pawn position.
+    /// What one more shield is worth to them, right now: the local, one-sided
+    /// slope of the military model at the root pawn position. Used only by
+    /// [`MenuShieldPricing::OneSided`].
     pub military_slope: f64,
+    /// `Δ(k)` for `k` shields: the exact finite difference of what the main
+    /// evaluation's military terms would move, both players' halves included
+    /// and both players' root-fixed multipliers applied. Used by
+    /// [`MenuShieldPricing::Differenced`].
+    pub shield_delta: [f64; MAX_SHIELD_STEP + 1],
+    /// Whether this player holds the Strategy token, which adds a shield to
+    /// every red card they build.
+    pub strategy: bool,
+    /// Which of the two prices above [`TakeValue::shields_value`] uses.
+    pub pricing: MenuShieldPricing,
     /// What one more coin is worth to them, right now.
     pub coin_marginal: f64,
     /// What the next distinct scientific symbol is worth: `ladder[k + 1] −
@@ -75,6 +90,12 @@ pub struct TakeValue {
 
 impl TakeValue {
     /// Read one player's pricing context off the root position.
+    ///
+    /// `military_multiplier` is `(this player's, the opponent's)` root-fixed
+    /// commitment multiplier on the military term — both halves, because
+    /// [`MenuShieldPricing::Differenced`] prices a shield by what the
+    /// *differenced* evaluation would actually move, not by what one side's
+    /// band gains.
     pub fn of(
         state: &GameState,
         player: Player,
@@ -82,6 +103,7 @@ impl TakeValue {
         sm: &MilSmoothing,
         config: &Config,
         liquidity_weight: f64,
+        military_multiplier: (f64, f64),
     ) -> TakeValue {
         let e = &config.eval;
         let smooth_coins = config.coin_model == CoinModel::Smooth;
@@ -122,8 +144,34 @@ impl TakeValue {
             std::array::from_fn(|r| (supply.f[k][r] * n_take + wonder[k][r]) * f64::from(prices[r]))
         });
 
+        let strategy = duels_strategy::masks()
+            .strategy_token()
+            .is_some_and(|t| me.tokens().any(|held| held == t));
+        let (w_p, w_opp) = military_multiplier;
+        let shield_delta: [f64; MAX_SHIELD_STEP + 1] = std::array::from_fn(|k| {
+            let k = u8::try_from(k).unwrap_or(u8::MAX);
+            match config.military_model {
+                // The legacy model is flat in the pawn's position, so the
+                // finite difference is exactly linear -- but it is still the
+                // *differenced* one, with both players' multipliers.
+                MilitaryModel::Legacy => e.military_position * f64::from(k) * (w_p + w_opp),
+                MilitaryModel::Band => terms::military_shield_delta(
+                    state,
+                    player,
+                    k,
+                    sm,
+                    e.military_band,
+                    e.military_loot,
+                    (w_p, w_opp),
+                ),
+            }
+        });
+
         TakeValue {
             player,
+            shield_delta,
+            strategy,
+            pricing: config.menu_shield_pricing,
             military_slope: legacy_military_step
                 .unwrap_or_else(|| terms::military_slope(state, player, sm)),
             coin_marginal: terms::coin_marginal(
@@ -142,6 +190,29 @@ impl TakeValue {
             have: terms::effective_production(state, player, supply, take_rate),
             prices,
             marginal_want,
+        }
+    }
+
+    /// What a card's `printed` shields are worth to this player.
+    ///
+    /// Under [`MenuShieldPricing::OneSided`] this is `printed × slope`, the
+    /// round-two behaviour: one player's band only, and linear in `k`. Under
+    /// [`MenuShieldPricing::Differenced`] it is the table built at the root
+    /// from [`terms::military_shield_delta`], with the Strategy token's extra
+    /// shield folded in — which is the same quantity the main evaluation would
+    /// actually credit for taking the card, rather than an approximation of
+    /// half of it.
+    #[inline]
+    pub fn shields_value(&self, printed: u8) -> f64 {
+        match self.pricing {
+            MenuShieldPricing::OneSided => f64::from(printed) * self.military_slope,
+            MenuShieldPricing::Differenced => {
+                if printed == 0 {
+                    return 0.0;
+                }
+                let k = usize::from(printed.saturating_add(u8::from(self.strategy)));
+                self.shield_delta[k.min(MAX_SHIELD_STEP)]
+            }
         }
     }
 
@@ -207,7 +278,7 @@ impl TakeValue {
     pub fn value(&self, state: &GameState, card: CardId, chain: &ChainTable) -> f64 {
         let def = card.def();
         let mut v = f64::from(def.victory_points) + f64::from(def.coins) / 3.0;
-        v += f64::from(def.shields) * self.military_slope;
+        v += self.shields_value(def.shields);
         if let Some(sym) = def.science {
             v += self.symbol_value(sym);
         }
@@ -307,7 +378,7 @@ impl ChainTable {
                 let tv = &take[p.index()];
                 let mut value = f64::from(def.victory_points)
                     + f64::from(def.coins) / 3.0
-                    + f64::from(def.shields) * tv.military_slope;
+                    + tv.shields_value(def.shields);
                 if let Some(sym) = def.science {
                     value += tv.symbol_value(sym);
                 }
@@ -576,11 +647,24 @@ mod tests {
         let sm = MilSmoothing::of(10.0, 0.8, 0.35, 0.55);
         let cfg = Config::default();
         let take = [
-            TakeValue::of(state, Player::One, &supply, &sm, &cfg, 1.0),
-            TakeValue::of(state, Player::Two, &supply, &sm, &cfg, 1.0),
+            TakeValue::of(state, Player::One, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
+            TakeValue::of(state, Player::Two, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
         ];
         let chain = ChainTable::of(state, &board, &expected, &take);
         (chain, take)
+    }
+
+    /// The `shield_delta` table has to be long enough for the biggest gain a
+    /// single card can produce, or a three-shield card in the hands of a
+    /// Strategy holder would silently read as something smaller.
+    #[test]
+    fn the_shield_delta_table_covers_the_biggest_gain_any_card_can_make() {
+        assert_eq!(
+            MAX_SHIELD_STEP,
+            usize::from(duels_strategy::max_single_shield_gain()),
+            "the card data's largest single shield gain no longer matches the \
+             table this module sizes for it"
+        );
     }
 
     #[test]
@@ -644,8 +728,8 @@ mod tests {
         let sm = MilSmoothing::of(4.0, 0.8, 0.35, 0.55);
         let cfg = Config::default();
         let take = [
-            TakeValue::of(&st, Player::One, &supply, &sm, &cfg, 1.0),
-            TakeValue::of(&st, Player::Two, &supply, &sm, &cfg, 1.0),
+            TakeValue::of(&st, Player::One, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
+            TakeValue::of(&st, Player::Two, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
         ];
         let chain = ChainTable::of(&st, &board, &expected, &take);
         let tables = MenuTables::of(&st, &board, take, chain);

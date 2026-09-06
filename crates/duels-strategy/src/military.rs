@@ -27,8 +27,11 @@
 //! round" — one card, or a chained sequence the defender never gets to
 //! interrupt.
 
-use duels_core::data::{self, CardId, WonderId};
-use duels_core::{GameState, Player};
+use std::sync::OnceLock;
+
+use duels_core::data::{self, CardId, WonderId, NUM_CARDS, NUM_WONDERS};
+use duels_core::layout::SLOTS;
+use duels_core::{cost, GameState, Player};
 
 use crate::board::{iter_slots, Board};
 use crate::context::Context;
@@ -481,6 +484,215 @@ impl MilitaryRead {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Closing sources: the actions that end the game outright, right now
+// ---------------------------------------------------------------------------
+
+/// Distinct scientific symbols that win the game outright.
+const SYMBOLS_TO_WIN: u8 = 6;
+
+/// The largest number of shields any *one* action in the base game can add:
+/// the biggest printed red card plus the Strategy token's bonus, or the
+/// biggest shield-granting wonder, whichever is larger.
+///
+/// Read off the card and wonder data rather than written down, so a change to
+/// `data/*.json` cannot silently make [`closing_sources`] stop looking.
+pub fn max_single_shield_gain() -> u8 {
+    static V: OnceLock<u8> = OnceLock::new();
+    *V.get_or_init(|| {
+        let card = (0..NUM_CARDS)
+            .map(|i| CardId::from_index(i).def().shields)
+            .max()
+            .unwrap_or(0);
+        let wonder = WonderId::all().map(|w| w.def().shields).max().unwrap_or(0);
+        card.saturating_add(1).max(wonder)
+    })
+}
+
+/// Every way one player could **end the game outright on their very next
+/// turn**, as a set of actions the rules actually permit.
+///
+/// This is the question [`MilitaryRead`] answers only indirectly and
+/// [`duels_core::engine::legal_actions`] cannot answer at all for the player
+/// who is *not* to move — which is exactly the player a 1-ply evaluator has to
+/// ask about, since the position it is scoring is one the opponent moves in.
+///
+/// Deliberately narrow, cheap and rules-checkable:
+///
+/// * **military** — an accessible, face-up red card the player can pay for
+///   whose shields (plus the Strategy token's bonus, which the engine grants
+///   to red cards only) reach `capital_distance`; or a drafted, unbuilt,
+///   affordable wonder whose own shields do, when a wonder slot and a card to
+///   spend are both still there.
+/// * **science** — an accessible, affordable card carrying a symbol the player
+///   does not hold, when they already hold `SYMBOLS_TO_WIN - 1` distinct ones.
+///
+/// Everything else that could conceivably end a game on one action needs a
+/// *pending* effect to already be on the stack (a Mausoleum rebuild of a red
+/// card, a Law token completing the sixth symbol), and callers gate on
+/// [`GameState::pending`] being empty rather than paying to model them.
+///
+/// `duels-core` stays the rules authority: every affordability question goes
+/// through [`duels_core::cost`], every distance through
+/// [`duels_core::data::military`], and
+/// `tests/closing_sources_cross_check.rs` asserts the answers agree, action
+/// for action, with actually applying each action through the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosingSources {
+    /// The player these are for.
+    pub player: Player,
+    /// Shields they still need to reach the opponent's capital.
+    pub need: u8,
+    /// Accessible slots whose card alone reaches it.
+    pub military_slots: u32,
+    /// Bitmask over [`WonderId::index`] of wonders whose shields alone reach
+    /// it.
+    pub military_wonders: u16,
+    /// Accessible slots whose card alone completes the sixth distinct symbol.
+    pub science_slots: u32,
+    /// Shields each closing slot's card would add, Strategy included, indexed
+    /// by slot. Zero for a slot that is not a military closing source.
+    pub slot_shields: [u8; SLOTS],
+    /// Shields each closing wonder would add, indexed by [`WonderId::index`].
+    pub wonder_shields: [u8; NUM_WONDERS],
+}
+
+impl ClosingSources {
+    /// An empty set.
+    pub fn none(player: Player, need: u8) -> ClosingSources {
+        ClosingSources {
+            player,
+            need,
+            military_slots: 0,
+            military_wonders: 0,
+            science_slots: 0,
+            slot_shields: [0; SLOTS],
+            wonder_shields: [0; NUM_WONDERS],
+        }
+    }
+
+    /// Whether there is any closing action at all.
+    #[inline]
+    pub fn any(&self) -> bool {
+        self.military_slots != 0 || self.military_wonders != 0 || self.science_slots != 0
+    }
+
+    /// How many distinct closing actions there are, counting a wonder once
+    /// however many cards could pay for it.
+    #[inline]
+    pub fn count(&self) -> u32 {
+        (self.military_slots | self.science_slots).count_ones() + self.military_wonders.count_ones()
+    }
+}
+
+/// [`closing_sources_with`] including the card-based sources.
+pub fn closing_sources(state: &GameState, player: Player) -> ClosingSources {
+    closing_sources_with(state, player, true)
+}
+
+/// [`ClosingSources`] for `player`, optionally skipping every source that
+/// depends on reading a *card in the structure*.
+///
+/// `include_cards = false` is the stand-down a 1-ply evaluator needs across an
+/// age boundary: the identities the engine deals into a new age are invented by
+/// [`duels_core::Observation::sample_state`] and are not public information,
+/// while a wonder's cost, its shields, its owner's purse and
+/// [`GameState::wonder_slots_left`] all stay public. See
+/// `duels-agent-phased`'s `rails` module for the argument in full.
+pub fn closing_sources_with(
+    state: &GameState,
+    player: Player,
+    include_cards: bool,
+) -> ClosingSources {
+    let track = data::military();
+    let cap = i16::from(track.capital_distance);
+    let need =
+        u8::try_from((cap - i16::from(signed_distance(state, player))).max(0)).unwrap_or(u8::MAX);
+    let mut out = ClosingSources::none(player, need);
+    if state.is_over() {
+        return out;
+    }
+
+    let me = state.player(player);
+    // A closing red card or wonder only exists at all within one action's
+    // reach of the capital, which is the overwhelming-majority early exit:
+    // most of most games the pawn is nowhere near.
+    let military_live = need > 0 && need <= max_single_shield_gain();
+    let science_live = me.distinct_science() + 1 == SYMBOLS_TO_WIN;
+    if !military_live && !science_live {
+        return out;
+    }
+
+    let accessible = state.accessible_slots();
+    if include_cards {
+        let strategy = masks()
+            .strategy_token()
+            .is_some_and(|t| me.tokens().any(|held| held == t));
+        let held = me.science();
+        for slot in iter_slots(accessible) {
+            let Some(card) = state.face_up_card(slot) else {
+                continue;
+            };
+            let def = card.def();
+            // The engine grants Strategy's extra shield to red cards only, and
+            // every shield-bearing card in the data is red.
+            let shields = def
+                .shields
+                .saturating_add(u8::from(strategy && def.shields > 0));
+            let closes_military = military_live && shields >= need;
+            let closes_science = science_live && def.science.is_some_and(|s| held[s.index()] == 0);
+            if !closes_military && !closes_science {
+                continue;
+            }
+            if !cost::card_cost(state, player, card).affordable_by(state, player) {
+                continue;
+            }
+            if closes_military {
+                out.military_slots |= 1u32 << slot;
+                out.slot_shields[slot as usize] = shields;
+            }
+            if closes_science {
+                out.science_slots |= 1u32 << slot;
+            }
+        }
+    }
+
+    // A wonder needs a free wonder slot and some card in the structure to
+    // spend; which card does not matter, so the opponent cannot deny it by
+    // taking one.
+    if military_live && accessible != 0 && state.wonder_slots_left() {
+        for wonder in me.wonders() {
+            let def = wonder.def();
+            if me.has_built_wonder(wonder) || def.shields < need {
+                continue;
+            }
+            if !cost::wonder_cost(state, player, wonder).affordable_by(state, player) {
+                continue;
+            }
+            out.military_wonders |= 1u16 << wonder.index();
+            out.wonder_shields[wonder.index()] = def.shields;
+        }
+    }
+
+    out
+}
+
+/// Coins `victim` would forfeit if `pusher` advanced the conflict pawn by
+/// `gain` shields, crossing whatever loot tokens still sit on `pusher`'s side.
+///
+/// Capped at what the victim actually holds, exactly as the engine caps it.
+pub fn loot_loss_from_push(state: &GameState, pusher: Player, gain: u8) -> u16 {
+    let track = data::military();
+    let after = i16::from(signed_distance(state, pusher)) + i16::from(gain);
+    let mut loss = 0u16;
+    for (i, &(distance, coins)) in track.loot.iter().enumerate() {
+        if state.loot_available(pusher, i) && after >= i16::from(distance) {
+            loss = loss.saturating_add(u16::from(coins));
+        }
+    }
+    loss.min(state.player(pusher.other()).coins())
+}
+
 /// The pawn's distance from centre, signed so that positive favours `player`.
 #[inline]
 pub fn signed_distance(state: &GameState, player: Player) -> i8 {
@@ -710,8 +922,25 @@ pub fn military_read_with(state: &GameState, player: Player, ctx: &Context) -> M
             .unwrap_or(u8::MAX);
     // A shield-granting wonder cannot be taken away, so one alone is already
     // undeniable.
+    //
+    // Two closing *cards* are a different matter, and the first cut of this
+    // read got it wrong: it treated a two-card fork as automatically
+    // undeniable on the grounds that one opposing turn can only remove one of
+    // them. True as far as it goes — but a defender who can *afford* one of
+    // those red cards does not merely remove it, they build it, and the
+    // shields they gain push the pawn back and raise `need` by as much,
+    // which can put the surviving card out of reach as well. So the fork is
+    // only undeniable when the defender cannot pay for any of its cards.
+    //
+    // Still an approximation in the defender's favour rather than a proof:
+    // they might push back with a red card that is *not* one of the two, or
+    // with a shield wonder. `duels-agent-phased`'s Rail C does that fuller
+    // enumeration; this read is the cheap, once-per-position label.
+    let defender_prices = ctx.prices(player.other());
+    let card_fork_undeniable = base.closing_slots.count_ones() >= 2
+        && !iter_slots(base.closing_slots).any(|slot| defender_prices.can_take_slot(slot));
     let undeniable =
-        status == MilitaryStatus::Imminent && (closing_fork >= 2 || base.closing_wonders != 0);
+        status == MilitaryStatus::Imminent && (card_fork_undeniable || base.closing_wonders != 0);
 
     // --- loot and scoring bands -------------------------------------------
     let mut loot_damage = 0u16;
@@ -818,6 +1047,63 @@ mod tests {
         // From the centre, reaching the 10-point band needs six shields.
         assert_eq!(r.bands[3].shields_needed, 6);
         assert_eq!(r.bands[3].vp_gain, 10);
+    }
+
+    /// A two-card closing fork is **not** automatically undeniable.
+    ///
+    /// The original read said it was, on the grounds that one opposing turn
+    /// can only take one of the two cards away. But a defender who can pay for
+    /// one of them builds it rather than discarding it, and the shields that
+    /// buys pushes the pawn back far enough that the surviving card no longer
+    /// reaches the capital either. Only a defender who cannot pay for any of
+    /// them is stuck removing one and watching the other close.
+    #[test]
+    fn a_two_card_fork_is_only_undeniable_when_the_defender_cannot_pay_for_one() {
+        // Player One is two shields from the capital with two two-shield cards
+        // face up and affordable, so the race is Imminent either way.
+        let position = |defender_coins: u16| {
+            StateBuilder::new()
+                .age(3)
+                .open_slots(&[(18, "circus"), (19, "fortifications")])
+                .conflict(7)
+                .coins(Player::One, 40)
+                .coins(Player::Two, defender_coins)
+                .current(Player::One)
+                .build()
+        };
+
+        let rich = position(40);
+        let r = military_read(&rich, Player::One);
+        assert_eq!(r.need, 2);
+        assert_eq!(
+            r.closing_slots.count_ones(),
+            2,
+            "test setup: two closing cards"
+        );
+        assert_eq!(r.closing_wonders, 0, "test setup: no closing wonder");
+        assert_eq!(r.status, MilitaryStatus::Imminent);
+        assert!(
+            !r.undeniable,
+            "a defender who can build one of the two cards pushes the pawn back \
+             and un-closes the other"
+        );
+
+        // The same fork against a defender who can only discard.
+        let broke = position(7);
+        let r = military_read(&broke, Player::One);
+        assert_eq!(r.closing_slots.count_ones(), 2);
+        assert_eq!(r.status, MilitaryStatus::Imminent);
+        assert!(
+            r.undeniable,
+            "one opposing turn cannot remove both cards, and they cannot pay to \
+             push back"
+        );
+
+        // ...and a defender who can pay for exactly one of them is enough to
+        // make it deniable, which is what the affordability check actually
+        // tests. Both cards cost eight coins in trade to a city that produces
+        // nothing, so seven coins deny nothing and eight coins deny the fork.
+        assert!(!military_read(&position(8), Player::One).undeniable);
     }
 
     #[test]
