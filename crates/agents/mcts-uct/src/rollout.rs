@@ -210,6 +210,14 @@ pub const RAIL: f64 = 50.0;
 /// tree is rarely shown a position where it is close. Military told a milder
 /// version of the same story: 48% exposure, 36% conversion.
 ///
+/// **That hypothesis did not survive being tested** — see the crate docs. The
+/// rails below are worth real strength, but by not missing military closes,
+/// not by making the search race for science. Two caveats worth carrying
+/// forward: the 1.5% came from one seed range and the same measurement over
+/// three ranges reads 2.5%; and 5-symbol positions are rare enough
+/// (`n ~= 30` per 1200 games) that a conversion rate over them has a standard
+/// error near 9 points, so that channel is very hard to measure at all.
+///
 /// # The mechanism, in two tiers
 ///
 /// Both are computed from raw public state — `GameState`'s accessors and
@@ -246,6 +254,36 @@ pub const RAIL: f64 = 50.0;
 /// a position where neither player holds 3 distinct symbols and the pawn is
 /// within 2 of centre is *inactive*: no per-card lookup happens at all, which
 /// is most of Age I.
+///
+/// The affordability gate this was built against was "within 5% of plain
+/// [`RolloutWeights::BIASED`]'s throughput, or do not bother measuring
+/// strength". `examples/rollout_bench.rs`, best of five interleaved rounds
+/// over 24 real positions:
+///
+/// | policy | `Nodes(2000)` | `TimeMs` |
+/// |---|---|---|
+/// | `BIASED` (baseline) | 100.0% | 100.0% |
+/// | `SMART` | 97.2% | 96.1% |
+/// | `BIASED` + `TIER1_ONLY` | 96.5% | 96.9% |
+/// | `BIASED` + `MEDIUM` | **97.4%** | **97.2%** |
+/// | `BIASED` + `strong()` | 96.8% | 96.9% |
+///
+/// A **2.6-3.5% cost**, and the gate passes. Two things are worth recording
+/// about how it got there, because both were surprising:
+///
+/// - **Every variant costs the same**, including [`RaceWeights::TIER1_ONLY`],
+///   whose tables are all `1.0`. The cost is the *lookup* — reaching the card
+///   in the slot at all — not the arithmetic the tables drive. Tuning the
+///   numbers is therefore free; only the decision to look is not.
+/// - The first draft measured **93.5%**, outside the gate, and the fix was
+///   not algorithmic. Every `duels_core::data` accessor (`CardId::def`,
+///   `TokenId::def`, `military()`) goes through a `OnceLock`, so testing "does
+///   this player hold Strategy" by iterating their tokens cost one atomic
+///   acquire load *per token per ply*. Resolving those once into
+///   [`race_statics`] — a bit test against the token bitmask, an array index
+///   for wonder shields — was worth 3.5 points on its own, far more than the
+///   [`SlotMemo`] added at the same time, which measured as nothing when it
+///   was tried on its own beforehand.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RaceWeights {
     /// Floor applied to any action that takes an available win or removes an
@@ -287,9 +325,13 @@ impl RaceWeights {
 
     /// Tier 1 only: the terminal rails, with every Tier-2 table left at `1.0`.
     ///
-    /// Exists so the two tiers' contributions can be measured apart — "does a
+    /// Added so the two tiers' contributions could be measured apart — "does a
     /// rollout that merely never *misses* a win already explain the effect, or
-    /// does the escalating commitment matter too?"
+    /// does the escalating commitment matter too?" — and it turned out to be
+    /// **the strongest setting in this struct**: `+26.1` Elo against
+    /// [`RaceWeights::NEUTRAL`] over 1200 games, where
+    /// [`RaceWeights::MEDIUM`] managed `+10.0`. The crate docs carry the full
+    /// tables and why it is nonetheless not the default.
     pub const TIER1_ONLY: RaceWeights = RaceWeights {
         rail: RAIL,
         sci_push: [1.0; 6],
@@ -567,10 +609,13 @@ impl StepCtx {
 /// consecutively — a `Build` (when affordable), a `Discard`, then one
 /// `BuildWonder` per buildable wonder — so remembering just the last slot
 /// collapses the six-or-so lookups a single slot would otherwise cause into
-/// one. That matters: the `face_up_card` + `def` pair is where essentially all
-/// of the race layer's cost lives (every tuning variant measures the same
-/// throughput, including the one whose tables are all `1.0`), not in the
-/// arithmetic the tables drive.
+/// one. `CardId::def` in particular is a `OnceLock` read, which
+/// [`RaceWeights`]'s cost notes record as the expensive part of this whole
+/// layer.
+///
+/// Measured on its own, before [`race_statics`] existed, this was worth
+/// nothing at all; it is kept because it is strictly less work for one branch,
+/// not because a benchmark demanded it.
 #[derive(Debug, Clone, Copy)]
 struct SlotMemo {
     slot: u8,
