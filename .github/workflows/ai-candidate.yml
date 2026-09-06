@@ -36,10 +36,14 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Games per candidate-vs-champion match. Calibrated to finish in a few
-  # minutes on a GitHub-hosted runner; see this workflow's header on why it is
-  # not 3,000.
-  GAMES: '200'
+  # Games per candidate-vs-champion match. Calibrated, not guessed: a measured
+  # `greedy` vs `mcts-uct` run on a GitHub-hosted 4-vCPU runner cost 1,493 ms
+  # of single-threaded work per game, so 400 games is about 2.5 minutes of
+  # match on top of a ~30 s cached build. See this workflow's header on why it
+  # is not 3,000: at this sample size the Elo interval is roughly +/-100 points
+  # wide, which resolves "this agent is much weaker/stronger" and nothing
+  # finer.
+  GAMES: '400'
   BUDGET: 'nodes:2000'
 
 jobs:

@@ -92,11 +92,15 @@ jobs:
     name: ${{ matrix.pairing.id }}
     needs: plan
     runs-on: ubuntu-latest
-    # Sized from measured throughput, with a wide margin - see the calibration
-    # note in the PR that introduced this workflow. The slowest pairing
-    # (alphabeta vs mcts-uct, both at nodes:2000) is the one this bounds; every
-    # pairing involving a 1-ply agent is far quicker.
-    timeout-minutes: 180
+    # Calibrated, not guessed. The slowest pairing is alphabeta vs mcts-uct
+    # (the only one with two search agents), measured on a GitHub-hosted
+    # 4-vCPU runner at 2,705 ms of single-threaded work per game. At the
+    # default 3,000 games that is ~8,100 CPU-seconds, which `play_paired_match`
+    # spreads across the runner's four cores in roughly 37 minutes. Every other
+    # pairing is faster - a 1-ply pair finishes in seconds. 120 minutes is
+    # therefore a ~3x margin, chosen to still fail reasonably promptly if a
+    # match ever hangs.
+    timeout-minutes: 120
     strategy:
       # One flaky or slow pairing should not throw away the other twenty; the
       # aggregation job refuses to publish an incomplete round robin anyway, so
