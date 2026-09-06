@@ -115,6 +115,20 @@ impl AgeSupply {
     pub fn plain_dealt_fraction(&self) -> f64 {
         frac(self.plain_dealt, self.plain_cards)
     }
+
+    /// The chance that any one *named* guild of this age reaches the table
+    /// when the age is dealt: `guild_dealt / guild_cards`, which is 3/7 for
+    /// Age III and zero for Ages I and II, which print no guild.
+    ///
+    /// The companion to [`AgeSupply::plain_dealt_fraction`], and the reason it
+    /// has to exist separately: Age III's two halves are dealt at *very*
+    /// different rates (17 of 20 plain cards, 3 of 7 guilds), so a pool
+    /// statistic that treats the whole undealt deck as equally likely
+    /// systematically over-weights guilds.
+    #[inline]
+    pub fn guild_dealt_fraction(&self) -> f64 {
+        frac(self.guild_dealt, self.guild_cards)
+    }
 }
 
 /// Bitmasks and lookups over the static game data.

@@ -36,7 +36,9 @@
 //! and the wonder-fodder pile, all of which stay public across an age
 //! boundary.
 
-use duels_core::data::{CardId, Resource, Science, NUM_CARDS, NUM_RESOURCES, NUM_SCIENCE};
+use duels_core::data::{
+    CardId, CardType, Resource, Science, NUM_CARDS, NUM_RESOURCES, NUM_SCIENCE,
+};
 use duels_core::state::Phase;
 use duels_core::{cost, GameState, Player};
 use duels_strategy::board::Board;
@@ -44,8 +46,10 @@ use duels_strategy::context::Expectations;
 use duels_strategy::masks::masks;
 use duels_strategy::science::token_value;
 
-use crate::terms::{self, DevSupply, MilSmoothing, MAX_UNITS};
-use crate::{CoinModel, Config, MenuShieldPricing, MenuWeights, MilitaryModel};
+use crate::terms::{self, DevSupply, GuildTable, MilSmoothing, WonderBudget, MAX_UNITS};
+use crate::{
+    CoinModel, Config, GuildPricing, MenuFloor, MenuShieldPricing, MenuWeights, MilitaryModel,
+};
 
 /// The largest shield gain one card can carry: the biggest printed red card
 /// plus the Strategy token's bonus. The `shield_delta` table is sized to it.
@@ -86,6 +90,28 @@ pub struct TakeValue {
     /// The per-unit trade price they face for each resource.
     pub prices: [u16; NUM_RESOURCES],
     marginal_want: [[f64; NUM_RESOURCES]; MAX_UNITS],
+    /// The root-fixed majority projections a guild card is priced against.
+    guild: GuildTable,
+    /// Whether [`TakeValue::free_value`] consults it.
+    guild_pricing: GuildPricing,
+    /// What one more commercial card is worth to this player for the coins it
+    /// adds to every future discard: `coin_marginal · rate · decisions_left`,
+    /// already multiplied by the term's own weight so a weight of zero is an
+    /// exact no-op. See [`terms::yellow_equity`], of which this is the
+    /// per-card finite difference.
+    yellow_step: f64,
+}
+
+/// The root-fixed tables [`TakeValue::of`] reads, bundled so its signature
+/// stays one a reader can hold in their head.
+#[derive(Debug, Clone, Copy)]
+pub struct TakeContext<'a> {
+    /// The development supply statistics.
+    pub supply: &'a DevSupply,
+    /// The military band smoothing.
+    pub smoothing: &'a MilSmoothing,
+    /// The guild majority projections.
+    pub guild: &'a GuildTable,
 }
 
 impl TakeValue {
@@ -99,12 +125,16 @@ impl TakeValue {
     pub fn of(
         state: &GameState,
         player: Player,
-        supply: &DevSupply,
-        sm: &MilSmoothing,
+        tables: TakeContext<'_>,
         config: &Config,
         liquidity_weight: f64,
         military_multiplier: (f64, f64),
     ) -> TakeValue {
+        let TakeContext {
+            supply,
+            smoothing: sm,
+            guild,
+        } = tables;
         let e = &config.eval;
         let smooth_coins = config.coin_model == CoinModel::Smooth;
         // Under the legacy military model the pawn is priced flat, so one more
@@ -167,22 +197,38 @@ impl TakeValue {
             }
         });
 
+        let coin_marginal = terms::coin_marginal(
+            state,
+            player,
+            smooth_coins,
+            liquidity_weight,
+            e.coins_div3,
+            e.coin_smooth_beta,
+            e.coin_smooth_ref,
+        );
+        // The menu has to agree with the main evaluation about what a yellow
+        // card is worth, or a card the evaluation likes reads as a card the
+        // opponent would not bother taking. Zero weight, zero step, exactly.
+        let yellow_step = if e.yellow_equity == 0.0 {
+            0.0
+        } else {
+            e.yellow_equity
+                * coin_marginal
+                * e.yellow_discard_rate
+                * terms::decisions_left(state, player)
+        };
+
         TakeValue {
             player,
             shield_delta,
             strategy,
+            guild: *guild,
+            guild_pricing: config.guild_pricing,
+            yellow_step,
             pricing: config.menu_shield_pricing,
             military_slope: legacy_military_step
                 .unwrap_or_else(|| terms::military_slope(state, player, sm)),
-            coin_marginal: terms::coin_marginal(
-                state,
-                player,
-                smooth_coins,
-                liquidity_weight,
-                e.coins_div3,
-                e.coin_smooth_beta,
-                e.coin_smooth_ref,
-            ),
+            coin_marginal,
             ladder_step,
             pair_bonus,
             held: me.science(),
@@ -312,7 +358,32 @@ impl TakeValue {
         }
         v += self.production_value(card);
         v += chain.equity(self.player, card);
+        v += self.guild_value(card);
+        if def.kind == CardType::Commercial {
+            v += self.yellow_step;
+        }
         v
+    }
+
+    /// What a guild card's majority scoring is worth to this player.
+    ///
+    /// **Zero for every non-guild card**, and zero throughout under
+    /// [`GuildPricing::Unpriced`], which is what makes the whole thing an exact
+    /// no-op when it is switched off.
+    ///
+    /// Every guild in the base game prints `victory_points == 0` and `coins ==
+    /// 0` — verified card by card in `tests::every_guild_scores_through_a_
+    /// majority_and_not_through_printed_points` — so the two terms
+    /// [`TakeValue::free_value`] starts from contribute nothing for a guild and
+    /// this is the whole of its value. Without it a face-up guild priced out at
+    /// `−cost × coin_marginal`: strictly negative, always, so the agent would
+    /// never take one and never deny one.
+    #[inline]
+    pub fn guild_value(&self, card: CardId) -> f64 {
+        match self.guild_pricing {
+            GuildPricing::Unpriced => 0.0,
+            GuildPricing::Projected => self.guild.card_value(card, self.coin_marginal),
+        }
     }
 }
 
@@ -468,6 +539,16 @@ pub fn chain_equity(state: &GameState, p: Player, table: &ChainTable) -> f64 {
 // The opponent's menu
 // ---------------------------------------------------------------------------
 
+/// The parts of [`crate::Config`] [`menu_term`] reads, snapshotted at the root
+/// so the term keeps its original signature.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MenuOptions {
+    /// What the menu falls back on when nothing on the board is affordable.
+    pub floor: MenuFloor,
+    /// `c_soft` in the soft affordability weight. Zero is the hard cutoff.
+    pub afford_soft: f64,
+}
+
 /// Everything [`menu_term`] needs that is fixed at the root.
 #[derive(Debug, Clone)]
 pub struct MenuTables {
@@ -481,6 +562,10 @@ pub struct MenuTables {
     priced: u128,
     /// The root state, for pricing a card that only appears later.
     root_state: GameState,
+    options: MenuOptions,
+    /// Per-effect wonder prices, for [`MenuFloor::DiscardAndWonder`]. All zero
+    /// unless something asked for them.
+    wonders: WonderBudget,
 }
 
 impl MenuTables {
@@ -494,6 +579,8 @@ impl MenuTables {
             take,
             chain,
             root_state: *state,
+            options: MenuOptions::default(),
+            wonders: WonderBudget::empty(),
         }
     }
 
@@ -504,6 +591,26 @@ impl MenuTables {
         board: &Board,
         take: [TakeValue; 2],
         chain: ChainTable,
+    ) -> MenuTables {
+        MenuTables::with(
+            state,
+            board,
+            take,
+            chain,
+            MenuOptions::default(),
+            WonderBudget::empty(),
+        )
+    }
+
+    /// [`MenuTables::of`] with the menu's own options and the wonder prices the
+    /// [`MenuFloor::DiscardAndWonder`] floor needs.
+    pub fn with(
+        state: &GameState,
+        board: &Board,
+        take: [TakeValue; 2],
+        chain: ChainTable,
+        options: MenuOptions,
+        wonders: WonderBudget,
     ) -> MenuTables {
         let mut cached = [Box::new([0.0; NUM_CARDS]), Box::new([0.0; NUM_CARDS])];
         let mut mask = board.face_up;
@@ -521,7 +628,42 @@ impl MenuTables {
             take,
             chain,
             root_state: *state,
+            options,
+            wonders,
         }
+    }
+
+    /// `w_q`: the best wonder `q` could afford to build out of the position
+    /// `next`, net of what it costs them, at root-fixed prices.
+    ///
+    /// `None` when they hold no unbuilt wonder they can pay for, or when the
+    /// seven-wonder cap has already closed
+    /// ([`terms::wonder_slots_left`]) — in which case the menu simply does not
+    /// carry the entry, rather than carrying a zero, because "no wonder is
+    /// available" and "an available wonder is worth nothing" are different
+    /// positions.
+    fn best_affordable_wonder(&self, next: &GameState, q: Player) -> Option<f64> {
+        if terms::wonder_slots_left(next) <= 0.0 {
+            return None;
+        }
+        let ps = next.player(q);
+        let coins = ps.coins();
+        let coin_marginal = self.take[q.index()].coin_marginal;
+        let mut best: Option<f64> = None;
+        for w in ps.wonders() {
+            if ps.has_built_wonder(w) {
+                continue;
+            }
+            let price = cost::wonder_cost(next, q, w).coins;
+            if price > coins {
+                continue;
+            }
+            let v = self.wonders.power(q, w) - f64::from(price) * coin_marginal;
+            if best.is_none_or(|b| v > b) {
+                best = Some(v);
+            }
+        }
+        best
     }
 
     /// `v_q(card)`, from the cache when the card was already face up at the
@@ -585,11 +727,17 @@ pub fn menu_term(
     }
     let q = next.current_player();
     let coins = next.player(q).coins();
+    let soft = tables.options.afford_soft;
 
     // One pass to find the largest value, a second to sum the exponentials
     // shifted by it — the usual log-sum-exp guard, which also keeps the answer
     // finite when the whole menu is worthless.
-    let mut values: [f64; duels_core::layout::SLOTS] = [0.0; duels_core::layout::SLOTS];
+    //
+    // Two past the slot count so the floor entries fit: at most one discard and
+    // one wonder.
+    const CAP: usize = duels_core::layout::SLOTS + 2;
+    let mut values: [f64; CAP] = [0.0; CAP];
+    let mut afford: [f64; CAP] = [0.0; CAP];
     let mut n = 0usize;
     let mut best = f64::NEG_INFINITY;
     let mut mask = next.accessible_slots();
@@ -599,28 +747,90 @@ pub fn menu_term(
         let Some(card) = next.face_up_card(slot) else {
             continue;
         };
-        if cost::card_cost(next, q, card).coins > coins {
+        let price = cost::card_cost(next, q, card).coins;
+        let weight = if soft > 0.0 {
+            afford_weight(coins, price, soft)
+        } else if price > coins {
             continue;
-        }
+        } else {
+            1.0
+        };
         let v = tables.value(q, card);
         values[n] = v;
+        afford[n] = weight;
         n += 1;
         if v > best {
             best = v;
         }
     }
+
+    // The floor. A turn never actually degrades to nothing: at minimum it is
+    // worth the discard it can always take, and possibly a wonder the player
+    // can already pay for. Without those entries an opponent one coin short of
+    // affording anything reads identically to an opponent staring at a Palace,
+    // which is wrong in both directions — and, worse, it flattens the reward
+    // for taking their *last* affordable card, since the position after reads
+    // as a hard zero either way.
+    if tables.options.floor != MenuFloor::None {
+        let d = f64::from(cost::discard_reward(next, q)) * tables.take[q.index()].coin_marginal;
+        values[n] = d;
+        afford[n] = 1.0;
+        n += 1;
+        if d > best {
+            best = d;
+        }
+    }
+    if tables.options.floor == MenuFloor::DiscardAndWonder {
+        if let Some(v) = tables.best_affordable_wonder(next, q) {
+            values[n] = v;
+            afford[n] = 1.0;
+            n += 1;
+            if v > best {
+                best = v;
+            }
+        }
+    }
+
     if n == 0 {
-        // Nothing on the table they can pay for: their turn degrades to a
-        // discard. Worth nothing rather than minus infinity.
+        // Nothing on the table they can pay for and no floor asked for: their
+        // turn degrades to a discard. Worth nothing rather than minus infinity.
         return 0.0;
     }
-    let sum: f64 = values[..n].iter().map(|v| ((v - best) / w.tau).exp()).sum();
+    // The `soft == 0` branch is the pre-existing expression, character for
+    // character, so the hard cutoff stays bit-identical rather than
+    // approximately identical: `1.0 * x` would in fact reproduce it, but that
+    // is a claim about IEEE-754 rather than about this code, and
+    // `tests/v4_identity.rs` should not have to rest on it.
+    let sum: f64 = if soft > 0.0 {
+        (0..n)
+            .map(|i| afford[i] * ((values[i] - best) / w.tau).exp())
+            .sum::<f64>()
+            .max(f64::MIN_POSITIVE)
+    } else {
+        values[..n].iter().map(|v| ((v - best) / w.tau).exp()).sum()
+    };
     let menu = best + w.tau * sum.ln();
     if q == me {
         w.lambda * menu
     } else {
         -w.lambda * menu
     }
+}
+
+/// How much weight a card the player is `coins − price` coins away from
+/// affording carries on the menu.
+///
+/// The hard cutoff `menu_term` uses by default says a card one coin out of
+/// reach is worth exactly nothing to the next mover, which is not true: they
+/// can take a cheap card now and it will very often still be there, or the
+/// board can hand them the coin. `w_j = σ((coins − price) / c_soft)` says it
+/// smoothly instead, and at `c_soft → 0` it *is* the hard cutoff.
+///
+/// Only ever called with `c_soft > 0`.
+#[inline]
+fn afford_weight(coins: u16, price: u16, c_soft: f64) -> f64 {
+    let slack = f64::from(coins) - f64::from(price);
+    1.0 / (1.0 + (-slack / c_soft).exp())
 }
 
 #[cfg(test)]
@@ -673,10 +883,14 @@ mod tests {
         let expected = Expectations::of(&board);
         let sm = MilSmoothing::of(10.0, 0.8, 0.35, 0.55);
         let cfg = Config::default();
-        let take = [
-            TakeValue::of(state, Player::One, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
-            TakeValue::of(state, Player::Two, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
-        ];
+        let guilds = GuildTable::of(state, &supply, &cfg.eval);
+        let ctx = TakeContext {
+            supply: &supply,
+            smoothing: &sm,
+            guild: &guilds,
+        };
+        let take =
+            [Player::One, Player::Two].map(|p| TakeValue::of(state, p, ctx, &cfg, 1.0, (1.0, 1.0)));
         let chain = ChainTable::of(state, &board, &expected, &take);
         (chain, take)
     }
@@ -754,10 +968,14 @@ mod tests {
         let expected = Expectations::of(&board);
         let sm = MilSmoothing::of(4.0, 0.8, 0.35, 0.55);
         let cfg = Config::default();
-        let take = [
-            TakeValue::of(&st, Player::One, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
-            TakeValue::of(&st, Player::Two, &supply, &sm, &cfg, 1.0, (1.0, 1.0)),
-        ];
+        let guilds = GuildTable::of(&st, &supply, &cfg.eval);
+        let ctx = TakeContext {
+            supply: &supply,
+            smoothing: &sm,
+            guild: &guilds,
+        };
+        let take =
+            [Player::One, Player::Two].map(|p| TakeValue::of(&st, p, ctx, &cfg, 1.0, (1.0, 1.0)));
         let chain = ChainTable::of(&st, &board, &expected, &take);
         let tables = MenuTables::of(&st, &board, take, chain);
         let w = MenuWeights {
@@ -792,5 +1010,288 @@ mod tests {
 
         // ...and the term stands down once the age has turned over.
         assert_eq!(menu_term(&st, Player::One, 1, &tables, &w), 0.0);
+    }
+
+    // -----------------------------------------------------------------
+    // Round five: guild pricing, the menu floor, soft affordability
+    // -----------------------------------------------------------------
+
+    /// Everything [`menu_term`] needs, under an explicit configuration.
+    fn tables_for(state: &GameState, cfg: Config) -> MenuTables {
+        let board = Board::of(state);
+        let supply = DevSupply::of_with(&board, cfg.supply_model);
+        let expected = Expectations::of(&board);
+        let sm = MilSmoothing::of(10.0, 0.8, 0.35, 0.55);
+        let guilds = GuildTable::of(state, &supply, &cfg.eval);
+        let ctx = TakeContext {
+            supply: &supply,
+            smoothing: &sm,
+            guild: &guilds,
+        };
+        let take =
+            [Player::One, Player::Two].map(|p| TakeValue::of(state, p, ctx, &cfg, 1.0, (1.0, 1.0)));
+        let chain = ChainTable::of(state, &board, &expected, &take);
+        let wonders = terms::WonderBudget::of(state, &take, &chain, &cfg.eval);
+        MenuTables::with(
+            state,
+            &board,
+            take,
+            chain,
+            MenuOptions {
+                floor: cfg.menu_floor,
+                afford_soft: cfg.menu_afford_soft,
+            },
+            wonders,
+        )
+    }
+
+    /// **The bug, in one position.** A face-up Scientists Guild, in an Age III
+    /// where both players have been collecting green cards, priced out at a
+    /// strictly negative number — every guild prints zero points and zero
+    /// coins, so the pricer saw a costly card with no value at all and the
+    /// agent would neither take it nor deny it.
+    #[test]
+    fn a_face_up_guild_used_to_price_out_negative_and_now_does_not() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "scientists-guild"), (19, "palace")])
+            .built(Player::One, &["workshop", "apothecary", "library"])
+            .built(Player::Two, &["dispensary", "school", "laboratory"])
+            .coins(Player::One, 30)
+            .coins(Player::Two, 30)
+            .current(Player::One)
+            .build();
+
+        let unpriced = tables_for(
+            &st,
+            Config {
+                guild_pricing: GuildPricing::Unpriced,
+                ..Config::default()
+            },
+        );
+        let projected = tables_for(
+            &st,
+            Config {
+                guild_pricing: GuildPricing::Projected,
+                ..Config::default()
+            },
+        );
+        let guild = card("scientists-guild");
+
+        let before = unpriced.value(Player::One, guild);
+        assert!(
+            before < 0.0,
+            "the whole premise of this round: a face-up guild was worth {before}"
+        );
+        let after = projected.value(Player::One, guild);
+        assert!(
+            after > before,
+            "guild pricing did not raise the guild's value: {before} -> {after}"
+        );
+        assert!(
+            after > 0.0,
+            "three green cards each side and the guild is still worth {after}"
+        );
+
+        // ...and it is the *guild* that moved, not everything. A plain card in
+        // the same structure is priced identically under both.
+        assert_eq!(
+            unpriced.value(Player::One, card("palace")).to_bits(),
+            projected.value(Player::One, card("palace")).to_bits(),
+        );
+    }
+
+    /// Both players read the same projected basis, because the rule pays the
+    /// guild's owner on the higher of the two counts whether or not it is their
+    /// own. The race falls out of that, with no denial rule anywhere.
+    #[test]
+    fn a_guild_is_worth_the_same_projected_basis_to_whoever_ends_up_with_it() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "magistrate-s-guild"), (19, "palace")])
+            .built(Player::One, &["altar", "baths", "theater"])
+            .built(Player::Two, &["temple"])
+            .coins(Player::One, 30)
+            .coins(Player::Two, 30)
+            .current(Player::One)
+            .build();
+        let t = tables_for(&st, Config::default());
+        let guild = card("magistrate-s-guild");
+        // Player Two leads on nothing here and still values the guild, because
+        // it would pay them on Player One's three blue cards.
+        assert!(t.value(Player::Two, guild) > 0.0);
+        // The two differ only through the coin channel and the cost each
+        // player faces, both of which are per-player quantities; the points
+        // channel is identical.
+        let g = t.take(Player::One).guild_value(guild);
+        let h = t.take(Player::Two).guild_value(guild);
+        assert!(
+            (g - h).abs() < 1.0,
+            "the two sides read wildly different guild values: {g} vs {h}"
+        );
+    }
+
+    /// **The floor.** A position in which the next mover can afford nothing at
+    /// all reads as a flat zero without it — indistinguishable from a position
+    /// in which their turn is genuinely worthless.
+    #[test]
+    fn the_menu_floor_replaces_the_hard_zero_with_the_discard_the_player_can_always_take() {
+        // Player Two is to move with no coins, facing a Palace they cannot
+        // begin to pay for.
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace")])
+            .built(Player::Two, &["tavern", "brewery"])
+            .coins(Player::One, 20)
+            .coins(Player::Two, 0)
+            .current(Player::Two)
+            .build();
+        let w = MenuWeights {
+            lambda: 0.6,
+            tau: 1.5,
+        };
+
+        let none = tables_for(&st, Config::default());
+        assert_eq!(
+            menu_term(&st, Player::One, 3, &none, &w),
+            0.0,
+            "test setup: nothing here is affordable, so the old menu is flat zero"
+        );
+
+        let floored = tables_for(
+            &st,
+            Config {
+                menu_floor: MenuFloor::Discard,
+                ..Config::default()
+            },
+        );
+        let with_floor = menu_term(&st, Player::One, 3, &floored, &w);
+        assert!(
+            with_floor < 0.0,
+            "Player Two is to move, so their discard is a cost to Player One: {with_floor}"
+        );
+
+        // ...and the floor is worth more to a yellow-heavy city, which is the
+        // whole point of reading `discard_reward` rather than a constant.
+        let poorer = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace")])
+            .coins(Player::One, 20)
+            .coins(Player::Two, 0)
+            .current(Player::Two)
+            .build();
+        let poor_tables = tables_for(
+            &poorer,
+            Config {
+                menu_floor: MenuFloor::Discard,
+                ..Config::default()
+            },
+        );
+        assert!(
+            menu_term(&poorer, Player::One, 3, &poor_tables, &w) > with_floor,
+            "two commercial cards must make the fallback discard worth more"
+        );
+    }
+
+    /// The wonder half of the floor: a player who can afford a wonder is not
+    /// starved even when the structure is out of reach.
+    #[test]
+    fn the_wonder_floor_notices_a_wonder_the_starved_player_can_still_afford() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace")])
+            .wonders(Player::Two, &["the-pyramids"])
+            .built(
+                Player::Two,
+                &["quarry", "stone-pit", "shelf-quarry", "press"],
+            )
+            .coins(Player::One, 20)
+            .coins(Player::Two, 0)
+            .current(Player::Two)
+            .build();
+        let w = MenuWeights {
+            lambda: 0.6,
+            tau: 1.5,
+        };
+        let cfg = |floor| Config {
+            menu_floor: floor,
+            ..Config::default()
+        };
+        let discard = tables_for(&st, cfg(MenuFloor::Discard));
+        let both = tables_for(&st, cfg(MenuFloor::DiscardAndWonder));
+        let a = menu_term(&st, Player::One, 3, &discard, &w);
+        let b = menu_term(&st, Player::One, 3, &both, &w);
+        assert!(
+            b < a,
+            "the Pyramids are free to this city and worth nine points, so the \
+             wonder entry must make Player Two's turn look better (and so the \
+             term, signed towards Player One, smaller): {a} vs {b}"
+        );
+    }
+
+    /// Soft affordability lets a card the player is narrowly short on carry
+    /// partial weight — which the hard cutoff cannot express at all: under it,
+    /// an expensive card the next mover cannot *quite* pay for is exactly as
+    /// good as no card.
+    ///
+    /// The test is that the Palace's presence in the structure changes what the
+    /// position is worth. Under the hard cutoff it provably does not.
+    #[test]
+    fn soft_affordability_gives_a_narrowly_unaffordable_card_partial_weight() {
+        let with_palace = |slots: &[(u8, &str)]| {
+            StateBuilder::new()
+                .age(3)
+                .open_slots(slots)
+                .coins(Player::One, 20)
+                // Enough for the Clay Pool, which is free, and three coins
+                // short of the Palace, which is not.
+                .coins(Player::Two, 3)
+                .current(Player::Two)
+                .build()
+        };
+        let rich = with_palace(&[(18, "palace"), (19, "clay-pool")]);
+        let thin = with_palace(&[(19, "clay-pool")]);
+        let w = MenuWeights {
+            lambda: 0.6,
+            tau: 1.5,
+        };
+        let hard = Config::default();
+        let soft = Config {
+            menu_afford_soft: 3.0,
+            ..Config::default()
+        };
+        // The setup: the Palace really is out of reach.
+        assert!(cost::card_cost(&rich, Player::Two, card("palace")).coins > 3);
+
+        // Under the hard cutoff the Palace is invisible: the two positions read
+        // *identically*, bit for bit.
+        let t = tables_for(&rich, hard);
+        assert_eq!(
+            menu_term(&rich, Player::One, 3, &t, &w).to_bits(),
+            menu_term(&thin, Player::One, 3, &t, &w).to_bits(),
+            "an unaffordable Palace must be worth exactly nothing under the \
+             hard cutoff, or this test is not about the cutoff"
+        );
+
+        // Under the soft one it is not.
+        let t = tables_for(&rich, soft);
+        let a = menu_term(&rich, Player::One, 3, &t, &w);
+        let b = menu_term(&thin, Player::One, 3, &t, &w);
+        assert!(
+            a < b,
+            "a Palace three coins out of reach must still make Player Two's \
+             menu better, and so the term (signed towards Player One) smaller: \
+             {a} vs {b}"
+        );
+
+        // The weight itself: a card exactly affordable sits at one half, and
+        // the function is monotone in the slack. Half rather than one is the
+        // formula's own choice and it deflates every menu uniformly; what it
+        // buys is that "one coin short" and "ten coins short" stop being the
+        // same position.
+        assert!((afford_weight(5, 5, 2.0) - 0.5).abs() < 1e-12);
+        assert!(afford_weight(6, 5, 2.0) > 0.5);
+        assert!(afford_weight(4, 5, 2.0) < 0.5);
+        assert!(afford_weight(4, 5, 2.0) > afford_weight(0, 5, 2.0));
     }
 }

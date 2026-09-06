@@ -27,8 +27,9 @@
 //! means something read what it should not have.
 
 use duels_agent_phased::{
-    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel,
-    MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent, RailModel, Root, WonderModel,
+    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel, EvalWeights,
+    GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent,
+    RailModel, Root, SupplyModel, WonderModel,
 };
 use duels_agents_api::{Agent, Budget};
 use duels_core::observation::Observation;
@@ -339,6 +340,36 @@ fn the_property_holds_under_every_model_combination() {
             }
         }
     }
+    // Round five's options. Guild pricing walks both cities and both players'
+    // wonder holdings, the menu floor reads `discard_reward` and every unbuilt
+    // wonder's cost on the post-outcome state, soft affordability widens the
+    // menu to cards the mover cannot pay for — which is *more* cards read out
+    // of the structure, not fewer — and the supply weighting changes the pool
+    // walk itself. Every one of those is a new set of reads.
+    for guild_pricing in [GuildPricing::Unpriced, GuildPricing::Projected] {
+        for menu_floor in [
+            MenuFloor::None,
+            MenuFloor::Discard,
+            MenuFloor::DiscardAndWonder,
+        ] {
+            for supply_model in [SupplyModel::Raw, SupplyModel::Dealt] {
+                for menu_afford_soft in [0.0, 3.0] {
+                    configs.push(Config {
+                        guild_pricing,
+                        menu_floor,
+                        supply_model,
+                        menu_afford_soft,
+                        eval: EvalWeights {
+                            guild_projection: 1.0,
+                            yellow_equity: 1.0,
+                            ..Config::default().eval
+                        },
+                        ..Config::default()
+                    });
+                }
+            }
+        }
+    }
     for (i, config) in configs.iter().enumerate() {
         for seed in 0..6u64 {
             for &steps in &[7usize, 17, 29, 43] {
@@ -574,8 +605,18 @@ fn an_age_ending_action_cannot_let_the_rails_read_the_next_age() {
 // Round four: resolving a pending effect must read only public information.
 // ---------------------------------------------------------------------------
 
-/// Every configuration round four adds, exercised together.
+/// Every configuration rounds four and five add, exercised together.
+///
+/// Round five's entries belong here as much as in the model sweep: the
+/// `DiscardAndWonder` floor prices a wonder off the *post-outcome* state, and
+/// the age-ending and pending-effect tests are the two places where that state
+/// is one the throwaway sample invented.
 fn round_four_configs() -> Vec<Config> {
+    let all_on = EvalWeights {
+        guild_projection: 1.0,
+        yellow_equity: 1.0,
+        ..Config::default().eval
+    };
     vec![
         Config {
             pending_model: PendingModel::Completed,
@@ -595,6 +636,26 @@ fn round_four_configs() -> Vec<Config> {
             wonder_model: WonderModel::Budget,
             ..Config::default()
         },
+        Config {
+            guild_pricing: GuildPricing::Projected,
+            menu_floor: MenuFloor::DiscardAndWonder,
+            menu_afford_soft: 3.0,
+            supply_model: SupplyModel::Dealt,
+            eval: all_on,
+            ..Config::default()
+        },
+        Config {
+            pending_model: PendingModel::Completed,
+            wonder_model: WonderModel::Budget,
+            destroy_replace_discount: true,
+            guild_pricing: GuildPricing::Projected,
+            menu_floor: MenuFloor::DiscardAndWonder,
+            menu_afford_soft: 3.0,
+            supply_model: SupplyModel::Dealt,
+            eval: all_on,
+            ..Config::default()
+        },
+        Config::v4(),
     ]
 }
 

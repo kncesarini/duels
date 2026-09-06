@@ -110,10 +110,44 @@ fn main() {
         ..completed
     };
 
+    // Round five's own increment. Guild pricing is one extra table at the root
+    // (ten majority counts and ten pool fractions) and one branch per card
+    // priced; the yellow term is one `count` per player per evaluated state.
+    // The two off-by-default options are the ones worth watching: the menu
+    // floor adds a `discard_reward` and, at `DiscardAndWonder`, a
+    // `wonder_cost` per unbuilt wonder *per chance outcome*, and the soft
+    // affordability weight stops the hard cutoff from skipping unaffordable
+    // cards, so it prices every accessible slot rather than only the ones in
+    // reach.
+    let guild_off = Config {
+        guild_pricing: duels_agent_phased::GuildPricing::Unpriced,
+        ..Config::default()
+    };
+    let yellow_off = Config {
+        eval: EvalWeights {
+            yellow_equity: 0.0,
+            ..Config::default().eval
+        },
+        ..Config::default()
+    };
+    let floor = Config {
+        menu_floor: duels_agent_phased::MenuFloor::DiscardAndWonder,
+        ..Config::default()
+    };
+    let soft = Config {
+        menu_afford_soft: 3.0,
+        ..Config::default()
+    };
+    let dealt = Config {
+        supply_model: duels_agent_phased::SupplyModel::Dealt,
+        ..Config::default()
+    };
+
     let mut rows: Vec<Row> = [
         ("v1 (the round-one agent)", Config::v1()),
         ("v2 (the round-two agent)", Config::v2()),
         ("v3 (the round-three agent)", Config::v3()),
+        ("v4 (the round-four agent)", Config::v4()),
         ("default, menu and chain equity off", no_chain),
         ("default, menu off", menu_off),
         ("default, rails off", rails_off),
@@ -122,6 +156,11 @@ fn main() {
         ("default, pending effects completed", completed),
         ("default + the wonder budget model", budget),
         ("default + the destroy discount", discounted),
+        ("default, guilds unpriced", guild_off),
+        ("default, yellow term off", yellow_off),
+        ("default + the discard/wonder floor", floor),
+        ("default + soft affordability", soft),
+        ("default + the dealt supply weighting", dealt),
         ("default", Config::default()),
     ]
     .into_iter()

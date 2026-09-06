@@ -365,7 +365,10 @@ fn config_v2_switches_off_every_round_three_option() {
     assert_eq!(v2.eval.imminent, 0.0);
     assert_eq!(v2.eval.production_lock_in, 0.0);
     assert_eq!(v2.eval.military_band, 2.0);
-    // ...and everything round two did not touch is still at its own default.
+    // ...and everything round two did not touch is still at its own default —
+    // against `Config::v3().eval` rather than `EvalWeights::default()`, because
+    // from round five on the *current* defaults include weights this snapshot
+    // has to hold at zero. `tests/v4_identity.rs` is where those are pinned.
     assert_eq!(
         v2.eval,
         EvalWeights {
@@ -373,7 +376,7 @@ fn config_v2_switches_off_every_round_three_option() {
             imminent: 0.0,
             production_lock_in: 0.0,
             menu: MenuWeights::default(),
-            ..EvalWeights::default()
+            ..Config::v3().eval
         }
     );
 }
