@@ -13,7 +13,7 @@
 use duels_core::cost;
 use duels_core::data::{self, CardId, Resource, TokenId, WonderId, NUM_RESOURCES};
 use duels_core::scoring::Breakdown;
-use duels_core::state::Phase;
+use duels_core::state::{Phase, MAX_WONDERS_BUILT};
 use duels_core::{GameState, Player};
 use duels_strategy::board::Board;
 use duels_strategy::masks::{iter_cards, masks, DECISIONS_PER_AGE};
@@ -104,6 +104,22 @@ pub struct DevSupply {
     /// Mid-Age-II it is partial, which is the interesting case and the reason
     /// this is a continuous factor rather than an `age == 3` branch.
     pub production_lock_in: f64,
+    /// How many brown / grey cards producing each resource the pool still
+    /// holds, **discounted by the chance each of them is ever dealt**: a card
+    /// in the current age's unknown pool appears only if it is behind a
+    /// face-down slot rather than in the box, and a card of an undealt age
+    /// only if it is not one of the three that age returns to the box unseen.
+    ///
+    /// The one term that uses it is [`crate::Config::destroy_replace_discount`]
+    /// — a destroyed production card is only permanently gone if the market
+    /// cannot print another one — so it is deliberately an *expected dealt
+    /// count*, not a raw pool count.
+    ///
+    /// Age III prints no brown or grey card at all
+    /// (`crate::tests::production_is_completely_frozen_by_age_three` counts it
+    /// off `data/cards.json`), so this goes to exactly zero once Ages I and II
+    /// are gone, and an Age III destroy is priced as the permanent loss it is.
+    pub sources: [f64; NUM_RESOURCES],
 }
 
 impl DevSupply {
@@ -138,6 +154,35 @@ impl DevSupply {
         let production = production_mask();
         let total = production.count_ones();
         let still_coming = (pool & production).count_ones();
+
+        // The chance a named card of the *current* age that is not publicly
+        // placed is behind a face-down slot rather than in the box — the same
+        // quantity `duels_strategy::Expectations::p_hidden` reports, derived
+        // here from the board directly so `DevSupply` keeps its one-argument
+        // constructor.
+        let unknown = board.unknown_pool.count_ones();
+        let p_hidden = if unknown == 0 {
+            0.0
+        } else {
+            f64::from(u32::from(board.hidden_slot_count())) / f64::from(unknown)
+        };
+        let mut sources = [0.0f64; NUM_RESOURCES];
+        for card in iter_cards(pool & production) {
+            let def = card.def();
+            let p_dealt = if board.unknown_pool & (1u128 << card.index()) != 0 {
+                p_hidden
+            } else {
+                duels_strategy::masks()
+                    .age_supply(def.age)
+                    .plain_dealt_fraction()
+            };
+            for (r, &n) in def.produces.iter().enumerate() {
+                if n > 0 {
+                    sources[r] += p_dealt * f64::from(n);
+                }
+            }
+        }
+
         DevSupply {
             f: std::array::from_fn(|k| std::array::from_fn(|r| f64::from(counts[k][r]) * scale)),
             pool_size,
@@ -146,6 +191,7 @@ impl DevSupply {
             } else {
                 1.0 - f64::from(still_coming) / f64::from(total)
             },
+            sources,
         }
     }
 }
@@ -899,11 +945,43 @@ pub fn card_and_token_vp(b: &Breakdown) -> f64 {
     f64::from(b.civilian + b.scientific + b.commercial + b.guilds + b.wonders + b.progress_tokens)
 }
 
+/// How many of the game's seven shared wonder slots are still open.
+///
+/// The base game stops at [`MAX_WONDERS_BUILT`] wonders **between both
+/// players**: the eighth is never built, whoever drafted it. Read on the
+/// post-action state, so a candidate that builds the seventh wonder is scored
+/// against a board with no slots left.
+pub fn wonder_slots_left(state: &GameState) -> f64 {
+    f64::from(MAX_WONDERS_BUILT.saturating_sub(state.wonders_built_total()))
+}
+
+/// How many wonders `p` has drafted and not yet built.
+pub fn unbuilt_wonders(state: &GameState, p: Player) -> f64 {
+    let ps = state.player(p);
+    ps.wonders().filter(|&w| !ps.has_built_wonder(w)).count() as f64
+}
+
 /// A rough, hand-tuned "how strong is this wonder" score, summed over `p`'s
 /// drafted-but-unbuilt wonders. Without it the evaluation cannot tell two
 /// wonder-draft picks apart, since the point projection only credits *built*
 /// wonders.
+///
+/// # The seven-wonder cap
+///
+/// The sum is zero once [`wonder_slots_left`] is, and that is a **bug fix**
+/// rather than a new model: the base game builds seven wonders between the two
+/// players and no more, so a player still holding an unbuilt Pyramids after
+/// the seventh wonder goes up is holding a card that can never be played. This
+/// term used to keep paying half of [`wonder_power`] for it, in every position
+/// for the rest of the game, for both players — which is not even symmetric,
+/// since the two sides rarely hold the same number of dead wonders. It is
+/// unconditional (not behind a [`crate::Config`] knob) for the same reason
+/// `next_age_start`'s doubled magnitude was: it is arithmetic that was simply
+/// wrong. `tests::an_unbuildable_wonder_is_worth_nothing` pins it.
 pub fn wonder_potential(state: &GameState, p: Player) -> f64 {
+    if wonder_slots_left(state) <= 0.0 {
+        return 0.0;
+    }
     let ps = state.player(p);
     ps.wonders()
         .filter(|&w| !ps.has_built_wonder(w))
@@ -911,7 +989,12 @@ pub fn wonder_potential(state: &GameState, p: Player) -> f64 {
         .sum()
 }
 
-fn wonder_power(w: WonderId) -> f64 {
+/// The flat, effect-blind power score [`wonder_potential`] sums.
+///
+/// Every effect that is not points, coins or shields is priced at a flat `+3`
+/// ("this wonder does something"), which is what
+/// [`crate::WonderModel::Budget`] replaces with a per-effect price.
+pub fn wonder_power(w: WonderId) -> f64 {
     let def = w.def();
     let mut v = f64::from(def.victory_points)
         + f64::from(def.coins) * 0.3
@@ -931,6 +1014,236 @@ fn wonder_power(w: WonderId) -> f64 {
         v += 2.0;
     }
     v
+}
+
+// ---------------------------------------------------------------------------
+// The wonder budget model
+// ---------------------------------------------------------------------------
+
+/// Everything [`crate::WonderModel::Budget`] needs, read **once from the root
+/// position** and held fixed for every candidate action.
+///
+/// Root-fixing is the same discipline every price in this crate follows (see
+/// [`crate::blend`] and [`crate::menu`]): a candidate that builds a wonder
+/// would otherwise be credited twice, once through the wonder leaving the
+/// unbuilt set and again through `p_build` rising for everything left in it.
+///
+/// The one thing read on the post-action state is *which* wonders are still
+/// unbuilt, which is exactly the part a move genuinely changes.
+#[derive(Debug, Clone)]
+pub struct WonderBudget {
+    /// `p_build`, indexed by [`Player::index`].
+    p_build: [f64; 2],
+    /// `power_p(w)`, indexed by player and [`WonderId::index`].
+    power: [[f64; data::NUM_WONDERS]; 2],
+}
+
+impl WonderBudget {
+    /// An all-zero budget, for when the model is switched off. Never read.
+    pub fn empty() -> WonderBudget {
+        WonderBudget {
+            p_build: [0.0; 2],
+            power: [[0.0; data::NUM_WONDERS]; 2],
+        }
+    }
+
+    /// Read the budget off the root position.
+    ///
+    /// ```text
+    /// p_build(p)  = cap_share(p) · turn_factor(p)
+    /// cap_share   = min(1, slots_left / (U_p + U_opp))
+    /// turn_factor = min(1, decisions_left(p) / (U_p · turns_per_wonder))
+    /// ```
+    ///
+    /// `cap_share` is the seven-wonder cap read as a *rationing* problem
+    /// rather than a boolean: with three slots left and eight unbuilt wonders
+    /// between the two cities, no unbuilt wonder is better than three-eighths
+    /// likely to happen, and the flat model's "count them all at half price"
+    /// is simply the wrong shape. `turn_factor` is the other half of the same
+    /// question — a player with four unbuilt wonders and five decisions left
+    /// is not going to build four wonders, whatever the cap says.
+    ///
+    /// At `slots_left == 0` the whole thing is zero, which reproduces the
+    /// cap fix in [`wonder_potential`] under this model too; the fix is landed
+    /// unconditionally there anyway, because it is a bug rather than a model.
+    pub fn of(
+        state: &GameState,
+        take: &[crate::menu::TakeValue; 2],
+        chain: &crate::menu::ChainTable,
+        e: &EvalWeights,
+    ) -> WonderBudget {
+        let slots = wonder_slots_left(state);
+        let unbuilt = [
+            unbuilt_wonders(state, Player::One),
+            unbuilt_wonders(state, Player::Two),
+        ];
+        let total_unbuilt = unbuilt[0] + unbuilt[1];
+
+        let mut p_build = [0.0f64; 2];
+        let mut power = [[0.0f64; data::NUM_WONDERS]; 2];
+        for p in Player::ALL {
+            let u = unbuilt[p.index()];
+            let cap_share = if total_unbuilt <= 0.0 {
+                0.0
+            } else {
+                (slots / total_unbuilt).min(1.0)
+            };
+            let turn_factor = if u <= 0.0 {
+                0.0
+            } else {
+                (decisions_left(state, p) / (u * e.wonder_turns_per_wonder)).min(1.0)
+            };
+            p_build[p.index()] = cap_share * turn_factor;
+
+            let ps = state.player(p);
+            for w in ps.wonders() {
+                if ps.has_built_wonder(w) {
+                    continue;
+                }
+                power[p.index()][w.index()] = wonder_power_for(state, p, w, take, chain, e);
+            }
+        }
+        WonderBudget { p_build, power }
+    }
+
+    /// `p_build(p)`, for the diagnostics.
+    #[inline]
+    pub fn p_build(&self, p: Player) -> f64 {
+        self.p_build[p.index()]
+    }
+
+    /// `power_p(w)`, for the diagnostics. Zero for a wonder `p` never drafted
+    /// or has already built at the root.
+    #[inline]
+    pub fn power(&self, p: Player, w: WonderId) -> f64 {
+        self.power[p.index()][w.index()]
+    }
+}
+
+/// `Σ_unbuilt p_build(w) · power_p(w)` over the wonders `p` still holds in
+/// **this** state, at the root-fixed prices in `budget`.
+pub fn wonder_potential_budget(state: &GameState, p: Player, budget: &WonderBudget) -> f64 {
+    let f = budget.p_build[p.index()];
+    if f == 0.0 {
+        return 0.0;
+    }
+    let ps = state.player(p);
+    let table = &budget.power[p.index()];
+    ps.wonders()
+        .filter(|&w| !ps.has_built_wonder(w))
+        .map(|w| f * table[w.index()])
+        .sum()
+}
+
+/// `power_p(w)`: what building wonder `w` would actually be worth to `p`,
+/// priced effect by effect against the root position.
+///
+/// Every channel reuses a pricer that already exists rather than inventing a
+/// second one — [`crate::menu::TakeValue::coin_marginal`],
+/// [`crate::menu::TakeValue::shield_delta`] (which is
+/// [`military_shield_delta`], both players' halves and both players'
+/// multipliers included), [`crate::menu::TakeValue::produced_value`],
+/// [`crate::menu::TakeValue::free_value`] and
+/// [`duels_strategy::science::token_value`].
+///
+/// ```text
+/// power_p(w) = VP
+///            + coins·coin_marginal_p  +  opp_loses·coin_marginal_opp
+///            + shield_delta_p[shields]
+///            + play_again · extra_turn_vp
+///            + produces_choice · marginal_p(best of the group)
+///            + destroy       · max_{c ∈ opp's built cards of that colour}
+///                                    production_value_opp(c)
+///            + build_free    · max_{c ∈ discard pile} free_value_p(c)
+///            + choose_token  · E[ max over the three drawn tokens ]
+/// ```
+///
+/// `extra_turn_vp` defaults to `3.0`, which is deliberately the same number
+/// the flat model paid for "this wonder has an effect": at `p_build = 1` and
+/// no other effect firing, the two models agree on a play-again wonder, so the
+/// new one is a refinement of the old rather than a rescaling of it.
+///
+/// The progress-token channel prices each token with
+/// [`duels_strategy::science::token_value`], which is what this repository
+/// already has. That function is a good read on the tokens whose value is
+/// points or a symbol and a **flat constant** on Masonry, Mathematics,
+/// Architecture, Urbanism and Economy, whose real worth depends on the city
+/// they land in. Building those out is a follow-up; this deliberately uses
+/// what exists rather than inventing a second, unmeasured token pricer.
+pub fn wonder_power_for(
+    state: &GameState,
+    p: Player,
+    w: WonderId,
+    take: &[crate::menu::TakeValue; 2],
+    chain: &crate::menu::ChainTable,
+    e: &EvalWeights,
+) -> f64 {
+    let def = w.def();
+    let opp = p.other();
+    let mine = &take[p.index()];
+    let theirs = &take[opp.index()];
+
+    let mut v = f64::from(def.victory_points);
+    v += f64::from(def.coins) * mine.coin_marginal;
+    // Their loss is priced at *their* marginal coin, and read per player and
+    // differenced by the evaluation, so it appears exactly once.
+    v += f64::from(def.opponent_loses_coins) * theirs.coin_marginal;
+    // A wonder's shields never get the Strategy token's bonus -- that is a
+    // *military card* effect -- so the table is indexed by the printed count.
+    v += mine.shield_delta[usize::from(def.shields).min(mine.shield_delta.len() - 1)];
+    if def.play_again {
+        v += e.wonder_extra_turn_vp;
+    }
+    if let Some(group) = def.produces_choice {
+        v += mine.produced_value(&[0; NUM_RESOURCES], Some(group));
+    }
+    if let Some(kind) = def.destroy {
+        let mask = state.player(opp).built_mask() & data::statics().card_masks[kind.index()];
+        v += iter_cards(mask)
+            .map(|c| theirs.production_value(c))
+            .fold(0.0f64, f64::max);
+    }
+    if def.build_discarded_free {
+        v += state
+            .discard_pile()
+            .map(|c| mine.free_value(c, chain))
+            .fold(0.0f64, f64::max);
+    }
+    if def.choose_progress_token {
+        v += expected_best_of_three(state, p);
+    }
+    v
+}
+
+/// `E[ max over the three tokens The Great Library draws ]`, averaged over
+/// every `C(n, 3)` draw from the set-aside pile with equal probability —
+/// exactly the distribution [`duels_core::engine::chance_outcomes`] enumerates
+/// for the build itself.
+///
+/// Zero when fewer than three tokens are set aside, matching the engine: it
+/// creates no pending choice at all in that case.
+fn expected_best_of_three(state: &GameState, p: Player) -> f64 {
+    let aside: Vec<TokenId> = state.set_aside_tokens().collect();
+    if aside.len() < 3 {
+        return 0.0;
+    }
+    let values: Vec<f64> = aside.iter().map(|&t| token_value(state, p, t)).collect();
+    let n = values.len();
+    let mut total = 0.0;
+    let mut draws = 0u32;
+    for i in 0..n {
+        for j in i + 1..n {
+            for k in j + 1..n {
+                total += values[i].max(values[j]).max(values[k]);
+                draws += 1;
+            }
+        }
+    }
+    if draws == 0 {
+        0.0
+    } else {
+        total / f64::from(draws)
+    }
 }
 
 /// Cash on hand, capped: what it takes to actually *pay* for the race card
@@ -1331,5 +1644,81 @@ mod tests {
             .built(Player::Two, &slugs)
             .build();
         assert!(!second_copy_obtainable(&both_built, mortar));
+    }
+
+    /// The seven-wonder cap: a wonder nobody can ever build is worth nothing,
+    /// however good it would have been.
+    #[test]
+    fn an_unbuildable_wonder_is_worth_nothing() {
+        let with_a_slot = StateBuilder::new()
+            .age(3)
+            .wonders(Player::One, &["the-pyramids"])
+            .wonders_built(
+                Player::One,
+                &["the-colossus", "the-sphinx", "the-hanging-gardens"],
+            )
+            .wonders_built(
+                Player::Two,
+                &["piraeus", "the-appian-way", "the-great-lighthouse"],
+            )
+            .build();
+        assert_eq!(with_a_slot.wonders_built_total(), 6);
+        assert_eq!(wonder_slots_left(&with_a_slot), 1.0);
+        assert!(
+            wonder_potential(&with_a_slot, Player::One) > 0.0,
+            "an unbuilt Pyramids with a slot left is worth something"
+        );
+
+        let full = StateBuilder::new()
+            .age(3)
+            .wonders(Player::One, &["the-pyramids"])
+            .wonders_built(
+                Player::One,
+                &["the-colossus", "the-sphinx", "the-hanging-gardens"],
+            )
+            .wonders_built(
+                Player::Two,
+                &[
+                    "piraeus",
+                    "the-appian-way",
+                    "the-great-lighthouse",
+                    "the-mausoleum",
+                ],
+            )
+            .build();
+        assert_eq!(full.wonders_built_total(), MAX_WONDERS_BUILT);
+        assert_eq!(wonder_slots_left(&full), 0.0);
+        assert_eq!(unbuilt_wonders(&full, Player::One), 1.0);
+        assert_eq!(wonder_potential(&full, Player::One), 0.0);
+        assert_eq!(wonder_potential(&full, Player::Two), 0.0);
+    }
+
+    /// Age III prints no brown or grey card, so nothing destroyed in Age III
+    /// can ever be replaced — the fact
+    /// [`crate::Config::destroy_replace_discount`] rests on, counted off the
+    /// card data rather than taken on faith.
+    #[test]
+    fn no_production_source_survives_into_age_three() {
+        let mut age_three_production = 0usize;
+        for card in iter_cards(production_mask()) {
+            assert_ne!(
+                card.def().age,
+                3,
+                "{} is an Age III production card, which the destroy-replacement \
+                 model assumes cannot exist",
+                card.def().id
+            );
+            if card.def().age == 3 {
+                age_three_production += 1;
+            }
+        }
+        assert_eq!(age_three_production, 0);
+
+        // ...and the supply statistic agrees on a real Age III position.
+        let st = StateBuilder::new().age(3).build();
+        let supply = DevSupply::of(&Board::of(&st));
+        for (r, &n) in supply.sources.iter().enumerate() {
+            assert_eq!(n, 0.0, "Age III still expects to print resource {r}");
+        }
     }
 }

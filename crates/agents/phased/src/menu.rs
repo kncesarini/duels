@@ -240,17 +240,33 @@ impl TakeValue {
     }
 
     /// What a card's production would save this player.
-    fn production_value(&self, card: CardId) -> f64 {
+    ///
+    /// Public because [`crate::terms::wonder_power_for`] prices what a
+    /// destroy effect takes *off the opponent* with exactly this function,
+    /// read against the opponent's own pricing context — the same quantity,
+    /// asked from the other side, rather than a second implementation of it.
+    pub fn production_value(&self, card: CardId) -> f64 {
         let def = card.def();
+        self.produced_value(&def.produces, def.produces_choice)
+    }
+
+    /// [`TakeValue::production_value`] for a production profile that is not a
+    /// card's: a wonder's "produce one of this group, your choice" source has
+    /// no [`CardId`] to look it up from.
+    pub fn produced_value(
+        &self,
+        produces: &[u8; NUM_RESOURCES],
+        choice: Option<duels_core::data::ResourceGroup>,
+    ) -> f64 {
         let mut have = self.have;
         let mut out = 0.0;
-        for (r, &n) in def.produces.iter().enumerate() {
+        for (r, &n) in produces.iter().enumerate() {
             for _ in 0..n {
                 out += self.marginal(have[r] + 1, r);
                 have[r] += 1;
             }
         }
-        if let Some(group) = def.produces_choice {
+        if let Some(group) = choice {
             let mut best: Option<(usize, f64)> = None;
             for (r, resource) in Resource::ALL.iter().enumerate() {
                 if !group.members().contains(resource) {
@@ -276,6 +292,18 @@ impl TakeValue {
     /// prices what a move does to the opponent's races at the root, and
     /// counting it again here would double it.
     pub fn value(&self, state: &GameState, card: CardId, chain: &ChainTable) -> f64 {
+        let price = f64::from(cost::card_cost(state, self.player, card).coins);
+        self.free_value(card, chain) - price * self.coin_marginal
+    }
+
+    /// [`TakeValue::value`] with the cost term dropped: what the card is worth
+    /// to a player who does **not** have to pay for it.
+    ///
+    /// The Mausoleum's retrieval is exactly that — one card out of the discard
+    /// pile, constructed for free — so this is the price
+    /// [`crate::terms::wonder_power_for`] puts on it, rather than a second
+    /// pricing function that would drift from the one the menu uses.
+    pub fn free_value(&self, card: CardId, chain: &ChainTable) -> f64 {
         let def = card.def();
         let mut v = f64::from(def.victory_points) + f64::from(def.coins) / 3.0;
         v += self.shields_value(def.shields);
@@ -284,8 +312,7 @@ impl TakeValue {
         }
         v += self.production_value(card);
         v += chain.equity(self.player, card);
-        let price = f64::from(cost::card_cost(state, self.player, card).coins);
-        v - price * self.coin_marginal
+        v
     }
 }
 

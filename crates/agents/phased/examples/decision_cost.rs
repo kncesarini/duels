@@ -87,14 +87,42 @@ fn main() {
         ..Config::default()
     };
 
+    // Round four's own increment. The pending resolution runs the engine on a
+    // handful of extra states -- at most eight opponent cards for a destroy,
+    // the discard pile for the Mausoleum, five board tokens, three Great
+    // Library tokens -- but only on the small minority of decisions that
+    // produce a pending effect at all. The wonder budget is pure root work:
+    // eight per-effect prices per decision, then a table lookup.
+    let unresolved = Config {
+        pending_model: duels_agent_phased::PendingModel::Unresolved,
+        ..Config::default()
+    };
+    let completed = Config {
+        pending_model: duels_agent_phased::PendingModel::Completed,
+        ..Config::default()
+    };
+    let budget = Config {
+        wonder_model: duels_agent_phased::WonderModel::Budget,
+        ..completed
+    };
+    let discounted = Config {
+        destroy_replace_discount: true,
+        ..completed
+    };
+
     let mut rows: Vec<Row> = [
         ("v1 (the round-one agent)", Config::v1()),
         ("v2 (the round-two agent)", Config::v2()),
+        ("v3 (the round-three agent)", Config::v3()),
         ("default, menu and chain equity off", no_chain),
         ("default, menu off", menu_off),
         ("default, rails off", rails_off),
         ("default, one-sided menu shield price", one_sided),
-        ("default (menu lambda = 0.6)", Config::default()),
+        ("default, pending effects unresolved", unresolved),
+        ("default, pending effects completed", completed),
+        ("default + the wonder budget model", budget),
+        ("default + the destroy discount", discounted),
+        ("default", Config::default()),
     ]
     .into_iter()
     .map(|(name, config)| Row {

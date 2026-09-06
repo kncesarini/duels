@@ -28,7 +28,7 @@
 
 use duels_agent_phased::{
     evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel,
-    MenuShieldPricing, MilitaryModel, PhasedAgent, RailModel, Root,
+    MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent, RailModel, Root, WonderModel,
 };
 use duels_agents_api::{Agent, Budget};
 use duels_core::observation::Observation;
@@ -322,6 +322,23 @@ fn the_property_holds_under_every_model_combination() {
             }
         }
     }
+    // Round four's three options, in every combination: the pending
+    // resolution applies the engine's own actions to the post-outcome state
+    // and the wonder budget reads the discard pile, the opponent's city and
+    // the set-aside token pile, so each is a new set of reads that has to be
+    // attacked rather than trusted to inherit the default's clean bill.
+    for pending_model in [PendingModel::Unresolved, PendingModel::Completed] {
+        for wonder_model in [WonderModel::Flat, WonderModel::Budget] {
+            for destroy_replace_discount in [false, true] {
+                configs.push(Config {
+                    pending_model,
+                    wonder_model,
+                    destroy_replace_discount,
+                    ..Config::default()
+                });
+            }
+        }
+    }
     for (i, config) in configs.iter().enumerate() {
         for seed in 0..6u64 {
             for &steps in &[7usize, 17, 29, 43] {
@@ -550,5 +567,247 @@ fn an_age_ending_action_cannot_let_the_rails_read_the_next_age() {
         provoked > 0,
         "no invented Age II ever contained a closing card, so the stand-down \
          was never actually under test"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Round four: resolving a pending effect must read only public information.
+// ---------------------------------------------------------------------------
+
+/// Every configuration round four adds, exercised together.
+fn round_four_configs() -> Vec<Config> {
+    vec![
+        Config {
+            pending_model: PendingModel::Completed,
+            ..Config::default()
+        },
+        Config {
+            pending_model: PendingModel::Completed,
+            wonder_model: WonderModel::Budget,
+            ..Config::default()
+        },
+        Config {
+            pending_model: PendingModel::Completed,
+            destroy_replace_discount: true,
+            ..Config::default()
+        },
+        Config {
+            wonder_model: WonderModel::Budget,
+            ..Config::default()
+        },
+    ]
+}
+
+/// A real Age II deal, so some slots are genuinely face down and two sampled
+/// worlds really do differ.
+const AGE_TWO_DEAL: [&str; 20] = [
+    "sawmill",
+    "brickyard",
+    "shelf-quarry",
+    "glassblower",
+    "drying-room",
+    "walls",
+    "horse-breeders",
+    "barracks",
+    "archery-range",
+    "parade-ground",
+    "library",
+    "dispensary",
+    "school",
+    "laboratory",
+    "courthouse",
+    "statue",
+    "temple",
+    "aqueduct",
+    "rostrum",
+    "forum",
+];
+
+/// **The pending-effect case.**
+///
+/// [`PendingModel::Completed`] resolves a pending choice by walking the
+/// engine's own `legal_actions` for it, which for the four wonders that create
+/// one means reading the opponent's city (a destroy), the discard pile (the
+/// Mausoleum), the board tokens (a science pair) or the three tokens the Great
+/// Library drew. Every one of those is public — but "is public" is a claim,
+/// and this is the test that checks it: the same position, two unrelated
+/// invented worlds, and the resolved score has to agree bit for bit.
+///
+/// The Great Library is the interesting one, because its draw *is* random: it
+/// arrives as a `chance_outcomes` enumeration over the set-aside pile, and the
+/// ten three-token draws are exactly the ten chance outcomes the expectation
+/// already averages over. If the resolution read the sampled state's idea of
+/// the draw rather than the forced outcome's, this would catch it.
+#[test]
+fn resolving_a_pending_effect_reads_nothing_the_observation_cannot_see() {
+    /// `(wonder, opponent's city, discard pile, tokens set aside)`.
+    type Case = (
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+    let cases: [Case; 4] = [
+        ("circus-maximus", &["glassworks", "press"], &[], &[]),
+        ("the-statue-of-zeus", &["lumber-yard", "clay-pit"], &[], &[]),
+        ("the-mausoleum", &[], &["palace", "theater", "altar"], &[]),
+        (
+            "the-great-library",
+            &[],
+            &[],
+            &["law", "theology", "mathematics", "philosophy", "urbanism"],
+        ),
+    ];
+
+    let mut checked = 0usize;
+    for (slug, city, discard, aside) in cases {
+        let st = StateBuilder::new()
+            .age(2)
+            .deal(&AGE_TWO_DEAL)
+            .wonders(Player::One, &[slug])
+            .built(Player::Two, city)
+            .discard(discard)
+            .set_aside_tokens(aside)
+            .board_tokens(&["strategy", "urbanism"])
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build();
+
+        let obs = st.observation();
+        let mut rng_a = StdRng::seed_from_u64(0xFEED_0001);
+        let mut rng_b = StdRng::seed_from_u64(0x0BAD_C0DE);
+        let a = obs.sample_state(&mut rng_a);
+        let b = obs.sample_state(&mut rng_b);
+        assert_eq!(a.observation(), b.observation());
+
+        // Vacuity guard: the build really does leave a pending effect.
+        let build = engine::legal_actions(&a)
+            .into_iter()
+            .find(|x| matches!(x, Action::BuildWonder { .. }))
+            .unwrap_or_else(|| panic!("{slug}: no wonder build was legal"));
+        let outcomes = engine::chance_outcomes(&a, build);
+        let mut pending_seen = 0usize;
+        for (outcome, _) in &outcomes {
+            let mut next = a;
+            engine::apply_with_outcome(&mut next, build, outcome).unwrap();
+            if next.pending().is_some() {
+                pending_seen += 1;
+            }
+        }
+        assert!(
+            pending_seen > 0,
+            "{slug}: no chance outcome left a pending effect, so the case is vacuous"
+        );
+        if slug == "the-great-library" {
+            assert!(
+                outcomes.len() >= 10,
+                "{slug}: the ten three-token draws are missing ({} outcomes)",
+                outcomes.len()
+            );
+        }
+
+        for (i, config) in round_four_configs().iter().enumerate() {
+            assert_everything_agrees(&a, &b, &format!("{slug}, config {i}"), *config);
+            checked += 1;
+        }
+    }
+    assert!(checked >= 16, "only {checked} comparisons made");
+}
+
+/// **The age-ending case, for the pending resolution specifically.**
+///
+/// The dangerous combination: a candidate that empties the structure *and*
+/// leaves a pending effect. Resolving it runs `finish_turn`, which then deals a
+/// whole new age out of a deck no `Observation` can see — so if anything
+/// downstream of the resolution read a card in that structure, the two invented
+/// futures would score the move differently.
+///
+/// One card is left in the structure, and burying it under the wonder both
+/// builds the wonder and ends the age. Both players are given the wonder in
+/// turn, since a pending effect belonging to the *waiting* player takes a
+/// different path through the resolution.
+#[test]
+fn an_age_ending_action_that_leaves_a_pending_effect_scores_identically() {
+    let mut compared = 0usize;
+    for owner in Player::ALL {
+        for (slug, city, discard) in [
+            ("the-mausoleum", &[][..], &["palace", "theater"][..]),
+            ("circus-maximus", &["glassworks", "press"][..], &[][..]),
+        ] {
+            let st = StateBuilder::new()
+                .age(1)
+                .open_slots(&[(19, "clay-pool")])
+                .wonders(owner, &[slug])
+                .built(owner.other(), city)
+                .discard(discard)
+                .board_tokens(&["strategy", "urbanism"])
+                .conflict(0)
+                .coins(Player::One, 40)
+                .coins(Player::Two, 40)
+                .current(owner)
+                .build();
+
+            let obs = st.observation();
+            let salt = u64::from(u32::try_from(owner.index()).unwrap_or(0));
+            let mut rng_a = StdRng::seed_from_u64(0x1234_0000 ^ salt);
+            let mut rng_b = StdRng::seed_from_u64(0x9876_5432 ^ salt);
+            let a = obs.sample_state(&mut rng_a);
+            let b = obs.sample_state(&mut rng_b);
+            assert_eq!(a.observation(), b.observation());
+
+            let build = engine::legal_actions(&a)
+                .into_iter()
+                .find(|x| matches!(x, Action::BuildWonder { .. }))
+                .unwrap_or_else(|| panic!("{slug}: no wonder build was legal"));
+
+            // Vacuity guards: the move really leaves a pending effect, and
+            // resolving it really ends the age into two different Age IIs.
+            let mut after_a = a;
+            let mut after_b = b;
+            let outcome = engine::chance_outcomes(&a, build);
+            assert_eq!(outcome.len(), 1);
+            engine::apply_with_outcome(&mut after_a, build, &outcome[0].0).unwrap();
+            engine::apply_with_outcome(&mut after_b, build, &outcome[0].0).unwrap();
+            assert!(after_a.pending().is_some(), "{slug}: no pending effect");
+            assert_eq!(after_a.age(), 1, "the age has not turned over yet");
+
+            let resolve = engine::legal_actions(&after_a);
+            let mut done_a = after_a;
+            let mut done_b = after_b;
+            engine::apply_with_outcome(&mut done_a, resolve[0], &engine::Outcome::default())
+                .unwrap();
+            engine::apply_with_outcome(&mut done_b, resolve[0], &engine::Outcome::default())
+                .unwrap();
+            assert_eq!(
+                done_a.age(),
+                2,
+                "{slug}: resolving the effect was supposed to end the age"
+            );
+            let structure = |s: &GameState| -> Vec<Option<duels_core::data::CardId>> {
+                (0..20u8).map(|i| s.face_up_card(i)).collect()
+            };
+            if structure(&done_a) == structure(&done_b) {
+                continue;
+            }
+
+            for (i, config) in round_four_configs().iter().enumerate() {
+                let me = a.current_player();
+                let root_a = Root::new(&a, me, *config);
+                let root_b = Root::new(&b, me, *config);
+                for &candidate in &engine::legal_actions(&a) {
+                    same_bits(
+                        expected_value(&a, candidate, me, &root_a),
+                        expected_value(&b, candidate, me, &root_b),
+                        &format!("{slug}, {owner:?}, config {i}: {candidate:?}"),
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert!(
+        compared >= 8,
+        "only {compared} age-ending pending comparisons were made"
     );
 }

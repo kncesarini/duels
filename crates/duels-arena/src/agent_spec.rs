@@ -50,7 +50,10 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`default`), the terminal rails
+//! * `phased` -- `base` (`v1`/`v2`/`v3`/`default`), the pending-effect model
+//!   (`pending`, `unresolved`/`completed`), the wonder model (`wonder`,
+//!   `flat`/`budget`, with `wturns` and `wextra`), the destroy-replacement
+//!   discount (`destroy_replace`/`destroyrepl`, `on`/`off`), the terminal rails
 //!   (`rails` `on`/`off`, `imminent`), the menu's shield price
 //!   (`shield_price`/`shieldprice`, `onesided`/`diff`), the military
 //!   smoothing horizon (`horizon`, a number of rounds or `supply` for the old
@@ -89,7 +92,7 @@ use duels_agent_mcts_uct::{
 };
 use duels_agent_phased::{
     Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MenuShieldPricing,
-    MilitaryModel, PhasedAgent, RailModel,
+    MilitaryModel, PendingModel, PhasedAgent, RailModel, WonderModel,
 };
 use duels_agents_api::Agent;
 
@@ -314,9 +317,35 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
             "base" => match v {
                 "v1" => cfg = PhasedConfig::v1(),
                 "v2" => cfg = PhasedConfig::v2(),
+                "v3" => cfg = PhasedConfig::v3(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
+            "pending" | "pending_model" => {
+                cfg.pending_model = match v {
+                    "unresolved" | "off" => PendingModel::Unresolved,
+                    "completed" | "on" => PendingModel::Completed,
+                    other => return Err(format!("phased: unknown pending \"{other}\"")),
+                }
+            }
+            "wonder" | "wonder_model" => {
+                cfg.wonder_model = match v {
+                    "flat" => WonderModel::Flat,
+                    "budget" => WonderModel::Budget,
+                    other => return Err(format!("phased: unknown wonder_model \"{other}\"")),
+                }
+            }
+            "destroy_replace" | "destroyrepl" => {
+                cfg.destroy_replace_discount = match v {
+                    "on" | "true" => true,
+                    "off" | "false" => false,
+                    other => return Err(format!("phased: unknown destroy_replace \"{other}\"")),
+                }
+            }
+            "wonder_turns_per_wonder" | "wturns" => {
+                cfg.eval.wonder_turns_per_wonder = parse_field(k, v)?
+            }
+            "wonder_extra_turn_vp" | "wextra" => cfg.eval.wonder_extra_turn_vp = parse_field(k, v)?,
             "rails" => {
                 cfg.rails = match v {
                     "on" | "true" => RailModel::On,
@@ -687,9 +716,12 @@ mod tests {
         assert_eq!(parse_phased_config("base=v1").unwrap(), PhasedConfig::v1());
         assert_eq!(parse_phased_config("base=v2").unwrap(), PhasedConfig::v2());
         assert_eq!(parse_phased_config("").unwrap(), PhasedConfig::default());
-        // The round-three keys, and their "off" values reproducing v2's.
+        // The round-three keys, and their "off" values reproducing v2's --
+        // round four's `pending=unresolved` included, since `v2()` is built on
+        // `v3()` and so carries every later option at its own off value too.
         let off = parse_phased_config(
-            "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0",
+            "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
+             pending=unresolved",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -701,6 +733,25 @@ mod tests {
         assert!(parse_phased_config("shieldprice=sideways").is_err());
         assert!(parse_phased_config("horizon=wide").is_err());
         assert_ne!(PhasedConfig::v1(), PhasedConfig::default());
+
+        // The round-four keys, and their "off" values reproducing v3's.
+        assert_eq!(parse_phased_config("base=v3").unwrap(), PhasedConfig::v3());
+        let off =
+            parse_phased_config("pending=unresolved,wonder=flat,destroyrepl=off,base=v3").unwrap();
+        assert_eq!(off, PhasedConfig::v3());
+        assert_eq!(
+            parse_phased_config("pending=unresolved,wonder=flat,destroyrepl=off").unwrap(),
+            PhasedConfig::v3()
+        );
+        let on = parse_phased_config("wonder=budget,destroyrepl=on,wturns=3,wextra=2").unwrap();
+        assert_eq!(on.wonder_model, WonderModel::Budget);
+        assert!(on.destroy_replace_discount);
+        assert_eq!(on.eval.wonder_turns_per_wonder, 3.0);
+        assert_eq!(on.eval.wonder_extra_turn_vp, 2.0);
+        assert!(parse_phased_config("pending=sometimes").is_err());
+        assert!(parse_phased_config("wonder=lavish").is_err());
+        assert!(parse_phased_config("destroyrepl=perhaps").is_err());
+        assert_ne!(PhasedConfig::v3(), PhasedConfig::default());
     }
 
     #[test]
