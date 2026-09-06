@@ -1,0 +1,18 @@
+[package]
+name = "duels-agent-phased"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A 1-ply heuristic Agent whose every evaluation weight is a continuous function of how committed each player is to a win condition, computed once per decision from duels-strategy's calibrated public reads."
+
+[dependencies]
+duels-core = { path = "../../duels-core" }
+duels-agents-api = { path = "../../duels-agents-api" }
+duels-strategy = { path = "../../duels-strategy" }
+rand = { workspace = true }
+
+[dev-dependencies]
+duels-agent-random = { path = "../random" }
+duels-agent-greedy-ev = { path = "../greedy-ev" }
+duels-agent-mcts-uct = { path = "../mcts-uct" }
