@@ -27,7 +27,15 @@ docs/
   rules-spec.md         numbered R-xxx rule statements, each naming the test that covers it
   agent-contract.md     the versioned Agent/Observation/Action contract (CONTRACT_VERSION)
   adr/                  architecture decision records
-arena/                  arena/results/ (gitignored) holds tournament output JSON
+arena/                  arena/results/ (gitignored) holds tournament output JSON;
+                        arena/leaderboard.md + .json ARE committed — they're the
+                        leaderboard, refreshed nightly by CI (see below)
+.github/workflows/
+  ci.yml                the required `gate` check (fmt, clippy, test, web, e2e)
+  nightly-arena.yml     nightly full round robin: 21 pairings as a job matrix,
+                        joint Elo refit, leaderboard update proposed as a PR
+  ai-candidate.yml      informational (NOT gating) candidate-vs-champion match on
+                        any PR touching crates/agents/** or duels-agents-api/**
 ```
 
 ## Non-negotiable invariants
@@ -95,6 +103,17 @@ cargo build --release -p duels-arena
 
 The web client never implements rules/legality/cost logic — it only renders what the server sends (an `Observation` plus legal actions) and submits `Action`s back. Card/wonder/token effect descriptions in the UI are generated from structured data (`web/src/lib/effectText.ts`), not hand-written per card.
 
+## The leaderboard and the nightly round robin (M6b)
+
+`arena/leaderboard.md` (rendered from `arena/leaderboard.json`) is the standing ranking of every registered agent. Both files are **generated** — `.github/workflows/nightly-arena.yml` rebuilds them every night and opens a PR; don't hand-edit them.
+
+- **The ladder is defined in code**, in `duels_arena::leaderboard::LADDER`: each agent at its production budget (`Nodes(1)` for the five 1-ply agents, `Nodes(2000)` for `alphabeta`/`mcts-uct`), default config only. Adding an agent there extends the nightly matrix automatically — the workflow never lists agent names.
+- **The whole round robin runs at one budget (`nodes:2000`)** and that is not a compromise: the five 1-ply agents take `_budget` in `Agent::choose` and never read it, which `leaderboard::tests::one_ply_agents_ignore_their_budget` proves by playing games at both budgets and comparing every decision.
+- **Ratings are fitted jointly**, not pairwise — `elo::fit_joint_elo` is a Bradley-Terry MLE over all 21 head-to-head records at once (MM iteration, CIs from the joint Fisher information with the anchor's row/column deleted). `greedy` is pinned at 1000. Use `fit_elo` for a single head-to-head comparison; use `fit_joint_elo` for anything ladder-shaped.
+- **`main` cannot be pushed to directly** — the `main-protection` ruleset has an empty `bypass_actors` list — so the nightly proposes a PR. GitHub does not start workflows for `GITHUB_TOKEN`-authored PRs, so that PR's required `gate` check needs a close/reopen (or a `NIGHTLY_ARENA_TOKEN` PAT secret) before it can merge. The workflow says so in the PR body.
+- **`ai-candidate` is informational and must stay that way for now** (an explicit decision). It is a separate workflow file precisely so it cannot drift into `ci.yml`'s `gate` job. Promoting it to blocking means two deliberate edits: add it to `gate`'s `needs:` *and* to the ruleset's required-status-check list.
+- **The champion is a plain constant** (`leaderboard::CHAMPION`, currently `mcts-uct` at `Nodes(2000)`), not something read back out of the leaderboard. Automated promotion is M7 and does not exist yet; until it does, a human changing one line is the honest mechanism.
+
 ## Current state (living reference — verify against `duels-arena` for ground truth, this will drift)
 
-Milestones complete: rules engine, playable web UI + server, five AI agents (`random`/`greedy`/`greedy-ev`/`alphabeta`/`mcts-uct`), tournament infrastructure, and `duels-strategy` (a win-condition-aware policy layer, built but — as of this writing — still being wired into search). `mcts-uct` is the strongest agent. Not started: self-play RL, promotion automation, hosting/polish (see `docs/adr/` for the original architecture decisions and their rationale).
+Milestones complete: rules engine, playable web UI + server, seven AI agents (`random`/`greedy`/`greedy-ev`/`strategist`/`phased`/`alphabeta`/`mcts-uct`), tournament infrastructure, `duels-strategy` (a win-condition-aware policy layer), and M6b "Arena live" (leaderboard, nightly round-robin workflow, informational `ai-candidate` check). `mcts-uct` is the strongest agent. Not started: self-play RL, champion-promotion automation (M7), hosting/polish (see `docs/adr/` for the original architecture decisions and their rationale).

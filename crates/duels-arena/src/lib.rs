@@ -15,7 +15,13 @@
 //!   step of an instant win) and tallies *how* each side's wins were
 //!   achieved, not just the win/loss/draw count.
 //! - [`elo`] fits a logistic-Elo rating difference (with a 95% CI) from a
-//!   set of game results.
+//!   set of game results — pairwise ([`elo::fit_elo`]) for one head-to-head
+//!   match, or jointly over a whole round robin ([`elo::fit_joint_elo`]) for a
+//!   leaderboard.
+//! - [`leaderboard`] turns a directory of per-pairing results files into the
+//!   `arena/leaderboard.json` / `arena/leaderboard.md` pair the nightly
+//!   round-robin workflow commits, and holds the ladder, the rating anchor,
+//!   and the designated champion the `ai-candidate` check measures against.
 //! - [`sprt`] runs a Sequential Probability Ratio Test, in the style of
 //!   chess-engine testing frameworks, over accumulated win/loss/draw counts.
 //! - [`results_io`] serializes a match's [`match_runner::GameRecord`]s, plus
@@ -75,6 +81,7 @@ pub mod age_start_policy;
 pub mod agent_registry;
 pub mod agent_spec;
 pub mod elo;
+pub mod leaderboard;
 pub mod match_runner;
 pub mod results_io;
 pub mod sprt;

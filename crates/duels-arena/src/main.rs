@@ -4,7 +4,21 @@
 //! duels-arena match --agent-a random --agent-b random --games 1000 \
 //!     --budget nodes:2000 --seed 1 [--out arena/results/run.json] \
 //!     [--sprt-elo0 0] [--sprt-elo1 5] [--alpha 0.05] [--beta 0.05]
+//!
+//! duels-arena pairings [--format matrix|lines]
+//! duels-arena leaderboard --results-dir <DIR> \
+//!     [--out-json arena/leaderboard.json] [--out-md arena/leaderboard.md] \
+//!     [--commit <SHA>] [--generated-at <RFC3339>]
+//! duels-arena champion [--field agent|budget|spec]
 //! ```
+//!
+//! `pairings`, `leaderboard` and `champion` exist for the nightly round-robin
+//! workflow (`.github/workflows/nightly-arena.yml`) and the `ai-candidate`
+//! check (`.github/workflows/ai-candidate.yml`): `pairings --format matrix`
+//! emits the GitHub Actions job matrix, `leaderboard` reduces the matrix's
+//! per-pairing results artifacts to `arena/leaderboard.{json,md}`, and
+//! `champion` prints the designated champion so a workflow never has to
+//! hard-code it. See `duels_arena::leaderboard`.
 //!
 //! `--games N` is the total number of individual games to play; internally
 //! this is `ceil(N/2)` paired seeds (see `match_runner::play_paired_match`),
@@ -33,6 +47,7 @@ use std::process::ExitCode;
 
 use duels_arena::agent_registry::KNOWN_AGENTS;
 use duels_arena::elo::fit_elo;
+use duels_arena::leaderboard;
 use duels_arena::match_runner::{
     parse_budget, play_paired_match, race_exposure, tally, victory_breakdown, VictoryBreakdown,
 };
@@ -53,6 +68,9 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("match") => run_match(&args[1..]),
+        Some("pairings") => run_pairings(&args[1..]),
+        Some("leaderboard") => run_leaderboard(&args[1..]),
+        Some("champion") => run_champion(&args[1..]),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_usage();
             Ok(())
@@ -68,7 +86,17 @@ fn print_usage() {
         "duels-arena: tournament runner and statistical comparison for Agent implementations\n\n\
          USAGE:\n    duels-arena match --agent-a <SPEC> --agent-b <SPEC> --games <N> \\\n        \
          --budget <nodes:N|time_ms:N> --seed <N> [--out <PATH>]\n        \
-         [--sprt-elo0 <F>] [--sprt-elo1 <F>] [--alpha <F>] [--beta <F>]\n\n\
+         [--sprt-elo0 <F>] [--sprt-elo1 <F>] [--alpha <F>] [--beta <F>]\n\n    \
+         duels-arena pairings [--format matrix|lines]\n        \
+         Every round-robin pairing on the leaderboard ladder. \"matrix\" emits\n        \
+         the GitHub Actions job matrix the nightly workflow fans out over.\n\n    \
+         duels-arena leaderboard --results-dir <DIR> [--out-json <PATH>]\n        \
+         [--out-md <PATH>] [--commit <SHA>] [--generated-at <RFC3339>]\n        \
+         Fit a joint Elo table over a directory of per-pairing results files\n        \
+         and write arena/leaderboard.json and arena/leaderboard.md.\n\n    \
+         duels-arena champion [--field agent|budget|spec]\n        \
+         The designated reigning champion an ai-candidate run measures\n        \
+         against.\n\n\
          Known agents: {}\n\n\
          <SPEC> is a bare agent name, or \"name:key=value,...\" naming one\n\
          agent's own Config/Weights explicitly (e.g. \"mcts-uct:exploration=1.2\"\n\
@@ -245,9 +273,180 @@ fn run_match(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `duels-arena pairings` — the round robin's schedule.
+///
+/// `--format matrix` (the default) prints a single line of JSON shaped for a
+/// GitHub Actions `strategy.matrix`: an array of objects carrying both agent
+/// names, the results filename to write, and a short id usable in an artifact
+/// name. `--format lines` prints `a b` per line for shell consumption.
+fn run_pairings(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    let format = flags.optional("format").unwrap_or("matrix");
+    let pairings = leaderboard::pairings();
+    match format {
+        "matrix" => {
+            let entries: Vec<serde_json::Value> = pairings
+                .iter()
+                .map(|&(a, b)| {
+                    serde_json::json!({
+                        "agent_a": a,
+                        "agent_b": b,
+                        "id": format!("{a}--vs--{b}"),
+                        "file": leaderboard::pairing_results_filename(a, b),
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string(&entries)
+                    .map_err(|e| format!("failed to serialize the pairing matrix: {e}"))?
+            );
+        }
+        "lines" => {
+            for (a, b) in pairings {
+                println!("{a} {b}");
+            }
+        }
+        other => {
+            return Err(format!(
+                "invalid --format \"{other}\": expected \"matrix\" or \"lines\""
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// `duels-arena champion` — the designated champion, for a workflow to read
+/// rather than hard-code. `--field spec` (the default) prints
+/// `"<agent> at <budget>"`; `agent` and `budget` print one piece each.
+fn run_champion(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    match flags.optional("field").unwrap_or("spec") {
+        "agent" => println!("{}", leaderboard::CHAMPION.agent),
+        "budget" => println!("{}", leaderboard::CHAMPION.budget),
+        "spec" => println!(
+            "{} at {}",
+            leaderboard::CHAMPION.agent,
+            leaderboard::CHAMPION.budget
+        ),
+        other => {
+            return Err(format!(
+                "invalid --field \"{other}\": expected \"agent\", \"budget\" or \"spec\""
+            ))
+        }
+    }
+    Ok(())
+}
+
+/// `duels-arena leaderboard` — reduce a directory of per-pairing results
+/// files to the joint Elo table, and write both the JSON and the Markdown.
+fn run_leaderboard(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse(args)?;
+    let results_dir = PathBuf::from(flags.required("results-dir")?);
+    let out_json = PathBuf::from(
+        flags
+            .optional("out-json")
+            .unwrap_or("arena/leaderboard.json"),
+    );
+    let out_md = PathBuf::from(flags.optional("out-md").unwrap_or("arena/leaderboard.md"));
+    let commit = flags.optional("commit").unwrap_or("unknown").to_string();
+    let generated_at = match flags.optional("generated-at") {
+        Some(t) => t.to_string(),
+        None => leaderboard::format_rfc3339_utc(now_unix_seconds()),
+    };
+
+    let records = leaderboard::collect_pairwise_records(&results_dir)?;
+    println!(
+        "read {} pairing results from {}",
+        records.len(),
+        results_dir.display()
+    );
+
+    let board = leaderboard::build(&records, &generated_at, &commit)?;
+    leaderboard::write(&board, &out_json, &out_md)?;
+
+    println!("{}", leaderboard::render_markdown(&board));
+    println!("wrote {} and {}", out_json.display(), out_md.display());
+    Ok(())
+}
+
+/// Seconds since the Unix epoch, for stamping a leaderboard generated without
+/// an explicit `--generated-at`.
+///
+/// `clippy.toml` bans wall-clock reads across the workspace so the rules
+/// engine and the agents stay deterministic; `duels-arena` is one of the
+/// crates explicitly carved out for reporting (see `match_runner`, which does
+/// the same for `Instant::now`). Nothing about a match's *outcome* depends on
+/// this — it only labels the report.
+fn now_unix_seconds() -> i64 {
+    #[allow(clippy::disallowed_methods)]
+    let now = std::time::SystemTime::now();
+    now.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairings_matrix_is_valid_json_covering_every_pairing() {
+        // The command prints to stdout, so rebuild the same value it does and
+        // assert on that (the printing itself is one `println!`).
+        let entries: Vec<serde_json::Value> = leaderboard::pairings()
+            .iter()
+            .map(|&(a, b)| {
+                serde_json::json!({
+                    "agent_a": a,
+                    "agent_b": b,
+                    "id": format!("{a}--vs--{b}"),
+                    "file": leaderboard::pairing_results_filename(a, b),
+                })
+            })
+            .collect();
+        assert_eq!(entries.len(), 21);
+        let json = serde_json::to_string(&entries).unwrap();
+        let back: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 21);
+        for e in &back {
+            let a = e["agent_a"].as_str().unwrap();
+            let b = e["agent_b"].as_str().unwrap();
+            assert_ne!(a, b);
+            assert_eq!(e["id"].as_str().unwrap(), format!("{a}--vs--{b}"));
+            assert!(e["file"].as_str().unwrap().ends_with(".json"));
+        }
+    }
+
+    #[test]
+    fn pairings_and_champion_reject_an_unknown_format_or_field() {
+        let args = |k: &str, v: &str| vec![format!("--{k}"), v.to_string()];
+        assert!(run_pairings(&args("format", "yaml")).is_err());
+        assert!(run_champion(&args("field", "nickname")).is_err());
+        // The valid forms do not error.
+        run_pairings(&args("format", "lines")).unwrap();
+        run_champion(&args("field", "agent")).unwrap();
+    }
+
+    #[test]
+    fn leaderboard_requires_a_results_dir_and_reports_a_missing_one() {
+        assert!(run_leaderboard(&[]).is_err());
+        let err = run_leaderboard(&[
+            "--results-dir".to_string(),
+            "/definitely/not/a/real/path/duels".to_string(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("failed to list"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn the_wall_clock_stamp_is_a_plausible_recent_timestamp() {
+        let now = now_unix_seconds();
+        // Any run of this test happens after the commit that introduced it.
+        assert!(now > 1_750_000_000, "{now} looks wrong");
+        let stamp = leaderboard::format_rfc3339_utc(now);
+        assert!(stamp.ends_with('Z') && stamp.len() == 20, "{stamp}");
+    }
 
     #[test]
     fn flags_parse_required_and_optional_and_typed_values() {

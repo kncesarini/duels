@@ -5,4 +5,11 @@ Cargo.lock.bak
 
 # duels-arena's generated per-run results files (see crates/duels-arena);
 # arena/.gitkeep keeps the directory itself tracked.
+#
+# Only the raw per-run game records are ignored. `arena/leaderboard.md` and
+# `arena/leaderboard.json` are deliberately NOT ignored: they are the
+# leaderboard, so they have to be visible in the repository to be one, and the
+# nightly round robin (.github/workflows/nightly-arena.yml) proposes updates to
+# them as pull requests. Keep any new ignore rule below scoped to
+# `/arena/results/`.
 /arena/results/
