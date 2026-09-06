@@ -36,10 +36,11 @@
 //!   `coin`, `breadth`, `shield`, `threat`, and the root-ensembling pair
 //!   `root_determinizations`/`dets` and `ensemble_exact_root`/`exact`.
 //! * `mcts-uct` -- every [`duels_agent_mcts_uct::Config`] field:
-//!   `exploration`/`c`, `rollout` (`uniform`/`biased`/`smart`),
-//!   `chance_widen_c`, `chance_widen_alpha`, `max_rollout_plies`,
-//!   `time_check_interval`, `root_determinizations`/`dets`, and `prior`
-//!   (`none`, `expansion_order`, or `progressive_bias:<weight>`).
+//!   `exploration`/`c`, `rollout` (`uniform`/`biased`/`smart`), `race`
+//!   (`neutral`/`mild`/`medium`/`strong`/`tier1_only`), `chance_widen_c`,
+//!   `chance_widen_alpha`, `max_rollout_plies`, `time_check_interval`,
+//!   `root_determinizations`/`dets`, and `prior` (`none`, `expansion_order`,
+//!   or `progressive_bias:<weight>`).
 //! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
 //!   name (`military_position`, `military_endgame_urgency`,
 //!   `science_distinct_symbol`, `science_near_supremacy`,
@@ -78,7 +79,9 @@
 use duels_agent_alphabeta::{eval, playout, AlphaBetaAgent, Config as AlphaBetaConfig};
 use duels_agent_greedy::{EvalWeights as GreedyWeights, GreedyAgent};
 use duels_agent_greedy_ev::{EvalWeights as GreedyEvWeights, GreedyEvAgent};
-use duels_agent_mcts_uct::{Config as MctsConfig, MctsAgent, PriorMode, RolloutWeights};
+use duels_agent_mcts_uct::{
+    Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
+};
 use duels_agent_phased::{
     Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MilitaryModel,
     PhasedAgent,
@@ -240,6 +243,21 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
                     "biased" => RolloutWeights::BIASED,
                     "smart" => RolloutWeights::SMART,
                     other => return Err(format!("mcts-uct: unknown rollout \"{other}\"")),
+                };
+            }
+            "race" => {
+                cfg.race = match v {
+                    "neutral" | "off" => RaceWeights::NEUTRAL,
+                    "tier1" | "tier1_only" => RaceWeights::TIER1_ONLY,
+                    "mild" => RaceWeights::mild(),
+                    "medium" => RaceWeights::MEDIUM,
+                    "strong" => RaceWeights::strong(),
+                    other => {
+                        return Err(format!(
+                            "mcts-uct: unknown race \"{other}\" (expected \"neutral\", \
+                             \"mild\", \"medium\", \"strong\", or \"tier1_only\")"
+                        ))
+                    }
                 };
             }
             "prior" => {
@@ -500,7 +518,7 @@ mod tests {
     fn mcts_config_parser_reads_every_supported_key() {
         let cfg = parse_mcts_config(
             "exploration=2.0,chance_widen_c=0.5,chance_widen_alpha=0.25,\
-             max_rollout_plies=100,time_check_interval=32,rollout=uniform,dets=4",
+             max_rollout_plies=100,time_check_interval=32,rollout=uniform,race=medium,dets=4",
         )
         .unwrap();
         assert_eq!(cfg.exploration, 2.0);
@@ -509,7 +527,36 @@ mod tests {
         assert_eq!(cfg.max_rollout_plies, 100);
         assert_eq!(cfg.time_check_interval, 32);
         assert_eq!(cfg.rollout, RolloutWeights::UNIFORM);
+        assert_eq!(cfg.race, RaceWeights::MEDIUM);
         assert_eq!(cfg.root_determinizations, 4);
+    }
+
+    /// The race key has to reach every shipped variant *and* show up in the
+    /// spec a results file records, or an arena run cannot be told apart from
+    /// its baseline after the fact.
+    #[test]
+    fn the_race_key_reaches_every_variant_and_shows_up_in_the_spec() {
+        assert_eq!(parse_mcts_config("").unwrap().race, RaceWeights::NEUTRAL);
+        for (value, want) in [
+            ("neutral", RaceWeights::NEUTRAL),
+            ("off", RaceWeights::NEUTRAL),
+            ("tier1", RaceWeights::TIER1_ONLY),
+            ("tier1_only", RaceWeights::TIER1_ONLY),
+            ("mild", RaceWeights::mild()),
+            ("medium", RaceWeights::MEDIUM),
+            ("strong", RaceWeights::strong()),
+        ] {
+            let cfg = parse_mcts_config(&format!("race={value}")).unwrap();
+            assert_eq!(cfg.race, want, "race={value}");
+        }
+        assert!(parse_mcts_config("race=sideways").is_err());
+
+        let agent = make_agent_from_spec("mcts-uct:race=medium", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("race=medium"),
+            "{}",
+            agent.spec().params
+        );
     }
 
     #[test]
