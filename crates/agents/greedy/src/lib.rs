@@ -41,6 +41,33 @@
 //! [`EvalWeights`] are the only place the relative importance of each idea
 //! lives — no magic numbers are scattered through the term functions
 //! themselves.
+//!
+//! # A hidden-information leak in the chain-gift term (and its fix)
+//!
+//! [`GreedyAgent::choose`] samples one concrete world and reuses it for every
+//! candidate — sound for a term that reads only currently-built cards, coins,
+//! or production, since those are unaffected by which fictional identity the
+//! sample assigned to a still-hidden card. But the deny-chain-gift term reads
+//! a *face-up, not-yet-built* card's identity, and a candidate action that
+//! empties the current age's structure ends the age
+//! (`engine::end_age` → `start_age`), dealing a **brand new** structure from
+//! the next age's deck — cards invented wholesale by the one sample this
+//! agent committed to, not a real, weighted possibility. Reading one of those
+//! cards would score the sampler's arbitrary guess as certain, exactly the
+//! flaw `duels-agent-greedy-ev` exists to fix for every other kind of
+//! resolved randomness (see that crate's module docs) — except here it
+//! applies even more directly, since `greedy` never averages over anything at
+//! all.
+//!
+//! The fix: [`GreedyAgent::choose`] records the *root* age — the age of the
+//! position it was actually asked to decide at, read off the base state
+//! before any candidate is applied — and threads it through
+//! [`evaluate`]/[`tactical_term`] down to [`opponent_chain_gift_value`],
+//! which now returns `0.0` whenever `state.age() != root_age` rather than
+//! reading a card from a different age than the one being decided. This is a
+//! strict correctness fix — the old behavior was a bug, not a documented
+//! trade-off — so it changes the agent's default behavior rather than adding
+//! an opt-in mode.
 
 #![deny(clippy::disallowed_methods)]
 
@@ -264,6 +291,11 @@ impl Agent for GreedyAgent {
         // Determinize once and reuse the same sampled world for every
         // candidate, so the comparison is apples-to-apples.
         let base_state = obs.sample_state(&mut self.rng);
+        // The age of the position actually being decided, captured before any
+        // candidate is applied. Threaded down to `opponent_chain_gift_value`
+        // so it never reads a card dealt into a *different* age than this
+        // one — see the module docs' hidden-information-leak section.
+        let root_age = base_state.age();
         // Each candidate gets its own derived scratch RNG (for the rare
         // Great Library draw) rather than sharing `self.rng`, so evaluating
         // N candidates never depends on N's order or count.
@@ -280,7 +312,7 @@ impl Agent for GreedyAgent {
                 // this should be unreachable; skip rather than panic.
                 continue;
             }
-            scored.push((action, evaluate(&state, me, &self.weights)));
+            scored.push((action, evaluate(&state, me, &self.weights, root_age)));
         }
 
         let Some(best_score) = scored.iter().map(|&(_, s)| s).fold(None, |m, s| match m {
@@ -307,7 +339,11 @@ impl Agent for GreedyAgent {
 /// A finished game (win/loss/draw) is scored by `weights.instant_result`
 /// alone, dwarfing every other term; otherwise every term is a difference
 /// between `me` and their opponent.
-pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights) -> f64 {
+///
+/// `root_age` is the age of the position the caller was originally asked to
+/// decide at (see [`GreedyAgent::choose`]); it is only consulted by
+/// [`tactical_term`], to refuse to read a card dealt into a different age.
+pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights, root_age: u8) -> f64 {
     if let Some(result) = state.result() {
         return match result {
             GameResult::Win { winner, .. } if winner == me => weights.instant_result,
@@ -321,7 +357,7 @@ pub fn evaluate(state: &GameState, me: Player, weights: &EvalWeights) -> f64 {
         + science_term(state, me, opp, weights)
         + vp_term(state, me, opp, weights)
         + economy_term(state, me, opp, weights)
-        + tactical_term(state, me, weights)
+        + tactical_term(state, me, weights, root_age)
 }
 
 /// Military track position plus an escalating push-towards-the-capital
@@ -455,8 +491,20 @@ fn economy_term(state: &GameState, me: Player, opp: Player, w: &EvalWeights) -> 
 /// Total "value" of every accessible, face-up card the opponent could build
 /// for free on their very next turn via a chain symbol they already own.
 /// Zero unless it will genuinely be the opponent's turn next.
-fn opponent_chain_gift_value(state: &GameState, me: Player) -> f64 {
-    if state.phase() != Phase::Turn || state.current_player() != me.other() {
+///
+/// Also zero whenever `state.age() != root_age`: a move that ends the current
+/// age deals a brand-new structure (`engine::end_age` → `start_age`) from the
+/// next age's deck, and those cards are hidden information invented wholesale
+/// by the one world [`GreedyAgent::choose`] sampled, not a real possibility
+/// this agent ever considered alongside others. Reading one across that
+/// boundary would make this term (and therefore [`evaluate`]) depend on which
+/// arbitrary world the caller happened to sample. See the module docs' "a
+/// hidden-information leak in the chain-gift term" section.
+fn opponent_chain_gift_value(state: &GameState, me: Player, root_age: u8) -> f64 {
+    if state.phase() != Phase::Turn
+        || state.current_player() != me.other()
+        || state.age() != root_age
+    {
         return 0.0;
     }
     let opp = me.other();
@@ -477,8 +525,8 @@ fn opponent_chain_gift_value(state: &GameState, me: Player) -> f64 {
     value
 }
 
-fn tactical_term(state: &GameState, me: Player, w: &EvalWeights) -> f64 {
-    -opponent_chain_gift_value(state, me) * w.deny_chain_gift
+fn tactical_term(state: &GameState, me: Player, w: &EvalWeights, root_age: u8) -> f64 {
+    -opponent_chain_gift_value(state, me, root_age) * w.deny_chain_gift
 }
 
 #[cfg(test)]
@@ -488,12 +536,14 @@ mod tests {
     use duels_core::testing::StateBuilder;
 
     /// Apply `action` to a copy of `state` and evaluate the result for
-    /// `me`, the player who was to move in `state`.
+    /// `me`, the player who was to move in `state`. `root_age` is `state`'s
+    /// own age, matching how `GreedyAgent::choose` derives it.
     fn eval_after(state: &GameState, action: Action, me: Player, weights: &EvalWeights) -> f64 {
+        let root_age = state.age();
         let mut s = *state;
         let mut rng = StdRng::seed_from_u64(0x0C0F_FEE0);
         engine::apply(&mut s, action, &mut rng).expect("scenario action should be legal");
-        evaluate(&s, me, weights)
+        evaluate(&s, me, weights, root_age)
     }
 
     #[test]
@@ -622,6 +672,73 @@ mod tests {
         assert_eq!(chosen, Action::Build { slot: 19 });
     }
 
+    /// A direct, deterministic demonstration of the age-boundary leak
+    /// `root_age` fixes: `opponent_chain_gift_value` must not read a card
+    /// dealt into a different age than the one actually being decided.
+    ///
+    /// `lighthouse_world` and `harmless_world` stand in for two different
+    /// worlds `Observation::sample_state` could have invented for the same
+    /// public observation of a position one action before an age boundary:
+    /// same age, same phase, same current player, same built cards — they
+    /// differ *only* in which card the next age's structure happens to
+    /// expose in the taker's one open slot. Every other term (`military`,
+    /// `science`, `vp`, `economy`) reads only built cards, production, and
+    /// coins, none of which differ here, so any difference in `evaluate`
+    /// between the two worlds is entirely `tactical_term`'s.
+    #[test]
+    fn opponent_chain_gift_value_does_not_leak_a_card_from_a_different_age() {
+        let weights = EvalWeights::default();
+        let me = Player::One;
+
+        let world = |exposed_card: &str| -> GameState {
+            StateBuilder::new()
+                .age(2)
+                .phase(Phase::Turn)
+                .current(Player::Two)
+                .built(Player::Two, &["tavern"])
+                .open_slots(&[(0, exposed_card)])
+                .build()
+        };
+        // "tavern" unlocks "lighthouse" (see
+        // `evaluation_avoids_gifting_the_opponent_a_free_chain_build` above),
+        // so this world's exposed card is a real, valuable free build for
+        // Player Two. "lumber-yard" has no chain relationship to "tavern" at
+        // all, so this world's exposed card is worth nothing to the term.
+        let lighthouse_world = world("lighthouse");
+        let harmless_world = world("lumber-yard");
+        assert!(
+            lighthouse_world.result().is_none() && harmless_world.result().is_none(),
+            "test setup bug: these positions should not already be game over"
+        );
+
+        // Sanity check: the term itself really is capable of telling these
+        // two worlds apart when `root_age` matches their actual age (2) —
+        // otherwise this test would be vacuous, proving nothing about the
+        // guard.
+        let with_matching_root_age = evaluate(&lighthouse_world, me, &weights, 2)
+            - evaluate(&harmless_world, me, &weights, 2);
+        assert!(
+            with_matching_root_age.abs() > f64::EPSILON,
+            "test setup bug: the two hand-crafted worlds scored identically even before any \
+             root_age guard was applied, so this test cannot demonstrate the leak"
+        );
+
+        // The actual property: from the perspective of a decision made back
+        // in age 1 (`root_age = 1`, one age behind these post-boundary
+        // worlds — exactly the shape of the single world an age-ending
+        // Build/Discard is evaluated against), the two worlds must score
+        // *identically*, because `opponent_chain_gift_value` must refuse to
+        // read a card dealt into a different age than the one actually being
+        // decided.
+        let root_age = 1u8;
+        assert_eq!(
+            evaluate(&lighthouse_world, me, &weights, root_age),
+            evaluate(&harmless_world, me, &weights, root_age),
+            "evaluate depended on which card a later age exposed, even though root_age (1) \
+             predates that age — the age-boundary hidden-information leak is back"
+        );
+    }
+
     #[test]
     fn evaluation_orders_win_above_draw_above_loss() {
         // Reach a genuine terminal `GameState` by actually emptying the Age
@@ -654,9 +771,12 @@ mod tests {
         let draw = finish(&["palace"], &["town-hall"]);
         let loss = finish(&[], &["palace"]);
 
-        let win_score = evaluate(&win, Player::One, &weights);
-        let draw_score = evaluate(&draw, Player::One, &weights);
-        let loss_score = evaluate(&loss, Player::One, &weights);
+        // All three states are already game-over, so `evaluate` returns via
+        // its terminal-result branch before `root_age` is ever consulted;
+        // the value passed here is irrelevant.
+        let win_score = evaluate(&win, Player::One, &weights, win.age());
+        let draw_score = evaluate(&draw, Player::One, &weights, draw.age());
+        let loss_score = evaluate(&loss, Player::One, &weights, loss.age());
 
         assert_eq!(win_score, weights.instant_result);
         assert_eq!(draw_score, 0.0);
