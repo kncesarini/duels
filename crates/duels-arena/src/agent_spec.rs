@@ -50,6 +50,17 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
+//! * `phased` -- `base` (`v1`/`default`), the three model switches
+//!   `military_model`/`mil`, `coin_model`/`coin` and `economy_model`/`econ`,
+//!   `blend` (`on`/`off`), the two forward-looking terms' weights
+//!   `menu_lambda`/`lambda`, `menu_tau`/`tau` and `chain_equity`/`chaineq`,
+//!   the band-model shape (`military_band`/`band`, `military_loot`/`loot`,
+//!   `military_sigma_scale`/`kappa`, `military_sigma_min`,
+//!   `military_logistic_scale`), the smooth coin model's `coin_smooth_beta`
+//!   /`beta` and `coin_smooth_ref`/`cref`, `resource_bill`/`bill`, the
+//!   `next_age_start` array as `start1`/`start2`/`start3`, and the individual
+//!   weights `military_position`, `vp_projection`, `development`,
+//!   `science_ladder`, `deny`, `deny_chain_gift`, `wonder_potential`.
 //! * `random` -- bare name only; it has no parameters.
 //!
 //! # Examples
@@ -70,6 +81,10 @@ use duels_agent_greedy::{EvalWeights as GreedyWeights, GreedyAgent};
 use duels_agent_greedy_ev::{EvalWeights as GreedyEvWeights, GreedyEvAgent};
 use duels_agent_mcts_uct::{
     Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
+};
+use duels_agent_phased::{
+    Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MilitaryModel,
+    PhasedAgent,
 };
 use duels_agents_api::Agent;
 
@@ -101,6 +116,10 @@ pub fn make_agent_from_spec(spec: &str, seed: u64) -> Result<Box<dyn Agent + Sen
         "greedy-ev" => {
             let w = parse_greedy_ev_weights(params)?;
             Ok(Box::new(GreedyEvAgent::with_weights(seed, w)))
+        }
+        "phased" => {
+            let cfg = parse_phased_config(params)?;
+            Ok(Box::new(PhasedAgent::with_config(seed, cfg)))
         }
         "random" => Err(format!(
             "\"random\" takes no parameters; use the bare name \"random\", not \"{spec}\""
@@ -270,6 +289,84 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
                 };
             }
             other => return Err(format!("mcts-uct: unknown key \"{other}\"")),
+        }
+    }
+    Ok(cfg)
+}
+
+/// Parse a `phased:...` parameter list into a [`PhasedConfig`].
+///
+/// `base=v1` restores the configuration the crate first shipped with — the
+/// legacy military / coin / economy models, no chain equity, no opponent menu
+/// and the original `next_age_start` magnitudes — which is what makes
+/// "the new agent against the old one" a single-binary measurement rather than
+/// a build-two-checkouts exercise. Keys after `base` override it, exactly as
+/// `alphabeta`'s `base` and `weights` keys do.
+pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
+    let mut cfg = PhasedConfig::default();
+    for (k, v) in parse_params(params)? {
+        match k {
+            "base" => match v {
+                "v1" => cfg = PhasedConfig::v1(),
+                "default" => cfg = PhasedConfig::default(),
+                other => return Err(format!("phased: unknown base \"{other}\"")),
+            },
+            "military_model" | "mil" => {
+                cfg.military_model = match v {
+                    "legacy" => MilitaryModel::Legacy,
+                    "band" => MilitaryModel::Band,
+                    other => return Err(format!("phased: unknown military_model \"{other}\"")),
+                }
+            }
+            "coin_model" | "coin" => {
+                cfg.coin_model = match v {
+                    "legacy" => CoinModel::Legacy,
+                    "smooth" => CoinModel::Smooth,
+                    other => return Err(format!("phased: unknown coin_model \"{other}\"")),
+                }
+            }
+            "economy_model" | "econ" => {
+                cfg.economy_model = match v {
+                    "legacy" => EconomyModel::Legacy,
+                    "bill" => EconomyModel::Bill,
+                    other => return Err(format!("phased: unknown economy_model \"{other}\"")),
+                }
+            }
+            "blend" => {
+                cfg.blend = match v {
+                    "on" | "true" => PhasedBlend::default(),
+                    "off" | "false" => PhasedBlend::off(),
+                    other => return Err(format!("phased: unknown blend \"{other}\"")),
+                }
+            }
+            "menu_lambda" | "lambda" => cfg.eval.menu.lambda = parse_field(k, v)?,
+            "menu_tau" | "tau" => cfg.eval.menu.tau = parse_field(k, v)?,
+            "chain_equity" | "chaineq" => cfg.eval.chain_equity = parse_field(k, v)?,
+            "resource_bill" | "bill" => cfg.eval.resource_bill = parse_field(k, v)?,
+            "military_band" | "band" => cfg.eval.military_band = parse_field(k, v)?,
+            "military_loot" | "loot" => cfg.eval.military_loot = parse_field(k, v)?,
+            "military_sigma_scale" | "kappa" => cfg.eval.military_sigma_scale = parse_field(k, v)?,
+            "military_sigma_min" => cfg.eval.military_sigma_min = parse_field(k, v)?,
+            "military_logistic_scale" => cfg.eval.military_logistic_scale = parse_field(k, v)?,
+            "coin_smooth_beta" | "beta" => cfg.eval.coin_smooth_beta = parse_field(k, v)?,
+            "coin_smooth_ref" | "cref" => cfg.eval.coin_smooth_ref = parse_field(k, v)?,
+            "military_position" => cfg.eval.military_position = parse_field(k, v)?,
+            "military_endgame_urgency" | "urgency" => {
+                cfg.eval.military_endgame_urgency = parse_field(k, v)?
+            }
+            "coins_div3" => cfg.eval.coins_div3 = parse_field(k, v)?,
+            "vp_projection" => cfg.eval.vp_projection = parse_field(k, v)?,
+            "development" => cfg.eval.development = parse_field(k, v)?,
+            "science_ladder" => cfg.eval.science_ladder = parse_field(k, v)?,
+            "deny" => cfg.eval.deny = parse_field(k, v)?,
+            "deny_chain_gift" => cfg.eval.deny_chain_gift = parse_field(k, v)?,
+            "wonder_potential" => cfg.eval.wonder_potential = parse_field(k, v)?,
+            // The `next_age_start` array, one age at a time, because a comma
+            // would collide with the parameter separator.
+            "start1" => cfg.eval.next_age_start[0] = parse_field(k, v)?,
+            "start2" => cfg.eval.next_age_start[1] = parse_field(k, v)?,
+            "start3" => cfg.eval.next_age_start[2] = parse_field(k, v)?,
+            other => return Err(format!("phased: unknown key \"{other}\"")),
         }
     }
     Ok(cfg)
@@ -553,6 +650,64 @@ mod tests {
         assert_eq!(agent.spec().name, "greedy-ev");
         let w = parse_greedy_ev_weights("instant_result=500").unwrap();
         assert_eq!(w.instant_result, 500.0);
+    }
+
+    #[test]
+    fn phased_base_v1_is_the_configuration_the_crate_shipped_with() {
+        assert_eq!(parse_phased_config("base=v1").unwrap(), PhasedConfig::v1());
+        assert_eq!(parse_phased_config("").unwrap(), PhasedConfig::default());
+        assert_ne!(PhasedConfig::v1(), PhasedConfig::default());
+    }
+
+    #[test]
+    fn phased_config_parser_reads_every_supported_key() {
+        let cfg = parse_phased_config(
+            "mil=legacy,coin=smooth,econ=bill,blend=off,lambda=0.4,tau=2.0,chaineq=0.5,\
+             bill=0.9,band=0.8,loot=0.7,kappa=0.9,military_sigma_min=0.4,\
+             military_logistic_scale=0.6,beta=0.5,cref=6,military_position=0.2,\
+             vp_projection=1.1,development=0.4,science_ladder=1.2,deny=0.9,\
+             deny_chain_gift=0.1,wonder_potential=0.6,start1=1.5,start2=1,start3=0",
+        )
+        .unwrap();
+        assert_eq!(cfg.military_model, MilitaryModel::Legacy);
+        assert_eq!(cfg.coin_model, CoinModel::Smooth);
+        assert_eq!(cfg.economy_model, EconomyModel::Bill);
+        assert!(!cfg.blend.enabled);
+        assert_eq!(cfg.eval.menu.lambda, 0.4);
+        assert_eq!(cfg.eval.menu.tau, 2.0);
+        assert_eq!(cfg.eval.chain_equity, 0.5);
+        assert_eq!(cfg.eval.resource_bill, 0.9);
+        assert_eq!(cfg.eval.military_band, 0.8);
+        assert_eq!(cfg.eval.military_loot, 0.7);
+        assert_eq!(cfg.eval.military_sigma_scale, 0.9);
+        assert_eq!(cfg.eval.military_sigma_min, 0.4);
+        assert_eq!(cfg.eval.military_logistic_scale, 0.6);
+        assert_eq!(cfg.eval.coin_smooth_beta, 0.5);
+        assert_eq!(cfg.eval.coin_smooth_ref, 6.0);
+        assert_eq!(cfg.eval.next_age_start, [1.5, 1.0, 0.0]);
+        assert!(parse_phased_config("mil=sideways").is_err());
+        assert!(parse_phased_config("not_a_real_key=1").is_err());
+    }
+
+    /// The model switches have to reach the spec string a results file
+    /// records, or two runs of the same ablation campaign are
+    /// indistinguishable after the fact.
+    #[test]
+    fn the_phased_models_show_up_in_the_recorded_spec() {
+        let agent = make_agent_from_spec("phased:mil=band,coin=smooth,econ=bill", 1).unwrap();
+        assert_eq!(agent.spec().name, "phased");
+        assert!(
+            agent.spec().params.contains("models=band/smooth/bill"),
+            "{}",
+            agent.spec().params
+        );
+        let old = make_agent_from_spec("phased:base=v1", 1).unwrap();
+        assert!(
+            old.spec().params.contains("models=legacy/legacy/legacy"),
+            "{}",
+            old.spec().params
+        );
+        assert_ne!(agent.spec().params, old.spec().params);
     }
 
     #[test]
