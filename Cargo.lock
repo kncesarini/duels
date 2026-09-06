@@ -421,7 +421,7 @@ dependencies = [
  "duels-agent-random",
  "duels-agents-api",
  "duels-core",
- "duels-strategy",
+ "duels-eval",
  "rand 0.8.8",
 ]
 
@@ -487,6 +487,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+]
+
+[[package]]
+name = "duels-eval"
+version = "0.1.0"
+dependencies = [
+ "duels-core",
+ "duels-strategy",
+ "rand 0.8.8",
 ]
 
 [[package]]

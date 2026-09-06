@@ -29,13 +29,13 @@
 //! left. Between them the two tests say: one thing changed at `Config::v3()`,
 //! it is the thing that was meant to change, and nothing else did.
 
-use duels_agent_phased::{
-    expected_value, menu, terms, Config, EvalWeights, PendingModel, Root, WonderModel,
-};
 use duels_core::data::WonderId;
 use duels_core::scoring::{self, GameResult};
 use duels_core::testing::StateBuilder;
 use duels_core::{engine, Action, GameState, Player};
+use duels_eval::{
+    expected_value, menu, terms, Config, EvalWeights, PendingModel, Root, WonderModel,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -56,7 +56,7 @@ fn v3_evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
             GameResult::Draw => 0.0,
         };
     }
-    if let Some(v) = duels_agent_phased::rail_value(
+    if let Some(v) = duels_eval::rail_value(
         state,
         me,
         root.age(),
@@ -70,7 +70,7 @@ fn v3_evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
 }
 
 fn v3_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
-    use duels_agent_phased::{CoinModel, EconomyModel, MilitaryModel};
+    use duels_eval::{CoinModel, EconomyModel, MilitaryModel};
 
     let e = &root.config().eval;
     let c = root.config();

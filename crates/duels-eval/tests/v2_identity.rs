@@ -31,12 +31,12 @@
 //! 4. `Config::v2()` really is the round-two configuration field by field, so
 //!    the identity is about the code rather than a coincidence of weights.
 
-use duels_agent_phased::{
-    expected_value, menu, terms, Config, EvalWeights, MenuWeights, MilSmoothing, Root,
-};
 use duels_core::scoring::{self, GameResult};
 use duels_core::testing::StateBuilder;
 use duels_core::{engine, Action, GameState, Player};
+use duels_eval::{
+    expected_value, menu, terms, Config, EvalWeights, MenuWeights, MilSmoothing, Root,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -65,7 +65,7 @@ fn v2_evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
 }
 
 fn v2_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
-    use duels_agent_phased::{CoinModel, EconomyModel, MilitaryModel};
+    use duels_eval::{CoinModel, EconomyModel, MilitaryModel};
 
     let e = &root.config().eval;
     let c = root.config();
@@ -356,10 +356,10 @@ fn the_v2_smoothing_width_is_the_round_two_one() {
 #[test]
 fn config_v2_switches_off_every_round_three_option() {
     let v2 = Config::v2();
-    assert_eq!(v2.rails, duels_agent_phased::RailModel::Off);
+    assert_eq!(v2.rails, duels_eval::RailModel::Off);
     assert_eq!(
         v2.menu_shield_pricing,
-        duels_agent_phased::MenuShieldPricing::OneSided
+        duels_eval::MenuShieldPricing::OneSided
     );
     assert_eq!(v2.military_horizon, None);
     assert_eq!(v2.eval.imminent, 0.0);

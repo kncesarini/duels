@@ -4,6 +4,7 @@ members = [
     "crates/duels-core",
     "crates/duels-agents-api",
     "crates/duels-strategy",
+    "crates/duels-eval",
     "crates/duels-arena",
     "crates/duels-server",
     "crates/agents/random",

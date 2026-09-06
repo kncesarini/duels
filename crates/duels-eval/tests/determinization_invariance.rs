@@ -2,14 +2,17 @@
 //! touches game state: **nothing may depend on which hidden world it is
 //! looking at.**
 //!
-//! [`PhasedAgent::choose`] is handed an [`Observation`], which carries no
-//! hidden information, and immediately invents one concrete [`GameState`] from
-//! it — the engine's chance API needs a real state to work on. That invented
-//! world assigns a specific identity to every face-down card. If any part of
-//! the commitment blend, any weight, or any term read one of those identities,
-//! the agent would be scoring the sampler's luck rather than the position, and
-//! two runs of the same decision could disagree for no reason a player could
-//! see.
+//! `duels-agent-phased`, this evaluation's caller, is handed an
+//! [`Observation`], which carries no hidden information, and immediately
+//! invents one concrete [`GameState`] from it — the engine's chance API needs
+//! a real state to work on. That invented world assigns a specific identity to
+//! every face-down card. If any part of the commitment blend, any weight, or
+//! any term read one of those identities, the agent would be scoring the
+//! sampler's luck rather than the position, and two runs of the same decision
+//! could disagree for no reason a player could see.
+//!
+//! So the property is asserted here, of the evaluation, rather than of any one
+//! caller: every caller inherits it.
 //!
 //! Two independent attacks, matching `duels-strategy`'s own
 //! `tests/determinization_invariance.rs`:
@@ -26,15 +29,14 @@
 //! identical arithmetic produce identical bits, and a discrepancy of any size
 //! means something read what it should not have.
 
-use duels_agent_phased::{
-    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel, EvalWeights,
-    GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent,
-    RailModel, Root, SupplyModel, WonderModel,
-};
-use duels_agents_api::{Agent, Budget};
 use duels_core::observation::Observation;
 use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards, StateBuilder};
 use duels_core::{engine, Action, GameState, Player};
+use duels_eval::{
+    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel, EvalWeights,
+    GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel, RailModel, Root,
+    SupplyModel, WonderModel,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -251,13 +253,14 @@ fn the_property_holds_with_the_blend_switched_off() {
     }
 }
 
-/// The whole-agent restatement: two agents whose internal `sample_state`
+/// The whole-decision restatement: two callers whose internal `sample_state`
 /// draws differ must score every candidate identically. The action each one
 /// finally returns may still differ, because ties are broken from each
 /// agent's own RNG — it is the scores feeding that choice which must not
-/// depend on the sample.
+/// depend on the sample. (That an agent always returns something legal is
+/// `duels-agent-phased`'s own test; this crate has no agent.)
 #[test]
-fn two_differently_seeded_agents_score_every_candidate_identically() {
+fn two_differently_seeded_samples_score_every_candidate_identically() {
     let st = advance(11, 18, 0x9E37_79B9_7F4A_7C15);
     assert!(!st.is_over());
     let obs = st.observation();
@@ -278,13 +281,6 @@ fn two_differently_seeded_agents_score_every_candidate_identically() {
             expected_value(&b, action, me, &root_b),
             &format!("candidate {action:?}"),
         );
-    }
-
-    // ...and the agent itself, differently seeded, still returns something
-    // legal every time.
-    for seed in 0..8u64 {
-        let mut agent = PhasedAgent::new(seed);
-        assert!(legal.contains(&agent.choose(&obs, &legal, Budget::Nodes(1))));
     }
 }
 

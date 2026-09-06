@@ -37,14 +37,14 @@
 //! blast radius: the seven wonders that do not print play again are worth
 //! exactly what they were worth before, at any premium.
 
-use duels_agent_phased::{
-    expected_value, menu, terms, CoinModel, Config, EconomyModel, EvalWeights, MilitaryModel, Root,
-    WonderModel, DESTROY_REPLACE_SHARE, MAX_PENDING_DEPTH,
-};
 use duels_core::data::{WonderId, NUM_WONDERS};
 use duels_core::scoring::{self, GameResult};
 use duels_core::testing::StateBuilder;
 use duels_core::{engine, Action, GameState, Player};
+use duels_eval::{
+    expected_value, menu, terms, CoinModel, Config, EconomyModel, EvalWeights, MilitaryModel, Root,
+    WonderModel, DESTROY_REPLACE_SHARE, MAX_PENDING_DEPTH,
+};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -107,7 +107,7 @@ fn v5_evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 
             GameResult::Draw => 0.0,
         };
     }
-    if root.config().pending_model == duels_agent_phased::PendingModel::Completed
+    if root.config().pending_model == duels_eval::PendingModel::Completed
         && depth > 0
         && state.pending().is_some()
     {
@@ -115,7 +115,7 @@ fn v5_evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 
             return v;
         }
     }
-    if let Some(v) = duels_agent_phased::rail_value(
+    if let Some(v) = duels_eval::rail_value(
         state,
         me,
         root.age(),

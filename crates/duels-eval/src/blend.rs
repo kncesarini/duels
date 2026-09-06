@@ -71,8 +71,10 @@
 //! should) and again through the weight that term is multiplied by. A move
 //! that raises `c_sci` would then earn a bonus simply for having raised the
 //! importance of the science term, on top of the legitimate gain in the
-//! term's value. See [`crate::Root`] and
-//! `crate::tests::root_weights_are_built_exactly_once_per_choose`.
+//! term's value. See [`crate::Root`],
+//! `crate::tests::a_committing_move_is_scored_under_the_root_weights_not_its_own`
+//! and, for the counting half, `duels-agent-phased`'s
+//! `tests::root_weights_are_built_exactly_once_per_choose`.
 
 use duels_core::data;
 use duels_strategy::{MilitaryRead, ScienceRead, ThreatWeights};

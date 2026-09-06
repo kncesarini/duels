@@ -11,10 +11,11 @@
 //!
 //! The pattern is `mcts-uct`'s: a **verbatim copy** of the previous
 //! evaluation lives in this file, whole seeded games are driven through both
-//! it and the real agent under `Config::v1()`, and equality is asserted move
-//! for move — plus, position by position, on the raw `f64` bits of every
-//! candidate's score, which is the sharper of the two (a difference too small
-//! to change a decision still fails).
+//! it and the live evaluation under `Config::v1()` — by a driver that is
+//! `PhasedAgent::choose` line for line, RNG usage included — and equality is
+//! asserted move for move, plus, position by position, on the raw `f64` bits
+//! of every candidate's score, which is the sharper of the two (a difference
+//! too small to change a decision still fails).
 //!
 //! The copy calls the same public `terms::` functions the original did. Those
 //! functions were not edited: `military_position`, `race_liquidity`,
@@ -24,11 +25,10 @@
 //! `development_value` is `development_value_with(.., true)`, its previous
 //! and still-default behaviour.
 
-use duels_agent_phased::{terms, Config, PhasedAgent, Root};
-use duels_agents_api::{Agent, Budget};
 use duels_core::engine;
 use duels_core::scoring::{self, GameResult};
-use duels_core::{Action, GameState, Player};
+use duels_core::{Action, GameState, Observation, Player};
+use duels_eval::{terms, Config, Root};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -104,38 +104,49 @@ fn legacy_expected_value(state: &GameState, action: Action, me: Player, root: &R
     acc + root.denial_term(action)
 }
 
+/// Which evaluation a [`Driver`] scores candidates with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Which {
+    /// The live `duels_eval::expected_value`, under `Config::v1()`.
+    Live,
+    /// The verbatim copy above.
+    Legacy,
+}
+
 /// A verbatim copy of `PhasedAgent::choose`, including its RNG usage, so the
-/// two agents draw from their streams in lockstep and a divergence can only
+/// two drivers draw from their streams in lockstep and a divergence can only
 /// come from the evaluation.
-struct LegacyAgent {
+///
+/// It is a plain struct rather than an `Agent`: this crate sits below
+/// `duels-agents-api` and every agent crate, which is the whole point of it
+/// existing, and the trait adds nothing the comparison needs. The policy is
+/// still `PhasedAgent::choose` line for line — the top-level guard on the
+/// extraction that created this crate was 20 whole seeded games per
+/// configuration snapshot driven through the *real* agent, before and after,
+/// compared move for move.
+struct Driver {
     rng: StdRng,
     config: Config,
+    which: Which,
 }
 
-impl LegacyAgent {
-    fn new(seed: u64) -> LegacyAgent {
-        LegacyAgent {
+impl Driver {
+    fn new(seed: u64, which: Which) -> Driver {
+        Driver {
             rng: StdRng::seed_from_u64(seed),
             config: Config::v1(),
-        }
-    }
-}
-
-impl Agent for LegacyAgent {
-    fn spec(&self) -> duels_agents_api::AgentSpec {
-        duels_agents_api::AgentSpec {
-            name: "phased-legacy".to_string(),
-            version: "1.0.0".to_string(),
-            params: self.config.params_string(),
+            which,
         }
     }
 
-    fn choose(
-        &mut self,
-        obs: &duels_core::Observation,
-        legal: &[Action],
-        _budget: Budget,
-    ) -> Action {
+    fn score(&self, state: &GameState, action: Action, me: Player, root: &Root) -> f64 {
+        match self.which {
+            Which::Live => duels_eval::expected_value(state, action, me, root),
+            Which::Legacy => legacy_expected_value(state, action, me, root),
+        }
+    }
+
+    fn choose(&mut self, obs: &Observation, legal: &[Action]) -> Action {
         assert!(!legal.is_empty());
         if legal.len() == 1 {
             return legal[0];
@@ -146,10 +157,7 @@ impl Agent for LegacyAgent {
 
         let mut scored: Vec<(Action, f64)> = Vec::with_capacity(legal.len());
         for &action in legal {
-            scored.push((
-                action,
-                legacy_expected_value(&base_state, action, me, &root),
-            ));
+            scored.push((action, self.score(&base_state, action, me, &root)));
         }
         let Some(best_score) = scored.iter().map(|&(_, s)| s).fold(None, |m, s| match m {
             Some(b) if b >= s => Some(b),
@@ -199,7 +207,7 @@ fn v1_scores_every_candidate_bit_identically_to_the_previous_evaluation() {
             let me = st.current_player();
             let root = Root::new(&st, me, Config::v1());
             for action in engine::legal_actions(&st) {
-                let a = duels_agent_phased::expected_value(&st, action, me, &root);
+                let a = duels_eval::expected_value(&st, action, me, &root);
                 let b = legacy_expected_value(&st, action, me, &root);
                 assert_eq!(
                     a.to_bits(),
@@ -220,10 +228,10 @@ fn v1_scores_every_candidate_bit_identically_to_the_previous_evaluation() {
 #[test]
 fn v1_plays_whole_games_move_for_move_like_the_previous_agent() {
     for seed in 0..12u64 {
-        let mut new_one = PhasedAgent::with_config(seed * 2 + 1, Config::v1());
-        let mut new_two = PhasedAgent::with_config(seed * 2 + 2, Config::v1());
-        let mut old_one = LegacyAgent::new(seed * 2 + 1);
-        let mut old_two = LegacyAgent::new(seed * 2 + 2);
+        let mut new_one = Driver::new(seed * 2 + 1, Which::Live);
+        let mut new_two = Driver::new(seed * 2 + 2, Which::Live);
+        let mut old_one = Driver::new(seed * 2 + 1, Which::Legacy);
+        let mut old_two = Driver::new(seed * 2 + 2, Which::Legacy);
 
         let mut a = engine::new_game(seed);
         let mut b = engine::new_game(seed);
@@ -250,12 +258,12 @@ fn v1_plays_whole_games_move_for_move_like_the_previous_agent() {
 
             let (x, y) = match a.current_player() {
                 Player::One => (
-                    new_one.choose(&obs_a, &legal_a, Budget::Nodes(1)),
-                    old_one.choose(&obs_b, &legal_b, Budget::Nodes(1)),
+                    new_one.choose(&obs_a, &legal_a),
+                    old_one.choose(&obs_b, &legal_b),
                 ),
                 Player::Two => (
-                    new_two.choose(&obs_a, &legal_a, Budget::Nodes(1)),
-                    old_two.choose(&obs_b, &legal_b, Budget::Nodes(1)),
+                    new_two.choose(&obs_a, &legal_a),
+                    old_two.choose(&obs_b, &legal_b),
                 ),
             };
             assert_eq!(x, y, "seed {seed} move {moves}: chose {x:?} vs {y:?}");
@@ -285,7 +293,7 @@ fn the_default_configuration_is_not_the_legacy_one() {
         let new = Root::new(&st, me, Config::default());
         let old = Root::new(&st, me, Config::v1());
         for action in engine::legal_actions(&st) {
-            let a = duels_agent_phased::expected_value(&st, action, me, &new);
+            let a = duels_eval::expected_value(&st, action, me, &new);
             let b = legacy_expected_value(&st, action, me, &old);
             if a.to_bits() != b.to_bits() {
                 differed += 1;
