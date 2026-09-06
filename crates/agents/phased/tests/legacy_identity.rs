@@ -63,7 +63,7 @@ fn legacy_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
 
     let urgency = e.military_endgame_urgency * terms::military_urgency(state, p);
     let start = terms::next_age_start(state, p, e);
-    let wonders = e.wonder_potential * terms::wonder_potential(state, p);
+    let wonders = e.wonder_potential * terms::wonder_potential(state, p, e);
     let gift = -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age());
 
     points

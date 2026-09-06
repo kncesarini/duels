@@ -142,12 +142,24 @@ fn main() {
         supply_model: duels_agent_phased::SupplyModel::Dealt,
         ..Config::default()
     };
+    // Round six. The extra-turn premium is one flag test and one addition on a
+    // constant, per unbuilt wonder -- the cheapest thing this crate has ever
+    // added -- and the row exists to say so with a number rather than to
+    // discover anything.
+    let no_premium = Config {
+        eval: EvalWeights {
+            wonder_extra_turn_premium: 0.0,
+            ..Config::default().eval
+        },
+        ..Config::default()
+    };
 
     let mut rows: Vec<Row> = [
         ("v1 (the round-one agent)", Config::v1()),
         ("v2 (the round-two agent)", Config::v2()),
         ("v3 (the round-three agent)", Config::v3()),
         ("v4 (the round-four agent)", Config::v4()),
+        ("v5 (the round-five agent)", Config::v5()),
         ("default, menu and chain equity off", no_chain),
         ("default, menu off", menu_off),
         ("default, rails off", rails_off),
@@ -161,6 +173,7 @@ fn main() {
         ("default + the discard/wonder floor", floor),
         ("default + soft affordability", soft),
         ("default + the dealt supply weighting", dealt),
+        ("default, extra-turn premium off", no_premium),
         ("default", Config::default()),
     ]
     .into_iter()

@@ -370,6 +370,27 @@ fn the_property_holds_under_every_model_combination() {
             }
         }
     }
+    // Round six's one option. The extra-turn premium is a constant added to a
+    // wonder's flat power, keyed off `WonderDef::play_again` -- a static
+    // property of the wonder, not of the position -- so it has no plausible
+    // route to a hidden identity. It is swept anyway, at a magnitude far
+    // larger than the sweep's peak, because "no configuration leaks" is the
+    // property and a knob exempted from it on an argument is a knob nobody
+    // checked. Both wonder models are included: `Budget` must be provably
+    // *untouched* by it, and a leak-free run at both settings is part of
+    // saying so.
+    for wonder_model in [WonderModel::Flat, WonderModel::Budget] {
+        for premium in [0.0, 9.0, 30.0] {
+            configs.push(Config {
+                wonder_model,
+                eval: EvalWeights {
+                    wonder_extra_turn_premium: premium,
+                    ..Config::default().eval
+                },
+                ..Config::default()
+            });
+        }
+    }
     for (i, config) in configs.iter().enumerate() {
         for seed in 0..6u64 {
             for &steps in &[7usize, 17, 29, 43] {
@@ -656,6 +677,17 @@ fn round_four_configs() -> Vec<Config> {
             ..Config::default()
         },
         Config::v4(),
+        Config::v5(),
+        // Round six: the extra-turn premium, at a magnitude well past the
+        // sweep's peak, through the pending-effect path as well.
+        Config {
+            pending_model: PendingModel::Completed,
+            eval: EvalWeights {
+                wonder_extra_turn_premium: 30.0,
+                ..Config::default().eval
+            },
+            ..Config::default()
+        },
     ]
 }
 

@@ -232,7 +232,7 @@ fn v4_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let urgency = e.military_endgame_urgency * terms::military_urgency(state, p);
     let start = terms::next_age_start(state, p, e);
     let wonders = match c.wonder_model {
-        WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p),
+        WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p, e),
         WonderModel::Budget => terms::wonder_potential_budget(state, p, root.wonders()),
     };
     let gift = if e.menu.lambda == 0.0 {

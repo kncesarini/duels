@@ -29,7 +29,9 @@
 //! left. Between them the two tests say: one thing changed at `Config::v3()`,
 //! it is the thing that was meant to change, and nothing else did.
 
-use duels_agent_phased::{expected_value, menu, terms, Config, PendingModel, Root, WonderModel};
+use duels_agent_phased::{
+    expected_value, menu, terms, Config, EvalWeights, PendingModel, Root, WonderModel,
+};
 use duels_core::data::WonderId;
 use duels_core::scoring::{self, GameResult};
 use duels_core::testing::StateBuilder;
@@ -131,7 +133,7 @@ fn v3_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
 
     let urgency = e.military_endgame_urgency * terms::military_urgency(state, p);
     let start = terms::next_age_start(state, p, e);
-    let wonders = e.wonder_potential * terms::wonder_potential(state, p);
+    let wonders = e.wonder_potential * terms::wonder_potential(state, p, e);
     let gift = if e.menu.lambda == 0.0 {
         -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age())
     } else {
@@ -352,7 +354,7 @@ fn the_wonder_cap_fix_is_a_real_change() {
     );
     // With a slot still open the two agree exactly.
     assert_eq!(
-        terms::wonder_potential(&st, Player::One).to_bits(),
+        terms::wonder_potential(&st, Player::One, &EvalWeights::default()).to_bits(),
         uncapped_wonder_potential(&st, Player::One).to_bits(),
         "with a slot left the cap must change nothing"
     );
@@ -382,8 +384,9 @@ fn the_wonder_cap_fix_is_a_real_change() {
 
     assert_eq!(full.wonders_built_total(), 7, "every slot is gone");
     assert!(!full.wonder_slots_left());
-    assert_eq!(terms::wonder_potential(&full, Player::One), 0.0);
-    assert_eq!(terms::wonder_potential(&full, Player::Two), 0.0);
+    let e = EvalWeights::default();
+    assert_eq!(terms::wonder_potential(&full, Player::One, &e), 0.0);
+    assert_eq!(terms::wonder_potential(&full, Player::Two, &e), 0.0);
     assert_eq!(
         uncapped_wonder_potential(&full, Player::One),
         terms::wonder_power(w("the-pyramids")),

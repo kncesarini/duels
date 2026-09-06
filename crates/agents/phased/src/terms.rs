@@ -1055,22 +1055,65 @@ pub fn unbuilt_wonders(state: &GameState, p: Player) -> f64 {
 /// unconditional (not behind a [`crate::Config`] knob) for the same reason
 /// `next_age_start`'s doubled magnitude was: it is arithmetic that was simply
 /// wrong. `tests::an_unbuildable_wonder_is_worth_nothing` pins it.
-pub fn wonder_potential(state: &GameState, p: Player) -> f64 {
+pub fn wonder_potential(state: &GameState, p: Player, e: &EvalWeights) -> f64 {
     if wonder_slots_left(state) <= 0.0 {
         return 0.0;
     }
     let ps = state.player(p);
     ps.wonders()
         .filter(|&w| !ps.has_built_wonder(w))
-        .map(wonder_power)
+        .map(|w| wonder_power_flat(w, e))
         .sum()
+}
+
+/// [`wonder_power`] plus [`EvalWeights::wonder_extra_turn_premium`] for a
+/// wonder that prints **play again**.
+///
+/// This is the whole of the extra-turn premium: one flag test and one addition
+/// on a constant that does not depend on the position, which is why it is
+/// nothing to root-fix and costs nothing to compute (see
+/// `examples/decision_cost.rs`).
+///
+/// The premium is added *on top of* the flat `+3`, not substituted for it, so
+/// the total a play-again wonder is worth is `3 + premium` — `12` at the
+/// measured default of `9.0`, against `3` for every other effect. At `0.0`
+/// (round five, [`crate::Config::v5`]) this function is `wonder_power`, and it
+/// is written as a guarded addition rather than an unconditional `+ premium`
+/// precisely so that it is `wonder_power` **bit for bit**, `-0.0` included,
+/// rather than merely equal to it. `tests/v5_identity.rs` pins that.
+///
+/// # What counts as an extra turn, and what deliberately does not
+///
+/// Exactly five wonders print play again — Piraeus, The Appian Way, The
+/// Hanging Gardens, The Sphinx and The Temple of Artemis — and each grants
+/// exactly one, on construction, with no condition. (The engine sets one flag
+/// and clears it when the turn is taken; a play-again wonder built *on* an
+/// extra turn grants another, so `e` of them are `e + 1` consecutive actions.
+/// [`duels_strategy::tempo::Tempo::chain`] is where that chaining is counted;
+/// this term does not need it, because it prices one unbuilt wonder at a
+/// time.)
+///
+/// The **Theology** progress token grants play again for *every* wonder its
+/// holder builds, and this premium deliberately does not price that. It is a
+/// real omission, and it is left as one on purpose: folding it in would mean
+/// every unbuilt wonder in a Theology holder's hand collecting the premium at
+/// once, which would have made the round-six arena sweep a measurement of two
+/// things instead of one. See the crate docs.
+pub fn wonder_power_flat(w: WonderId, e: &EvalWeights) -> f64 {
+    if e.wonder_extra_turn_premium != 0.0 && w.def().play_again {
+        wonder_power(w) + e.wonder_extra_turn_premium
+    } else {
+        wonder_power(w)
+    }
 }
 
 /// The flat, effect-blind power score [`wonder_potential`] sums.
 ///
 /// Every effect that is not points, coins or shields is priced at a flat `+3`
 /// ("this wonder does something"), which is what
-/// [`crate::WonderModel::Budget`] replaces with a per-effect price.
+/// [`crate::WonderModel::Budget`] replaces with a per-effect price — and what
+/// [`wonder_power_flat`] adds the one measured per-effect correction to,
+/// without leaving this model.
 pub fn wonder_power(w: WonderId) -> f64 {
     let def = w.def();
     let mut v = f64::from(def.victory_points)
@@ -1977,7 +2020,7 @@ mod tests {
         assert_eq!(with_a_slot.wonders_built_total(), 6);
         assert_eq!(wonder_slots_left(&with_a_slot), 1.0);
         assert!(
-            wonder_potential(&with_a_slot, Player::One) > 0.0,
+            wonder_potential(&with_a_slot, Player::One, &EvalWeights::default()) > 0.0,
             "an unbuilt Pyramids with a slot left is worth something"
         );
 
@@ -2001,8 +2044,9 @@ mod tests {
         assert_eq!(full.wonders_built_total(), MAX_WONDERS_BUILT);
         assert_eq!(wonder_slots_left(&full), 0.0);
         assert_eq!(unbuilt_wonders(&full, Player::One), 1.0);
-        assert_eq!(wonder_potential(&full, Player::One), 0.0);
-        assert_eq!(wonder_potential(&full, Player::Two), 0.0);
+        let e = EvalWeights::default();
+        assert_eq!(wonder_potential(&full, Player::One, &e), 0.0);
+        assert_eq!(wonder_potential(&full, Player::Two, &e), 0.0);
     }
 
     /// Age III prints no brown or grey card, so nothing destroyed in Age III
