@@ -50,14 +50,15 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`default`), guild pricing
+//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`default`), guild pricing
 //!   (`guild`, `unpriced`/`projected`) and the guild projection weight
 //!   (`guildproj`), the menu floor (`menufloor`, `none`/`discard`/
 //!   `discardwonder`), the menu's soft affordability width (`afford`), the
 //!   supply weighting (`supply`, `raw`/`dealt`), the yellow-density term
 //!   (`yellow`, with `discardrate`), the pending-effect model
 //!   (`pending`, `unresolved`/`completed`), the wonder model (`wonder`,
-//!   `flat`/`budget`, with `wturns` and `wextra`), the destroy-replacement
+//!   `flat`/`budget`, with `wturns` and `wextra`), the flat model's extra-turn
+//!   premium (`wonder_extra_turn_premium`/`wprem`), the destroy-replacement
 //!   discount (`destroy_replace`/`destroyrepl`, `on`/`off`), the terminal rails
 //!   (`rails` `on`/`off`, `imminent`), the menu's shield price
 //!   (`shield_price`/`shieldprice`, `onesided`/`diff`), the military
@@ -325,6 +326,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v2" => cfg = PhasedConfig::v2(),
                 "v3" => cfg = PhasedConfig::v3(),
                 "v4" => cfg = PhasedConfig::v4(),
+                "v5" => cfg = PhasedConfig::v5(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
@@ -381,6 +383,9 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 cfg.eval.wonder_turns_per_wonder = parse_field(k, v)?
             }
             "wonder_extra_turn_vp" | "wextra" => cfg.eval.wonder_extra_turn_vp = parse_field(k, v)?,
+            "wonder_extra_turn_premium" | "wprem" => {
+                cfg.eval.wonder_extra_turn_premium = parse_field(k, v)?
+            }
             "rails" => {
                 cfg.rails = match v {
                     "on" | "true" => RailModel::On,
@@ -758,7 +763,7 @@ mod tests {
         let off = parse_phased_config(
             "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
              pending=unresolved,guild=unpriced,guildproj=0,menufloor=none,afford=0,\
-             supply=raw,yellow=0",
+             supply=raw,yellow=0,wprem=0",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -778,7 +783,7 @@ mod tests {
         assert_eq!(off, PhasedConfig::v3());
         assert_eq!(
             parse_phased_config(
-                "pending=unresolved,wonder=flat,destroyrepl=off,guild=unpriced,guildproj=0,\
+                "pending=unresolved,wonder=flat,destroyrepl=off,wprem=0,guild=unpriced,guildproj=0,\
                  menufloor=none,afford=0,supply=raw,yellow=0"
             )
             .unwrap(),
@@ -798,7 +803,7 @@ mod tests {
         assert_eq!(parse_phased_config("base=v4").unwrap(), PhasedConfig::v4());
         assert_eq!(
             parse_phased_config(
-                "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0"
+                "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0,wprem=0"
             )
             .unwrap(),
             PhasedConfig::v4()
@@ -822,6 +827,22 @@ mod tests {
         assert!(parse_phased_config("guild=freehand").is_err());
         assert!(parse_phased_config("menufloor=basement").is_err());
         assert!(parse_phased_config("supply=plentiful").is_err());
+
+        // The round-six key, and its "off" value reproducing v5's.
+        assert_eq!(parse_phased_config("base=v5").unwrap(), PhasedConfig::v5());
+        assert_eq!(
+            parse_phased_config("wprem=0").unwrap(),
+            PhasedConfig::v5(),
+            "the extra-turn premium is the only thing round six changed"
+        );
+        assert_eq!(
+            parse_phased_config("wonder_extra_turn_premium=4.5")
+                .unwrap()
+                .eval
+                .wonder_extra_turn_premium,
+            4.5
+        );
+        assert_ne!(PhasedConfig::v5(), PhasedConfig::default());
     }
 
     #[test]

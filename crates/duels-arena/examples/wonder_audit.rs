@@ -23,6 +23,8 @@
 //!   how many drafted wonders were never built
 //!   the mean turn at which each wonder was built, and how often
 //!   the four effect wonders, called out on their own line
+//!   the five play-again wonders, called out on their own line
+//!   the decisions each side actually took, and how many were extra turns
 //!   how many games ended with a wonder that could never have been built
 //! ```
 //!
@@ -34,6 +36,18 @@
 //!     phased:base=v3 phased:base=v3 200 --budget nodes:1
 //! cargo run --release -p duels-arena --example wonder_audit -- \
 //!     phased:pending=completed phased:pending=completed 200 --budget nodes:1
+//! ```
+//!
+//! Round six asks the same question of the extra-turn premium, and the
+//! decisions/extra-turns lines are what answer it: a premium that makes the
+//! agent build play-again wonders more often and earlier should also show up
+//! as it *taking more turns*, which is the only reason to want them.
+//!
+//! ```text
+//! cargo run --release -p duels-arena --example wonder_audit -- \
+//!     phased:base=v5 phased:base=v5 400 --budget nodes:1
+//! cargo run --release -p duels-arena --example wonder_audit -- \
+//!     phased:wprem=9 phased:wprem=9 400 --budget nodes:1
 //! ```
 //!
 //! Arguments: the two agent specification strings, then optionally the number
@@ -64,6 +78,14 @@ fn leaves_a_pending_effect(w: WonderId) -> bool {
     def.destroy.is_some() || def.build_discarded_free || def.choose_progress_token
 }
 
+/// The five wonders that print **play again** -- Piraeus, The Appian Way, The
+/// Hanging Gardens, The Sphinx and The Temple of Artemis. Read off the wonder
+/// data for the same reason as above, and because the whole point of the
+/// round-six premium is that this set is priced differently from the rest.
+fn grants_an_extra_turn(w: WonderId) -> bool {
+    w.def().play_again
+}
+
 #[derive(Clone)]
 struct Side {
     games: u32,
@@ -77,6 +99,13 @@ struct Side {
     /// ...of those, the ones that were *unbuildable* — the seven shared slots
     /// were already gone. This is what bug two was paying for.
     dead_at_end: u32,
+    /// Decisions this side actually took, summed over games.
+    decisions: u32,
+    /// ...of those, the ones taken immediately after its own previous
+    /// decision: an extra turn, whether granted by a play-again wonder or by
+    /// Theology. This is the behaviour the round-six premium is *for*, as
+    /// opposed to the build counts, which are only the means.
+    extra_turns: u32,
 }
 
 impl Default for Side {
@@ -88,6 +117,8 @@ impl Default for Side {
             build_turn: [0.0; NUM_WONDERS],
             unbuilt_at_end: 0,
             dead_at_end: 0,
+            decisions: 0,
+            extra_turns: 0,
         }
     }
 }
@@ -102,6 +133,8 @@ impl Side {
         }
         self.unbuilt_at_end += other.unbuilt_at_end;
         self.dead_at_end += other.dead_at_end;
+        self.decisions += other.decisions;
+        self.extra_turns += other.extra_turns;
     }
 
     fn record_end(&mut self, state: &GameState, seat: Player) {
@@ -160,6 +193,10 @@ fn play(
     let mut state = engine::new_game(setup_seed);
     let mut rng = StdRng::seed_from_u64(setup_seed ^ ENGINE_RNG_SALT);
     let mut moves = 0u32;
+    // Who moved last. A decision taken by the same player twice running is an
+    // extra turn -- read off the sequence of movers rather than from a flag, so
+    // it counts what actually happened at the table.
+    let mut previous: Option<Player> = None;
 
     while !state.is_over() {
         let legal = engine::legal_actions(&state);
@@ -169,6 +206,15 @@ fn play(
         let obs = state.observation();
         let me = state.current_player();
         let action = agents[me.index()].choose(&obs, &legal, budget);
+        // A pending resolution (a destroy target, a progress token) is part of
+        // the same turn, not a new one, so it is not a decision for this count.
+        if state.pending().is_none() {
+            sides[me.index()].decisions += 1;
+            if previous == Some(me) {
+                sides[me.index()].extra_turns += 1;
+            }
+            previous = Some(me);
+        }
         if let Action::BuildWonder { wonder, .. } = action {
             let side = &mut sides[me.index()];
             side.built[wonder.index()] += 1;
@@ -221,6 +267,31 @@ fn report(name: &str, s: &Side) {
         100.0 * f64::from(built) / f64::from(drafted.max(1))
     );
 
+    println!(
+        "  the five play-again wonders (Piraeus / Appian Way / Hanging Gardens / \
+         Sphinx / Temple of Artemis):"
+    );
+    let (built, drafted, turn) = s.class(grants_an_extra_turn);
+    println!(
+        "      built                    {built:>5} / {drafted:<5} drafted  \
+         ({:.0}% of the ones drafted, mean turn {turn:.1})",
+        100.0 * f64::from(built) / f64::from(drafted.max(1))
+    );
+    let (built, drafted, turn) = s.class(|w| !grants_an_extra_turn(w));
+    println!(
+        "      every other wonder       {built:>5} / {drafted:<5} drafted  \
+         ({:.0}%, mean turn {turn:.1})",
+        100.0 * f64::from(built) / f64::from(drafted.max(1))
+    );
+    println!(
+        "      decisions taken          {:>5}          ({:.2} per game), of which \
+         {} were extra turns ({:.2} per game)",
+        s.decisions,
+        per(s.decisions),
+        s.extra_turns,
+        per(s.extra_turns)
+    );
+
     println!("  per wonder:");
     let mut rows: Vec<usize> = (0..NUM_WONDERS).collect();
     rows.sort_by_key(|&i| std::cmp::Reverse(s.built[i]));
@@ -240,10 +311,10 @@ fn report(name: &str, s: &Side) {
             s.built[i],
             s.drafted[i],
             100.0 * f64::from(s.built[i]) / f64::from(s.drafted[i]),
-            if leaves_a_pending_effect(w) {
-                "   <- pending effect"
-            } else {
-                ""
+            match (leaves_a_pending_effect(w), grants_an_extra_turn(w)) {
+                (true, _) => "   <- pending effect",
+                (_, true) => "   <- play again",
+                _ => "",
             }
         );
     }
