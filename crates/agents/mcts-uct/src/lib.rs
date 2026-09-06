@@ -246,6 +246,23 @@
 //! | `greedy-ev` | 200/200 | 199/200 |
 //! | `alphabeta` | 79.5% (+234 Elo) | 78.5% (+226 Elo) |
 //!
+//! ## The tree prior still buys nothing, even with a rollout that can value a
+//! race
+//!
+//! [`PriorMode::ExpansionOrder`] reproducibly steers visits towards races and
+//! reproducibly fails to convert that into Elo (the section below has the
+//! numbers). One reading of that was that the *rollout* was the missing half:
+//! a tree that looks at race lines learns nothing if the playout underneath
+//! scores them at random. With the rails supplying that half, over 400 games
+//! at `Nodes(2000)` on `1..200`:
+//!
+//! | | score |
+//! |---|---|
+//! | `race=tier1,prior=expansion_order` vs `race=tier1` | **50.0%** (200-200) |
+//!
+//! Dead level, against a control that reads 48.67%. The two ideas do not
+//! compose; the prior's cost is still not repaid.
+//!
 //! ## Verdict: strong on strength, negative on the hypothesis — and so still
 //! not the default
 //!
