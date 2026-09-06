@@ -130,6 +130,174 @@
 //!     --a mcts-uct:dets=4 --b mcts-uct:dets=1 --games 400 --budget nodes:2000
 //! ```
 //!
+//! # Race-aware rollouts (`Config::race`)
+//!
+//! [`RaceWeights`] biases the *playout* by how far along a win condition the
+//! position already is, rather than by facts about the card alone. See its own
+//! documentation for the mechanism, the affordability gate it had to clear,
+//! and the two tiers it is built from; this section is the strength
+//! measurement.
+//!
+//! It was built for a diagnostic finding. In self-play at `Nodes(2000)` over
+//! 400 games, *either* player reached five distinct scientific symbols in only
+//! **1.5%** of games — and 67% of those became a scientific-supremacy win. The
+//! tree closes a science race fine once it is close; the rollouts almost never
+//! build one up, so the tree is rarely shown a position where it is close.
+//! (Both numbers reproduced exactly in the control run below: 6/400 exposed,
+//! 4 of 6 converted. Military reproduced too, at 48% and 36%.)
+//!
+//! ## The tuning sweep chose `MEDIUM`, and `MEDIUM` was the wrong answer
+//!
+//! A sweep on a *separate* seed range (`20001..20050`, 100 games each vs
+//! [`RaceWeights::NEUTRAL`], `Nodes(2000)`, `+/-` 5.0) read
+//! `mild` 52.0%, `medium` 55.0%, `strong` 47.0% — noise, but unimodal, so
+//! `MEDIUM` was committed to before the evaluation ranges were run. It did not
+//! transfer:
+//!
+//! | candidate vs `NEUTRAL`, `Nodes(2000)` | `1..200` | `5001..5200` | `10001..10200` | pooled |
+//! |---|---|---|---|---|
+//! | [`RaceWeights::MEDIUM`] | 51.75% | 51.1% | — | **51.44% +/- 1.77**, Elo +10.0 [-14.1, +34.0] |
+//! | [`RaceWeights::TIER1_ONLY`] | 52.25% | 56.25% | 52.75% | **53.75% +/- 1.44**, Elo +26.1 [+6.4, +45.8] |
+//! | `NEUTRAL` vs `NEUTRAL` (control) | 46.25% | — | — | — |
+//!
+//! `MEDIUM` misses the bar this work was set (53.5% pooled, or SPRT
+//! `elo0 = 0` vs `elo1 = 20` accepting H1). **`TIER1_ONLY` clears both**:
+//! 53.75% over 1200 games across three disjoint seed ranges, positive on every
+//! one of them, SPRT `llr = 3.194` against a `2.944` bound —
+//! `AcceptH1`, the first decisive SPRT accept in this crate's history.
+//!
+//! The control matters here, and it was run on all three of the same ranges
+//! rather than one: `NEUTRAL` against itself scores **48.67% +/- 1.44**
+//! (46.25 / 50.13 / 49.50). `TIER1_ONLY`'s interval and the control's do not
+//! overlap, so the honest reading is "clearly positive", not "marginally
+//! positive".
+//!
+//! At `TimeMs(20)`, 200 games per range on a machine at load 18-48 (see
+//! `duels-arena`'s "quiet machine" note — this is indicative, not
+//! conclusive): 55.0% on `1..100`, 48.5% on `5001..5100`, pooled **51.75% +/-
+//! 2.50**, Elo +12.1, against a 49.5% `NEUTRAL`-vs-`NEUTRAL` control run in the
+//! same session. The 3% throughput cost does not eat the gain, which is the
+//! whole reason the affordability gate came first.
+//!
+//! So: **the terminal rails are the entire effect, and the escalating Tier-2
+//! tables give half of it back.** Telling a rollout "never walk past a move
+//! that ends the game" is worth about +26 Elo; telling it "and lean into races
+//! in proportion to how far along they are" costs about 15 of that. The
+//! likeliest reading is that Tier 2 makes playouts commit to races the
+//! position does not support, so a leaf's value becomes optimistic about race
+//! lines *in general* rather than accurate about the ones that are real —
+//! while a rail only ever fires on a move that is already decisive, where
+//! there is nothing to be wrong about.
+//!
+//! ## The mechanism is military, and it is not the one this was built for
+//!
+//! `TIER1_ONLY` vs `NEUTRAL`, pooled over the 1200 games:
+//!
+//! | | `TIER1_ONLY` | `NEUTRAL` |
+//! |---|---|---|
+//! | wins by military supremacy | **138** | 68 |
+//! | wins by scientific supremacy | 9 | 6 |
+//! | wins by civilian score | 491 | 469 |
+//! | wins by tiebreak | 7 | 12 |
+//! | **total** | **645** | 555 |
+//!
+//! The number of games decided on the conflict track barely moves (206 here,
+//! 207 in the control) — what moves is **who wins them**, from an even 99-108
+//! split in the control to 138-68. That `+70` is most of the `+90` overall
+//! margin. The rails are not creating military races; they are stopping the
+//! playout from walking past the move that closes or breaks one.
+//!
+//! ## The science hypothesis did not survive contact
+//!
+//! Science was the strong prior for this work: a race the search finishes well
+//! (67% conversion) but is almost never shown (1.5% exposure). If the rollout
+//! policy were the bottleneck, rails should have raised exposure. Measured in
+//! true self-play (both sides configured alike, 1200 games each over the same
+//! three ranges), it did not:
+//!
+//! | self-play, `Nodes(2000)`, 1200 games | `NEUTRAL` vs `NEUTRAL` | `TIER1_ONLY` vs `TIER1_ONLY` |
+//! |---|---|---|
+//! | science exposure (either side reaches 5 symbols) | 2.50% (30) | 2.67% (32) |
+//! | of those, converted to scientific supremacy | 46.7% (14) | 53.1% (17) |
+//! | military exposure | 47.5% (570) | 44.0% (528) |
+//! | of those, converted to military supremacy | 36.3% (207) | 34.5% (182) |
+//!
+//! Both science columns move by less than the control's own range-to-range
+//! spread (its three ranges read 1.5%, 4.25%, 1.75% exposure — which is also
+//! why the original 1.5% diagnostic, taken from a single range, overstated how
+//! rare this is). On `n = 30`, a conversion rate has a standard error near 9
+//! points. **Nothing here is a measurable science improvement.**
+//!
+//! What the self-play table does show is mutual denial: with rails on both
+//! sides, military-decided games fall from 207 to 182 and exposure from 47.5%
+//! to 44.0%. Each side is now taking the closing red card away from the other,
+//! which is the "high exposure has value even without conversion" effect a
+//! domain read predicted — visible here as races that get shut down rather
+//! than won.
+//!
+//! ## Ladder sanity: nothing regressed
+//!
+//! 200 games each at `Nodes(2000)`, seeds `1..100`:
+//!
+//! | opponent | `TIER1_ONLY` | `NEUTRAL` |
+//! |---|---|---|
+//! | `random` | 200/200 | 200/200 |
+//! | `greedy` | 200/200 | 200/200 |
+//! | `greedy-ev` | 200/200 | 199/200 |
+//! | `alphabeta` | 79.5% (+234 Elo) | 78.5% (+226 Elo) |
+//!
+//! ## The tree prior still buys nothing, even with a rollout that can value a
+//! race
+//!
+//! [`PriorMode::ExpansionOrder`] reproducibly steers visits towards races and
+//! reproducibly fails to convert that into Elo (the section below has the
+//! numbers). One reading of that was that the *rollout* was the missing half:
+//! a tree that looks at race lines learns nothing if the playout underneath
+//! scores them at random. With the rails supplying that half, over 400 games
+//! at `Nodes(2000)` on `1..200`:
+//!
+//! | | score |
+//! |---|---|
+//! | `race=tier1,prior=expansion_order` vs `race=tier1` | **50.0%** (200-200) |
+//!
+//! Dead level, against a control that reads 48.67%. The two ideas do not
+//! compose; the prior's cost is still not repaid.
+//!
+//! ## Verdict: strong on strength, negative on the hypothesis — and so still
+//! not the default
+//!
+//! [`RaceWeights::NEUTRAL`] stays [`Config::default`]. This work was
+//! pre-registered against four accept criteria, and three of them pass
+//! decisively for `TIER1_ONLY` — pooled `Nodes` score, `TimeMs` score, ladder
+//! sanity. The fourth, "science-supremacy exposure or conversion measurably
+//! improved in self-play", **fails**: the table above moves less than the
+//! control's own variance. The criterion was not a formality; it was the
+//! hypothesis. Promoting a default on the strength number alone, after the
+//! stated reason for the change did not materialise, is how a codebase
+//! accumulates changes nobody can later explain.
+//!
+//! That said, the strength evidence is the strongest any change in this crate
+//! has produced — `+26.1` Elo with an interval clear of zero, an SPRT
+//! `AcceptH1`, positive on three of three disjoint seed ranges, positive at a
+//! wall-clock budget too, for 3% throughput and no regression anywhere on the
+//! ladder. It is one line from being the default:
+//!
+//! ```text
+//! race: RaceWeights::TIER1_ONLY,   // in Config::default()
+//! ```
+//!
+//! and the case for doing so is a judgement about how much a mechanism
+//! explanation is worth, not a gap in the measurement.
+//!
+//! ## Reproducing
+//!
+//! ```text
+//! cargo run --release -p duels-arena -- match \
+//!     --agent-a mcts-uct:race=tier1 --agent-b mcts-uct:race=neutral \
+//!     --games 400 --budget nodes:2000 --seed 1 --sprt-elo0 0 --sprt-elo1 20
+//! cargo run --release --example rollout_bench -p duels-agent-mcts-uct -- 0 100
+//! ```
+//!
 //! # Strategy priors (`Config::prior`)
 //!
 //! [`Config::prior`] lets `duels-strategy`'s policy layer steer this tree.
@@ -322,7 +490,7 @@ use duels_core::{engine, Action, Observation};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-pub use rollout::RolloutWeights;
+pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode};
 
 /// Monte Carlo Tree Search with UCT selection and explicit chance nodes.
@@ -771,6 +939,135 @@ mod tests {
             }
             assert!(decisions > 20, "the game was too short to prove much");
         }
+    }
+
+    /// The equivalence that makes the race option safe to add, and the twin of
+    /// the two above: with [`RaceWeights::NEUTRAL`] the agent is move-for-move
+    /// the agent this crate shipped before race weights existed, driven by the
+    /// verbatim pre-race `pick`/`play_out` in `rollout::legacy`.
+    ///
+    /// Whole seeded games again. The rollout policy is where nearly every RNG
+    /// draw a search makes happens, so a single extra or reordered draw would
+    /// desynchronise the two streams within one playout and change a move long
+    /// before the game ended.
+    #[test]
+    fn race_neutral_is_biased_move_for_move() {
+        for seed in 0..8u64 {
+            let cfg = Config {
+                race: RaceWeights::NEUTRAL,
+                ..Config::default()
+            };
+            assert_eq!(cfg.rollout, RolloutWeights::BIASED);
+            let mut agent = MctsAgent::with_config(seed, cfg);
+            let mut legacy_rng = StdRng::seed_from_u64(seed);
+
+            let mut state = engine::new_game(seed ^ 0xC0FF_EE00);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+            let mut decisions = 0u32;
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let budget = 24 + u64::from(decisions % 7);
+                let got = agent.choose(&obs, &legal, Budget::Nodes(budget));
+                let want = legacy_choose(&mut legacy_rng, cfg, &obs, &legal, budget);
+                assert_eq!(
+                    got, want,
+                    "seed {seed}, decision {decisions}: RaceWeights::NEUTRAL changed the move"
+                );
+                engine::apply(&mut state, got, &mut rng).expect("a legal action");
+                decisions += 1;
+                assert!(decisions < 5_000);
+            }
+            assert!(decisions > 20, "the game was too short to prove much");
+        }
+    }
+
+    /// A race variant must not change *what* the agent is allowed to do: full
+    /// seeded games from both seats, every variant, no panic and no illegal
+    /// move.
+    #[test]
+    fn every_race_variant_plays_full_games_without_incident() {
+        for (i, race) in [
+            RaceWeights::NEUTRAL,
+            RaceWeights::TIER1_ONLY,
+            RaceWeights::mild(),
+            RaceWeights::MEDIUM,
+            RaceWeights::strong(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut wins = 0u32;
+            for seed in 0..6u64 {
+                let seat = if seed % 2 == 0 {
+                    Player::One
+                } else {
+                    Player::Two
+                };
+                let mut mcts = MctsAgent::with_config(
+                    seed ^ 0x0BAD_1DEA,
+                    Config {
+                        race,
+                        ..Config::default()
+                    },
+                );
+                let mut opponent = RandomAgent::new(seed ^ 0x5EED_5EED);
+                let mut state = engine::new_game(seed + 700 * i as u64);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+                loop {
+                    let legal = engine::legal_actions(&state);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    let obs = state.observation();
+                    let action = if state.current_player() == seat {
+                        mcts.choose(&obs, &legal, CI_BUDGET)
+                    } else {
+                        opponent.choose(&obs, &legal, CI_BUDGET)
+                    };
+                    assert!(
+                        legal.contains(&action),
+                        "{} returned {action:?}",
+                        race.name()
+                    );
+                    engine::apply(&mut state, action, &mut rng).expect("a legal action");
+                }
+                let result = state.result().expect("a finished game has a result");
+                if result.winner() == Some(seat) {
+                    wins += 1;
+                }
+                assert!(mcts.total_simulations() > 0);
+            }
+            println!(
+                "race={}: {wins}/6 against random at {CI_BUDGET:?}",
+                race.name()
+            );
+        }
+    }
+
+    /// The spec string a results file records has to name the race variant, or
+    /// an arena run cannot be told apart from the baseline after the fact.
+    #[test]
+    fn the_spec_reports_the_race_variant() {
+        let describe = |race| {
+            MctsAgent::with_config(
+                1,
+                Config {
+                    race,
+                    ..Config::default()
+                },
+            )
+            .spec()
+            .params
+        };
+        assert!(describe(RaceWeights::NEUTRAL).contains("race=neutral"));
+        assert!(describe(RaceWeights::TIER1_ONLY).contains("race=tier1_only"));
+        assert!(describe(RaceWeights::mild()).contains("race=mild"));
+        assert!(describe(RaceWeights::MEDIUM).contains("race=medium"));
+        assert!(describe(RaceWeights::strong()).contains("race=strong"));
     }
 
     /// A prior mode must not change *what* the agent is allowed to do: full

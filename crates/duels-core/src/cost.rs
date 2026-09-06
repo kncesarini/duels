@@ -86,6 +86,26 @@ pub fn card_cost(state: &GameState, player: Player, card: CardId) -> Cost {
             };
         }
     }
+    card_cost_ignoring_chain(state, player, card)
+}
+
+/// What `card` would cost `player` if they did *not* hold its chain
+/// prerequisite: the printed coin cost plus the trade payments their city
+/// cannot cover.
+///
+/// [`card_cost`] is this function plus the chain short-circuit, so for any
+/// card whose `chain_from` the player has not built the two agree exactly.
+/// The difference is what a *chain link is worth*, which is the one thing this
+/// accessor exists for: a heuristic that prices "owning the starter saves me
+/// this many coins later" cannot ask [`card_cost`], because by then the
+/// starter is built and the answer is always zero.
+///
+/// This is not a rules exception — the rules say a chained build is free, and
+/// [`card_cost`] still says so. This is the counterfactual, which is not a
+/// legality question at all.
+pub fn card_cost_ignoring_chain(state: &GameState, player: Player, card: CardId) -> Cost {
+    let def = card.def();
+    let me = state.player(player);
 
     let discount = if def.kind == CardType::Civilian
         && me.has_token_with(|t| t.discount == Some(DiscountTarget::CivilianBuildings))
@@ -405,7 +425,47 @@ pub fn choice_group_members(group: data::ResourceGroup) -> &'static [Resource] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::StateBuilder;
     use proptest::prelude::*;
+
+    /// The counterfactual accessor agrees with [`card_cost`] whenever the
+    /// chain does not apply, and keeps reporting the real price once it does —
+    /// which is the whole point: it is what a chain link *saved*.
+    #[test]
+    fn ignoring_the_chain_reports_what_the_link_is_worth() {
+        // The Library chains from the Scriptorium.
+        let library = data::statics()
+            .cards
+            .iter()
+            .position(|c| c.id == "library")
+            .map(data::CardId::from_index)
+            .expect("the data must carry a Library");
+
+        let without = StateBuilder::new().age(2).coins(Player::One, 20).build();
+        let with = StateBuilder::new()
+            .age(2)
+            .built(Player::One, &["scriptorium"])
+            .coins(Player::One, 20)
+            .build();
+
+        let plain = card_cost(&without, Player::One, library);
+        assert!(!plain.via_chain);
+        assert_eq!(
+            card_cost_ignoring_chain(&without, Player::One, library),
+            plain,
+            "with no prerequisite held the two must be the same function"
+        );
+
+        let chained = card_cost(&with, Player::One, library);
+        assert!(chained.via_chain);
+        assert_eq!(chained.coins, 0);
+        let counterfactual = card_cost_ignoring_chain(&with, Player::One, library);
+        assert!(!counterfactual.via_chain);
+        assert!(
+            counterfactual.coins > 0,
+            "the Library is not free without the chain: {counterfactual:?}"
+        );
+    }
 
     /// Brute-force reference implementation: try every way to point the
     /// choice sources and spend the rebate.

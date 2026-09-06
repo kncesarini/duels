@@ -57,7 +57,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::chance;
-use crate::rollout::{self, RolloutWeights};
+use crate::rollout::{self, RaceWeights, RolloutWeights};
 
 /// Index into [`Tree::nodes`].
 pub(crate) type NodeId = u32;
@@ -147,6 +147,10 @@ pub struct Config {
     pub exploration: f64,
     /// Playout policy weights.
     pub rollout: RolloutWeights,
+    /// Race-progress multipliers layered on top of [`Config::rollout`].
+    /// [`RaceWeights::NEUTRAL`] is bit-for-bit the behaviour this crate had
+    /// before the option existed.
+    pub race: RaceWeights,
     /// Progressive-widening coefficient at chance nodes.
     pub chance_widen_c: f64,
     /// Progressive-widening exponent at chance nodes. `1.0` (with a large
@@ -176,6 +180,7 @@ impl Default for Config {
         Self {
             exploration: 1.0,
             rollout: RolloutWeights::BIASED,
+            race: RaceWeights::NEUTRAL,
             chance_widen_c: 1.0,
             chance_widen_alpha: 0.5,
             max_rollout_plies: 2_000,
@@ -191,7 +196,7 @@ impl Config {
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={}",
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});race={};chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={}",
             self.exploration,
             w.build,
             w.wonder,
@@ -199,6 +204,7 @@ impl Config {
             w.chain_free_mult,
             w.new_symbol_mult,
             w.pair_complete_mult,
+            self.race.name(),
             self.chance_widen_c,
             self.chance_widen_alpha,
             self.root_determinizations.max(1),
@@ -299,6 +305,11 @@ pub(crate) struct Tree {
     path: Vec<NodeId>,
     /// Scratch: legal-action buffer, reused to keep playouts allocation-free.
     buf: Vec<Action>,
+    /// Scratch: one rollout weight per legal action, so the playout policy
+    /// evaluates each candidate's weight exactly once per step instead of
+    /// twice (once to total, once to draw). Owned here so it is allocated per
+    /// *tree*, not per simulation.
+    wbuf: Vec<f64>,
     /// Total playouts performed.
     pub simulations: u64,
     /// How many times the strategy layer was consulted — one
@@ -321,6 +332,7 @@ impl Tree {
             cfg,
             path: Vec::with_capacity(64),
             buf: Vec::with_capacity(32),
+            wbuf: Vec::with_capacity(32),
             simulations: 0,
             rankings: 0,
         };
@@ -668,7 +680,9 @@ impl Tree {
                     let result = rollout::play_out(
                         &mut state,
                         &self.cfg.rollout,
+                        &self.cfg.race,
                         &mut self.buf,
+                        &mut self.wbuf,
                         rng,
                         self.cfg.max_rollout_plies,
                     );
@@ -768,15 +782,18 @@ pub(crate) fn best_of(trees: &[Tree]) -> Option<Action> {
     best.or_else(|| actions.first().copied())
 }
 
-/// The three search functions exactly as they read before [`PriorMode`]
-/// existed, kept so a test can assert that [`PriorMode::None`] is not merely
-/// *intended* to change nothing.
+/// The three search functions exactly as they read before [`PriorMode`] and
+/// [`RaceWeights`] existed, kept so a test can assert that
+/// [`PriorMode::None`] and [`RaceWeights::NEUTRAL`] are not merely *intended*
+/// to change nothing.
 ///
 /// Copied verbatim from the pre-prior `Tree::expand`, `Tree::select_ucb1` and
 /// `Tree::simulate`; do not "simplify" any of them to call the new code, since
-/// that is the thing they exist to check. The only edit is the one the type
-/// system forces: the new `priors` field is named in the pattern that
-/// constructs a decision node's children, and never read.
+/// that is the thing they exist to check. Two edits only, both forced: the
+/// `priors` field the type system now requires is named in the pattern that
+/// constructs a decision node's children and never read, and the playout goes
+/// through `rollout::legacy::play_out`, itself a verbatim copy of the
+/// pre-race policy.
 #[cfg(test)]
 impl Tree {
     fn legacy_expand(&mut self, id: NodeId, rng: &mut StdRng) -> Option<NodeId> {
@@ -857,7 +874,7 @@ impl Tree {
                 }
                 Step::Decision if fresh => {
                     let mut state = self.nodes[node as usize].state;
-                    let result = rollout::play_out(
+                    let result = rollout::legacy::play_out(
                         &mut state,
                         &self.cfg.rollout,
                         &mut self.buf,
@@ -1254,58 +1271,135 @@ mod tests {
                 old.legacy_simulate(&mut rng_old);
             }
 
-            assert_eq!(new.nodes.len(), old.nodes.len(), "seed {seed}: tree size");
-            assert_eq!(new.simulations, old.simulations);
-            for (i, (a, b)) in new.nodes.iter().zip(old.nodes.iter()).enumerate() {
-                assert_eq!(a.visits, b.visits, "seed {seed}, node {i}: visits");
-                assert_eq!(a.value_sum, b.value_sum, "seed {seed}, node {i}: value");
-                match (&a.kind, &b.kind) {
-                    (Kind::Terminal { value: x }, Kind::Terminal { value: y }) => {
-                        assert_eq!(x, y, "seed {seed}, node {i}")
-                    }
-                    (
-                        Kind::Decision {
-                            mover: m1,
-                            actions: a1,
-                            children: c1,
-                            expanded: e1,
-                            ..
-                        },
-                        Kind::Decision {
-                            mover: m2,
-                            actions: a2,
-                            children: c2,
-                            expanded: e2,
-                            ..
-                        },
-                    ) => {
-                        assert_eq!(m1, m2, "seed {seed}, node {i}: mover");
-                        assert_eq!(a1, a2, "seed {seed}, node {i}: action order");
-                        assert_eq!(c1, c2, "seed {seed}, node {i}: children");
-                        assert_eq!(e1, e2, "seed {seed}, node {i}: expanded");
-                    }
-                    (
-                        Kind::Chance {
-                            action: x1,
-                            children: k1,
-                        },
-                        Kind::Chance {
-                            action: x2,
-                            children: k2,
-                        },
-                    ) => {
-                        assert_eq!(x1, x2, "seed {seed}, node {i}: chance action");
-                        assert_eq!(k1.len(), k2.len(), "seed {seed}, node {i}: outcomes");
-                        for (u, v) in k1.iter().zip(k2.iter()) {
-                            assert_eq!(u.outcome, v.outcome);
-                            assert_eq!(u.prob, v.prob);
-                            assert_eq!(u.node, v.node);
-                        }
-                    }
-                    _ => panic!("seed {seed}, node {i}: different node kinds"),
+            assert_same_arena(&new, &old, seed);
+        }
+    }
+
+    /// The twin of the test above for [`RaceWeights`]: with
+    /// [`RaceWeights::NEUTRAL`] the search grows the *same arena*, node for
+    /// node, as the verbatim pre-race `simulate` (which drives
+    /// `rollout::legacy::play_out`, itself a verbatim copy of the pre-race
+    /// playout policy, double weight evaluation and all).
+    ///
+    /// This is the strong form of the guarantee: the rollout policy is where
+    /// almost all of the search's RNG draws happen, so a single extra or
+    /// differently-ordered draw inside a playout would desynchronise every
+    /// chance node afterwards and show up here as a different tree.
+    #[test]
+    fn race_neutral_grows_the_same_tree_as_the_pre_race_search() {
+        for seed in 0..10u64 {
+            let state = engine::new_game(seed);
+            let actions = engine::legal_actions(&state);
+            let cfg = Config {
+                race: RaceWeights::NEUTRAL,
+                ..Config::default()
+            };
+
+            let mut rng_new = StdRng::seed_from_u64(seed ^ 0x515E);
+            let mut new = Tree::new(state, actions.clone(), cfg, &mut rng_new);
+            let mut rng_old = StdRng::seed_from_u64(seed ^ 0x515E);
+            let mut old = Tree::new(state, actions.clone(), cfg, &mut rng_old);
+
+            for _ in 0..500 {
+                new.simulate(&mut rng_new);
+                old.legacy_simulate(&mut rng_old);
+            }
+
+            assert_same_arena(&new, &old, seed);
+        }
+    }
+
+    /// Two arenas must agree node for node: kind, statistics, action order and
+    /// child wiring alike.
+    fn assert_same_arena(new: &Tree, old: &Tree, seed: u64) {
+        assert_eq!(new.nodes.len(), old.nodes.len(), "seed {seed}: tree size");
+        assert_eq!(new.simulations, old.simulations);
+        for (i, (a, b)) in new.nodes.iter().zip(old.nodes.iter()).enumerate() {
+            assert_eq!(a.visits, b.visits, "seed {seed}, node {i}: visits");
+            assert_eq!(a.value_sum, b.value_sum, "seed {seed}, node {i}: value");
+            match (&a.kind, &b.kind) {
+                (Kind::Terminal { value: x }, Kind::Terminal { value: y }) => {
+                    assert_eq!(x, y, "seed {seed}, node {i}")
                 }
+                (
+                    Kind::Decision {
+                        mover: m1,
+                        actions: a1,
+                        children: c1,
+                        expanded: e1,
+                        ..
+                    },
+                    Kind::Decision {
+                        mover: m2,
+                        actions: a2,
+                        children: c2,
+                        expanded: e2,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(m1, m2, "seed {seed}, node {i}: mover");
+                    assert_eq!(a1, a2, "seed {seed}, node {i}: action order");
+                    assert_eq!(c1, c2, "seed {seed}, node {i}: children");
+                    assert_eq!(e1, e2, "seed {seed}, node {i}: expanded");
+                }
+                (
+                    Kind::Chance {
+                        action: x1,
+                        children: k1,
+                    },
+                    Kind::Chance {
+                        action: x2,
+                        children: k2,
+                    },
+                ) => {
+                    assert_eq!(x1, x2, "seed {seed}, node {i}: chance action");
+                    assert_eq!(k1.len(), k2.len(), "seed {seed}, node {i}: outcomes");
+                    for (u, v) in k1.iter().zip(k2.iter()) {
+                        assert_eq!(u.outcome, v.outcome);
+                        assert_eq!(u.prob, v.prob);
+                        assert_eq!(u.node, v.node);
+                    }
+                }
+                _ => panic!("seed {seed}, node {i}: different node kinds"),
             }
         }
+    }
+
+    /// An active race variant must *change* the search — otherwise the
+    /// equivalence tests above would be passing for the trivial reason.
+    #[test]
+    fn a_race_variant_actually_grows_a_different_tree() {
+        let mut differed = 0u32;
+        for seed in 0..8u64 {
+            let (state, actions) = mid_game(seed);
+            let grow = |race| {
+                let mut rng = StdRng::seed_from_u64(seed ^ 0x1234);
+                let mut tree = Tree::new(
+                    state,
+                    actions.clone(),
+                    Config {
+                        race,
+                        ..Config::default()
+                    },
+                    &mut rng,
+                );
+                for _ in 0..400 {
+                    tree.simulate(&mut rng);
+                }
+                (
+                    tree.nodes.len(),
+                    tree.nodes.iter().map(|n| n.value_sum).sum::<f64>(),
+                )
+            };
+            if grow(RaceWeights::MEDIUM) != grow(RaceWeights::NEUTRAL) {
+                differed += 1;
+            }
+        }
+        assert!(
+            differed >= 6,
+            "MEDIUM changed nothing in {} of 8 positions",
+            8 - differed
+        );
     }
 
     /// A real mid-game turn with a full slate of legal moves, so a ranking

@@ -98,8 +98,28 @@ fn report(state: &GameState, root: &Root, config: &Config) {
             dev[Resource::Glass.index()],
             dev[Resource::Papyrus.index()],
             w.science * e.science_ladder * terms::science_ladder(state, p, &e.science),
-            w.military * e.military_position * terms::military_position(state, p),
+            w.military * e.military_band * terms::military_band(state, p, root.smoothing())
+                + e.military_loot * terms::military_loot(state, p, root.smoothing()),
             terms::next_age_start(state, p, e),
+        );
+
+        // The resource bill, split the same way, so the claim that a second
+        // grey source is valuable *because it raises the opponent's price*
+        // can be checked rather than believed: read P2's row while P1 takes a
+        // grey card and watch it climb.
+        let bill =
+            terms::resource_bill_by_resource(state, p, root.supply(), e.development_take_rate);
+        let bill_total: f64 = bill.iter().sum();
+        println!(
+            "       bill {:>6.2} coins (w {:>4.1} c {:>4.1} s {:>4.1} g {:>4.1} p {:>4.1})   chain equity {:>5.2}   prices {:?}",
+            bill_total,
+            bill[Resource::Wood.index()],
+            bill[Resource::Clay.index()],
+            bill[Resource::Stone.index()],
+            bill[Resource::Glass.index()],
+            bill[Resource::Papyrus.index()],
+            duels_agent_phased::menu::chain_equity(state, p, root.menu().chain()),
+            duels_core::cost::trade_prices(state, p),
         );
     }
     println!(
