@@ -194,10 +194,10 @@ impl DevSupply {
 
         let mut counts = [[0.0f64; NUM_RESOURCES]; MAX_UNITS];
         let mut kind_counts = [0.0f64; data::CardType::ALL.len()];
-        let mut total = 0.0f64;
+        let mut pool_weight = 0.0f64;
         for card in iter_cards(pool) {
             let w = entry_weight(card);
-            total += w;
+            pool_weight += w;
             kind_counts[card.def().kind.index()] += w;
             let cost = card.def().resource_cost;
             for (r, &need) in cost.iter().enumerate() {
@@ -209,10 +209,10 @@ impl DevSupply {
             }
         }
 
-        let scale = if pool_size == 0 || total <= 0.0 {
+        let scale = if pool_size == 0 || pool_weight <= 0.0 {
             0.0
         } else {
-            1.0 / total
+            1.0 / pool_weight
         };
         let production = production_mask();
         let total = production.count_ones();
@@ -258,9 +258,7 @@ impl DevSupply {
             sources,
         }
     }
-}
 
-impl DevSupply {
     /// What fraction of the remaining pool is of colour `kind`.
     #[inline]
     pub fn kind_fraction(&self, kind: CardType) -> f64 {
