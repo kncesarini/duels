@@ -14,6 +14,7 @@ pub const KNOWN_AGENTS: &[&str] = &[
     "greedy",
     "greedy-ev",
     "strategist",
+    "phased",
     "alphabeta",
     "mcts-uct",
 ];
@@ -28,6 +29,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
         "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
         "strategist" => Ok(Box::new(duels_agent_strategist::StrategistAgent::new(seed))),
+        "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         other => Err(format!(
@@ -57,6 +59,12 @@ mod tests {
     fn strategist_is_registered() {
         let agent = make_agent("strategist", 1).expect("strategist should be a known agent");
         assert_eq!(agent.spec().name, "strategist");
+    }
+
+    #[test]
+    fn phased_is_registered() {
+        let agent = make_agent("phased", 1).expect("phased should be a known agent");
+        assert_eq!(agent.spec().name, "phased");
     }
 
     #[test]
