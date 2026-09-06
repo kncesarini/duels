@@ -17,12 +17,30 @@
 //! Arguments: the number of self-play games per agent (default 30), then the
 //! agents to profile (default `phased greedy-ev mcts-uct`). Each agent plays
 //! itself, so the profile is that agent's own taste rather than a reaction to
-//! somebody else's; `mcts-uct` is included as the empirical reference point —
-//! it is the strongest agent in the repository, so whatever *it* does in Age I
-//! is the closest thing available to ground truth.
+//! somebody else's. `phased-v1` is the configuration this crate first
+//! shipped with, and `phased:band=<x>` overrides the military band weight, so
+//! a round of work can be read colour by colour against what it replaced.
 //!
 //! `mcts-uct` is a real search and is given `Nodes(2000)`, so it is far
-//! slower than the two 1-ply agents; 30 games of it takes a couple of minutes.
+//! slower than the 1-ply agents; 30 games of it takes a couple of minutes. It
+//! is included as an empirical reference point rather than as a target: it is
+//! the strongest agent in the repository, but its Age I appetite for red cards
+//! is a known consequence of a rollout policy that does not understand the
+//! game deeply, not something to imitate.
+//!
+//! The round-two numbers this produces, Age I keep rates over 40 games:
+//!
+//! ```text
+//!             brown  grey   blue   green  yellow  red
+//! phased      90.8   79.2   82.1   51.8   59.9    41.0
+//! phased-v1   68.1   88.9   87.7   79.1   69.7     1.5
+//! mcts-uct    80.2   76.4   73.6   25.9   78.9    50.7
+//! ```
+//!
+//! Red at 1.5% was the symptom of the `next_age_start` magnitude bug; the
+//! whole ladder from `phased:band=1.0` (20.9%) to `phased:band=2.5` (45.5%)
+//! is tabulated in the crate docs, along with why the default sits where it
+//! does.
 
 use duels_agent_greedy_ev::GreedyEvAgent;
 use duels_agent_mcts_uct::MctsAgent;
@@ -50,6 +68,24 @@ fn make_agent(name: &str, seed: u64) -> Box<dyn Agent> {
         "greedy-ev" => Box::new(GreedyEvAgent::new(seed)),
         "mcts-uct" => Box::new(MctsAgent::new(seed)),
         "phased" => Box::new(PhasedAgent::new(seed)),
+        // The configuration this crate shipped with, so the two rounds of
+        // work can be compared colour by colour in one run.
+        "phased-v1" => Box::new(PhasedAgent::with_config(
+            seed,
+            duels_agent_phased::Config::v1(),
+        )),
+        // `phased:band=<x>` overrides the one weight that visibly moves this
+        // table — the military band model's — because "how much military does
+        // this weight actually buy" is a question about colours, and this is
+        // the diagnostic that answers it. Deliberately not a general spec
+        // parser: `duels-arena`'s `agent_spec` is that, and this crate cannot
+        // depend on it.
+        _ if name.starts_with("phased:band=") => {
+            let band: f64 = name["phased:band=".len()..].parse().unwrap_or(1.0);
+            let mut config = duels_agent_phased::Config::default();
+            config.eval.military_band = band;
+            Box::new(PhasedAgent::with_config(seed, config))
+        }
         other => {
             eprintln!("unknown agent {other:?}; using phased");
             Box::new(PhasedAgent::new(seed))
