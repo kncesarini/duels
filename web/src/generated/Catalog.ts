@@ -2,6 +2,7 @@
 import type { AgeStructureLayout } from "./AgeStructureLayout";
 import type { CardCatalogEntry } from "./CardCatalogEntry";
 import type { MilitaryCatalog } from "./MilitaryCatalog";
+import type { Science } from "./Science";
 import type { TokenCatalogEntry } from "./TokenCatalogEntry";
 import type { WonderCatalogEntry } from "./WonderCatalogEntry";
 
@@ -31,4 +32,11 @@ military: MilitaryCatalog,
 /**
  * Slot geometry for ages I, II and III, indexed by `age - 1`.
  */
-layouts: [AgeStructureLayout, AgeStructureLayout, AgeStructureLayout], };
+layouts: [AgeStructureLayout, AgeStructureLayout, AgeStructureLayout], 
+/**
+ * The scientific symbols in the order `PublicPlayer::science` counts
+ * them, from `duels_core::data::Science::ALL`. Sent rather than
+ * restated client-side, so a display can never line its symbols up
+ * against the wrong counts.
+ */
+science_order: Array<Science>, };

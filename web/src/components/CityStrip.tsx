@@ -7,6 +7,7 @@ import type { Catalog } from "../generated/Catalog";
 import type { CardType } from "../generated/CardType";
 import type { Player } from "../generated/Player";
 import type { PublicPlayer } from "../generated/PublicPlayer";
+import type { Science } from "../generated/Science";
 import type { PlayerView } from "../generated/PlayerView";
 import Counter from "./Counter";
 import { cardById, CARD_TYPE_LABEL, typeColorVar } from "../lib/catalogHelpers";
@@ -65,6 +66,11 @@ export default function CityStrip({
   const military = seat === "one" ? conflict : -conflict;
   const distinct = view.distinct_science;
 
+  // Which index of `player.science` each displayed symbol reads. The order
+  // comes from the catalog (`Science::ALL`), never from a copy of the enum
+  // kept here, so the row can never line up against the wrong counts.
+  const scienceIndex = (sym: Science) => catalog.science_order.indexOf(sym);
+
   const grouped = new Map<CardType, string[]>();
   for (const type of CARD_TYPES) grouped.set(type, []);
   for (const id of player.built) {
@@ -73,7 +79,7 @@ export default function CityStrip({
   }
 
   const unbuilt = player.wonders.filter((w) => !player.wonders_built.includes(w));
-  const nextPair = SCIENCES.filter((_, i) => player.science[SCIENCE_INDEX[i]] === 1);
+  const nextPair = SCIENCES.filter((sym) => player.science[scienceIndex(sym)] === 1);
 
   return (
     <div
@@ -132,8 +138,8 @@ export default function CityStrip({
       <div>
         <h4 className="section">Science · {distinct}/6 distinct</h4>
         <div className="sci">
-          {SCIENCES.map((sym, i) => {
-            const n = player.science[SCIENCE_INDEX[i]];
+          {SCIENCES.map((sym) => {
+            const n = player.science[scienceIndex(sym)];
             return (
               <div
                 key={sym}
@@ -274,8 +280,3 @@ export default function CityStrip({
     </div>
   );
 }
-
-/** `PublicPlayer.science` is indexed by `duels_core::data::Science`'s own
- * order; `SCIENCES` is the display order. This maps one to the other. */
-const SCIENCE_ORDER = ["mortar", "pendulum", "inkwell", "wheel", "sundial", "gyroscope", "balance"] as const;
-const SCIENCE_INDEX = SCIENCES.map((s) => SCIENCE_ORDER.indexOf(s));

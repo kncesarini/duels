@@ -530,6 +530,11 @@ pub struct Catalog {
     pub military: MilitaryCatalog,
     /// Slot geometry for ages I, II and III, indexed by `age - 1`.
     pub layouts: [AgeStructureLayout; 3],
+    /// The scientific symbols in the order `PublicPlayer::science` counts
+    /// them, from `duels_core::data::Science::ALL`. Sent rather than
+    /// restated client-side, so a display can never line its symbols up
+    /// against the wrong counts.
+    pub science_order: Vec<duels_core::data::Science>,
 }
 
 /// `{ wood, clay, stone, glass, papyrus }`, named rather than a positional

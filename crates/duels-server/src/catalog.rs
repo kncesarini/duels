@@ -136,6 +136,7 @@ pub fn build() -> Catalog {
         tokens,
         military,
         layouts,
+        science_order: duels_core::data::Science::ALL.to_vec(),
     }
 }
 
