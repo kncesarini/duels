@@ -110,10 +110,21 @@ fn candidates() -> Vec<Candidate> {
 /// Simulations/second for `weights`, searching from a handful of distinct,
 /// non-trivial positions (not just the fixed opening) so the measurement
 /// reflects a realistic mix of tree shapes and legal-move counts.
+///
+/// `budget` decides which of two instruments this is. Under
+/// `Budget::TimeMs` the wall clock is held fixed and the *simulation count*
+/// is the measurement, which is what a strength comparison at a time budget
+/// actually experiences — but it makes the reading doubly load-sensitive,
+/// since contention lowers the count directly. Under `Budget::Nodes` the work
+/// is *exactly* fixed (the same number of simulations every run, on every
+/// candidate) and only the elapsed time varies, which is the cleaner
+/// instrument for asking "what does this policy cost per simulation" on a
+/// machine that is not perfectly quiet. Ratios between candidates should
+/// agree; when they do not, believe the `Nodes` one.
 fn throughput(
     weights: RolloutWeights,
     race: RaceWeights,
-    time_ms: u64,
+    budget: Budget,
     positions: u32,
 ) -> (f64, u64) {
     let cfg = Config {
@@ -147,7 +158,7 @@ fn throughput(
         }
         let mut agent = MctsAgent::with_config(seed ^ 0xA6E17, cfg);
         let obs = state.observation();
-        agent.choose(&obs, &legal, Budget::TimeMs(time_ms));
+        agent.choose(&obs, &legal, budget);
         total_sims += agent.total_simulations();
     }
 
@@ -231,44 +242,56 @@ fn main() {
     // reported figure is the best of `REPEATS`, which is the least
     // load-contaminated estimate available: contention can only ever make a
     // measurement slower.
-    const REPEATS: u32 = 3;
-    let mut best: Vec<f64> = vec![0.0; candidates.len()];
-    let mut sims: Vec<u64> = vec![0; candidates.len()];
-    for _ in 0..REPEATS {
-        for (i, c) in candidates.iter().enumerate() {
-            let (sims_per_sec, total_sims) = throughput(c.weights, c.race, time_ms, 24);
-            if sims_per_sec > best[i] {
-                best[i] = sims_per_sec;
-                sims[i] = total_sims;
+    const REPEATS: u32 = 5;
+    for (label, budget) in [
+        (
+            "nodes:2000 (fixed work, wall clock varies)",
+            Budget::Nodes(2_000),
+        ),
+        (
+            "time (fixed clock, simulation count varies)",
+            Budget::TimeMs(time_ms),
+        ),
+    ] {
+        let mut best: Vec<f64> = vec![0.0; candidates.len()];
+        let mut sims: Vec<u64> = vec![0; candidates.len()];
+        for _ in 0..REPEATS {
+            for (i, c) in candidates.iter().enumerate() {
+                let (sims_per_sec, total_sims) = throughput(c.weights, c.race, budget, 24);
+                if sims_per_sec > best[i] {
+                    best[i] = sims_per_sec;
+                    sims[i] = total_sims;
+                }
             }
         }
-    }
 
-    // The affordability gate is read against `BIASED` with no race layer, the
-    // shipped default: a race variant that cannot stay within a few percent of
-    // it is not worth measuring for strength, because a fixed *time* budget
-    // would take back more than the policy could plausibly add.
-    let baseline = candidates
-        .iter()
-        .position(|c| c.name == "biased (kind-only)")
-        .map(|i| best[i])
-        .unwrap_or(f64::NAN);
+        // The affordability gate is read against `BIASED` with no race layer,
+        // the shipped default: a race variant that cannot stay within a few
+        // percent of it is not worth measuring for strength, because a fixed
+        // *time* budget would take back more than the policy could plausibly
+        // add.
+        let baseline = candidates
+            .iter()
+            .position(|c| c.name == "biased (kind-only)")
+            .map(|i| best[i])
+            .unwrap_or(f64::NAN);
 
-    println!(
-        "=== throughput at {time_ms}ms/move (best of {REPEATS} x 24 positions), \
-         % of `biased (kind-only)` ==="
-    );
-    for (i, c) in candidates.iter().enumerate() {
         println!(
-            "  {:<20} {:>10.0} sims/s   {:>6.1}% of baseline   ({} sims)",
-            c.name,
-            best[i],
-            100.0 * best[i] / baseline,
-            sims[i]
+            "=== throughput, {label}, best of {REPEATS} x 24 positions, \
+             % of `biased (kind-only)` ==="
         );
+        for (i, c) in candidates.iter().enumerate() {
+            println!(
+                "  {:<20} {:>10.0} sims/s   {:>6.1}% of baseline   ({} sims)",
+                c.name,
+                best[i],
+                100.0 * best[i] / baseline,
+                sims[i]
+            );
+        }
+        println!();
     }
 
-    println!();
     println!("=== head-to-head vs. uniform baseline, {games} games @ {time_ms}ms/move ===");
     for c in &candidates {
         if c.weights == RolloutWeights::UNIFORM && c.race.is_neutral() {

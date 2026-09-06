@@ -368,6 +368,39 @@ impl Default for RaceWeights {
     }
 }
 
+/// The handful of facts about the *rules* (as opposed to the position) that
+/// the race layer needs, resolved once for the whole process.
+///
+/// Every `duels_core::data` accessor — `CardId::def`, `TokenId::def`,
+/// `military()` — goes through one `OnceLock`, so reading three of them per
+/// rollout *ply* is three atomic acquire loads plus three bounds-checked
+/// indexes for data that cannot change. Resolving them here turns the
+/// Strategy-token test into a single bit test against the player's token
+/// bitmask and the wonder-shield lookup into one array index.
+struct RaceStatics {
+    /// `duels_core::data::military().capital_distance`.
+    cap: i32,
+    /// The Strategy progress token (`shield_bonus`), if the data set has one.
+    strategy: Option<duels_core::data::TokenId>,
+    /// Shields per wonder, indexed by `WonderId::index`.
+    wonder_shields: [u8; duels_core::data::NUM_WONDERS],
+}
+
+fn race_statics() -> &'static RaceStatics {
+    static CACHE: std::sync::OnceLock<RaceStatics> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut wonder_shields = [0u8; duels_core::data::NUM_WONDERS];
+        for w in duels_core::data::WonderId::all() {
+            wonder_shields[w.index()] = w.def().shields;
+        }
+        RaceStatics {
+            cap: i32::from(duels_core::data::military().capital_distance),
+            strategy: duels_core::data::TokenId::all().find(|t| t.def().shield_bonus),
+            wonder_shields,
+        }
+    })
+}
+
 /// Everything [`RaceWeights`] needs to know about a position, read once per
 /// rollout step rather than once per legal action.
 ///
@@ -432,15 +465,16 @@ impl StepCtx {
         if my_k < 3 && opp_k < 3 && d.abs() < 3 {
             return StepCtx::INACTIVE;
         }
+        let statics = race_statics();
         StepCtx {
             my_sci: me.science(),
             opp_sci: opp.science(),
             my_k: my_k.min(5),
             opp_k: opp_k.min(5),
             d,
-            my_strat: me.tokens().any(|t| t.def().shield_bonus),
-            opp_strat: opp.tokens().any(|t| t.def().shield_bonus),
-            cap: i32::from(duels_core::data::military().capital_distance),
+            my_strat: statics.strategy.is_some_and(|t| me.has_token(t)),
+            opp_strat: statics.strategy.is_some_and(|t| opp.has_token(t)),
+            cap: statics.cap,
             active: true,
         }
     }
@@ -448,7 +482,13 @@ impl StepCtx {
     /// The race multiplier for `action`. `1.0` for anything that neither
     /// touches a card in the structure nor moves a race.
     #[inline]
-    fn multiplier(&self, state: &GameState, race: &RaceWeights, action: Action) -> f64 {
+    fn multiplier(
+        &self,
+        state: &GameState,
+        race: &RaceWeights,
+        action: Action,
+        memo: &mut SlotMemo,
+    ) -> f64 {
         if !self.active {
             return 1.0;
         }
@@ -460,10 +500,9 @@ impl StepCtx {
             Action::BuildWonder { slot, wonder } => (slot, Some(wonder), false),
             _ => return 1.0,
         };
-        let Some(card) = state.face_up_card(slot) else {
+        let Some(def) = memo.get(state, slot) else {
             return 1.0;
         };
-        let def = card.def();
 
         let mut m = 1.0f64;
         let mut rail = false;
@@ -486,7 +525,7 @@ impl StepCtx {
         // Shields the *mover* would gain. Strategy's bonus is written on red
         // buildings only, so a wonder never gets it.
         let my_shields = match wonder {
-            Some(w) => i32::from(w.def().shields),
+            Some(w) => i32::from(race_statics().wonder_shields[w.index()]),
             None if is_build => {
                 i32::from(def.shields) + i32::from(self.my_strat && def.kind == CardType::Military)
             }
@@ -522,6 +561,38 @@ impl StepCtx {
     }
 }
 
+/// A one-entry memo over "which card is in this slot".
+///
+/// [`duels_core::engine::legal_actions_into`] emits every action for a slot
+/// consecutively — a `Build` (when affordable), a `Discard`, then one
+/// `BuildWonder` per buildable wonder — so remembering just the last slot
+/// collapses the six-or-so lookups a single slot would otherwise cause into
+/// one. That matters: the `face_up_card` + `def` pair is where essentially all
+/// of the race layer's cost lives (every tuning variant measures the same
+/// throughput, including the one whose tables are all `1.0`), not in the
+/// arithmetic the tables drive.
+#[derive(Debug, Clone, Copy)]
+struct SlotMemo {
+    slot: u8,
+    def: Option<&'static duels_core::data::Card>,
+}
+
+impl SlotMemo {
+    const EMPTY: SlotMemo = SlotMemo {
+        slot: u8::MAX,
+        def: None,
+    };
+
+    #[inline]
+    fn get(&mut self, state: &GameState, slot: u8) -> Option<&'static duels_core::data::Card> {
+        if self.slot != slot {
+            self.slot = slot;
+            self.def = state.face_up_card(slot).map(|c| c.def());
+        }
+        self.def
+    }
+}
+
 /// Pick one action according to `weights` and `race`, given the position it
 /// would be taken in.
 ///
@@ -547,8 +618,9 @@ pub(crate) fn pick(
     wbuf.clear();
     let mut total = 0.0f64;
     if ctx.active {
+        let mut memo = SlotMemo::EMPTY;
         for &a in legal {
-            let w = weights.weight(state, a) * ctx.multiplier(state, race, a);
+            let w = weights.weight(state, a) * ctx.multiplier(state, race, a, &mut memo);
             total += w;
             wbuf.push(w);
         }
@@ -793,7 +865,8 @@ mod tests {
         action: Action,
     ) -> f64 {
         let ctx = StepCtx::new(state, race);
-        weights.weight(state, action) * ctx.multiplier(state, race, action)
+        let mut memo = SlotMemo::EMPTY;
+        weights.weight(state, action) * ctx.multiplier(state, race, action, &mut memo)
     }
 
     /// A mid-game position from a seeded random walk, plus its legal actions.
@@ -1242,6 +1315,7 @@ mod tests {
             .build();
         let ctx = StepCtx::new(&st, &RaceWeights::MEDIUM);
         assert!(ctx.active, "this position is very much active");
+        let mut memo = SlotMemo::EMPTY;
         for action in [
             Action::ChooseFirstPlayer {
                 player: Player::One,
@@ -1256,7 +1330,7 @@ mod tests {
             Action::Build { slot: 0 },
         ] {
             assert_eq!(
-                ctx.multiplier(&st, &RaceWeights::MEDIUM, action),
+                ctx.multiplier(&st, &RaceWeights::MEDIUM, action, &mut memo),
                 1.0,
                 "{action:?}"
             );
