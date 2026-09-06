@@ -149,7 +149,19 @@ impl DevSupply {
 /// `examples/watch_blend.rs` prints the per-resource split so that claim can
 /// be checked rather than believed.
 pub fn development_value(state: &GameState, p: Player, supply: &DevSupply, take_rate: f64) -> f64 {
-    development_by_resource(state, p, supply, take_rate)
+    development_value_with(state, p, supply, take_rate, true)
+}
+
+/// [`development_value`] with the trading-post credit switchable — see
+/// [`development_by_resource_with`] for why it has to be.
+pub fn development_value_with(
+    state: &GameState,
+    p: Player,
+    supply: &DevSupply,
+    take_rate: f64,
+    include_trading_post: bool,
+) -> f64 {
+    development_by_resource_with(state, p, supply, take_rate, include_trading_post)
         .iter()
         .sum()
 }
@@ -161,12 +173,16 @@ pub fn development_by_resource(
     supply: &DevSupply,
     take_rate: f64,
 ) -> [f64; NUM_RESOURCES] {
-    let me = state.player(p);
-    let prices = cost::trade_prices(state, p);
-    let n_take = (take_rate * decisions_left(state, p)).max(0.0);
+    development_by_resource_with(state, p, supply, take_rate, true)
+}
 
-    // Wonders this player has drafted and not yet built are a *certain* want:
-    // they will be paid for out of this city or not at all.
+/// How many units of each resource `p`'s drafted-but-unbuilt wonders still
+/// owe, as a `[k - 1][r]` table matching [`DevSupply::f`]'s shape.
+///
+/// A *certain* want, unlike the pool statistic: those wonders will be paid for
+/// out of this city or not at all.
+pub fn wonder_wants(state: &GameState, p: Player) -> [[f64; NUM_RESOURCES]; MAX_UNITS] {
+    let me = state.player(p);
     let mut wonder = [[0.0f64; NUM_RESOURCES]; MAX_UNITS];
     for w in me.wonders() {
         if me.has_built_wonder(w) {
@@ -181,6 +197,35 @@ pub fn development_by_resource(
             }
         }
     }
+    wonder
+}
+
+/// [`development_by_resource`], with the trading-post credit switchable.
+///
+/// # Why the post credit is optional
+///
+/// A trading post fixes `price_r` at 1, which quietly *deflates* the main
+/// development term for every unit of `r` this city already makes — so the
+/// post is credited back separately, by the gouging it prevents on the units
+/// the city cannot make. That is correct as long as nothing else in the
+/// evaluation prices those un-produced units. [`crate::EconomyModel::Bill`]
+/// does exactly that, and it already sees the lower `price_r` the post
+/// produces, so with `Bill` in force the separate credit is the same coins
+/// counted twice and `include_trading_post` turns it off. See
+/// [`resource_bill_by_resource`] for the arithmetic showing the two are
+/// numerically the same quantity.
+pub fn development_by_resource_with(
+    state: &GameState,
+    p: Player,
+    supply: &DevSupply,
+    take_rate: f64,
+    include_trading_post: bool,
+) -> [f64; NUM_RESOURCES] {
+    let me = state.player(p);
+    let prices = cost::trade_prices(state, p);
+    let n_take = (take_rate * decisions_left(state, p)).max(0.0);
+
+    let wonder = wonder_wants(state, p);
 
     // The marginal worth of the `k`-th unit of `r`, zero past the table.
     let marginal = |k: usize, r: usize| -> f64 {
@@ -227,7 +272,7 @@ pub fn development_by_resource(
     let fixed = me.fixed_trade();
     let opponent = state.player(p.other());
     for (r, &has_post) in fixed.iter().enumerate() {
-        if !has_post {
+        if !has_post || !include_trading_post {
             continue;
         }
         let raw_price = 2.0 + f64::from(opponent.trade_relevant_production(Resource::ALL[r]));
@@ -239,6 +284,103 @@ pub fn development_by_resource(
         out[r] += discount * deficit;
     }
 
+    out
+}
+
+/// How many units of each resource `p` effectively produces, after each
+/// "produce one of your choice" source has been assigned greedily to whichever
+/// resource of its group is currently worth the most.
+///
+/// The same allocation [`development_by_resource_with`] performs internally,
+/// factored out so [`resource_bill_by_resource`] can start counting from the
+/// same `have[]` rather than from raw production — a Forum really does cover a
+/// glass payment, so the bill must not charge for one.
+pub fn effective_production(
+    state: &GameState,
+    p: Player,
+    supply: &DevSupply,
+    take_rate: f64,
+) -> [usize; NUM_RESOURCES] {
+    let me = state.player(p);
+    let prices = cost::trade_prices(state, p);
+    let n_take = (take_rate * decisions_left(state, p)).max(0.0);
+    let wonder = wonder_wants(state, p);
+    let marginal = |k: usize, r: usize| -> f64 {
+        if k == 0 || k > MAX_UNITS {
+            return 0.0;
+        }
+        (supply.f[k - 1][r] * n_take + wonder[k - 1][r]) * f64::from(prices[r])
+    };
+
+    let production = me.production();
+    let mut have: [usize; NUM_RESOURCES] = std::array::from_fn(|r| usize::from(production[r]));
+    let (choice_raw, choice_manufactured) = me.choice_sources();
+    for (count, raw) in [(choice_raw, true), (choice_manufactured, false)] {
+        for _ in 0..count {
+            let mut best: Option<(usize, f64)> = None;
+            for (r, resource) in Resource::ALL.iter().enumerate() {
+                if resource.is_raw() != raw {
+                    continue;
+                }
+                let v = marginal(have[r] + 1, r);
+                if best.is_none_or(|(_, b)| v > b) {
+                    best = Some((r, v));
+                }
+            }
+            if let Some((r, _)) = best {
+                have[r] += 1;
+            }
+        }
+    }
+    have
+}
+
+/// `B(p)`: the coins `p` still expects to hand over in trade payments, over
+/// the rest of the game.
+///
+/// The mirror image of [`development_value`]. Development asks what the units
+/// a city *does* produce save it; the bill asks what the units it does *not*
+/// produce will cost it, at the price it currently faces — `f_k(r)` of the
+/// remaining pool over the builds it expects to make, plus its own unbuilt
+/// wonders' certain wants, times `price_r(p)`.
+///
+/// # Why this is where monopoly value comes from
+///
+/// [`crate::evaluate`] reads every term per player and differences them, so
+/// this term enters as `−B(me)/3 + B(opp)/3`. `price_r(opp)` is `2 + my
+/// production of r`. Producing a second unit of something the opponent cannot
+/// make therefore *raises* `B(opp)` and so raises the score — and it does so
+/// in proportion to how much of the remaining pool actually wants that
+/// resource and how little the opponent already makes of it. Nothing anywhere
+/// says "grey is good"; grey comes out ahead because Ages I and II carry two
+/// grey cards each and Age III carries none, so a second glass source is much
+/// more often a genuine monopoly than a second clay source is.
+/// `examples/watch_blend.rs` prints the per-resource split so that can be
+/// checked rather than believed.
+pub fn resource_bill(state: &GameState, p: Player, supply: &DevSupply, take_rate: f64) -> f64 {
+    resource_bill_by_resource(state, p, supply, take_rate)
+        .iter()
+        .sum()
+}
+
+/// [`resource_bill`] split by resource, for the diagnostics.
+pub fn resource_bill_by_resource(
+    state: &GameState,
+    p: Player,
+    supply: &DevSupply,
+    take_rate: f64,
+) -> [f64; NUM_RESOURCES] {
+    let have = effective_production(state, p, supply, take_rate);
+    let prices = cost::trade_prices(state, p);
+    let n_take = (take_rate * decisions_left(state, p)).max(0.0);
+    let wonder = wonder_wants(state, p);
+
+    let mut out = [0.0f64; NUM_RESOURCES];
+    for (r, slot) in out.iter_mut().enumerate() {
+        for k in (have[r] + 1)..=MAX_UNITS {
+            *slot += (supply.f[k - 1][r] * n_take + wonder[k - 1][r]) * f64::from(prices[r]);
+        }
+    }
     out
 }
 
@@ -412,6 +554,192 @@ pub fn science_ladder(state: &GameState, p: Player, w: &ScienceWeights) -> f64 {
 /// The conflict pawn's position, signed so positive favours `p`.
 pub fn military_position(state: &GameState, p: Player) -> f64 {
     f64::from(signed_distance(state, p))
+}
+
+// ---------------------------------------------------------------------------
+// Military as a supply-smoothed step function
+// ---------------------------------------------------------------------------
+
+/// The smoothing width the band model uses, read once from the root position.
+///
+/// End-of-game military scoring is a *step* function of the pawn's distance
+/// (0 / 2 / 5 / 10 victory points at distances 0 / 1-2 / 3-5 / 6-8, straight
+/// out of `data/military.json`), and the loot tokens are two more steps. A
+/// flat `0.3 × distance` — what [`military_position`] does — gets the shape
+/// wrong in both directions: it pays for a shield that crosses nothing and
+/// under-pays the one that crosses 2→3 or 5→6.
+///
+/// Reading the steps *sharply* would be wrong too, though, because the pawn is
+/// still going to move: what a position is worth is the expectation of the
+/// step function over where the pawn ends up. The width of that distribution
+/// scales with how many shields are still in play, which is exactly
+/// [`duels_strategy::MilitaryRead`]'s `visible + expected_hidden +
+/// expected_future_ages`. So `σ = max(σ_min, κ·√S_rem)`, a random-walk
+/// standard deviation, and each step is replaced by a logistic of width
+/// `s = 0.55·σ` centred on the step's own boundary.
+///
+/// Root-fixed: `S_rem` is a supply statistic, and one card leaving a
+/// twenty-shield pool moves it by less than the rounding on any weight it
+/// feeds — the same argument [`DevSupply`] rests on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MilSmoothing {
+    /// The logistic width.
+    pub s: f64,
+    /// `(entry distance, victory points gained on entry)` for each band
+    /// boundary above zero, read off [`duels_core::data::MilitaryTrack`].
+    pub steps: [(f64, f64); 3],
+}
+
+impl MilSmoothing {
+    /// Build the smoothing for a position with `shields_remaining` shields
+    /// still obtainable anywhere in the game.
+    pub fn of(shields_remaining: f64, kappa: f64, sigma_min: f64, s_scale: f64) -> MilSmoothing {
+        let sigma = (kappa * shields_remaining.max(0.0).sqrt()).max(sigma_min);
+        MilSmoothing {
+            s: (s_scale * sigma).max(f64::MIN_POSITIVE),
+            steps: band_steps(),
+        }
+    }
+
+    /// The logistic `1 / (1 + e^(−x/s))`.
+    #[inline]
+    pub fn phi(&self, x: f64) -> f64 {
+        1.0 / (1.0 + (-x / self.s).exp())
+    }
+}
+
+/// The real end-of-game military scoring table, as `(entry distance, victory
+/// points gained on entering that band)`.
+///
+/// Derived from [`duels_core::data::MilitaryTrack::victory_points`] — which is
+/// `(inclusive max distance, victory points)` ascending — rather than written
+/// out, so a change to `data/military.json` cannot silently desynchronise the
+/// evaluation from the rules. `duels-strategy`'s own
+/// `MilitaryRead::bands` derives the entry distances the same way.
+pub fn band_steps() -> [(f64, f64); 3] {
+    let track = data::military();
+    std::array::from_fn(|i| {
+        let (prev_max, prev_vp) = track.victory_points[i];
+        let (_, vp) = track.victory_points[i + 1];
+        (
+            f64::from(prev_max) + 1.0,
+            f64::from(vp.saturating_sub(prev_vp)),
+        )
+    })
+}
+
+/// `band(p)`: the expected end-of-game military victory points, as a smoothed
+/// step function of the pawn's signed distance.
+///
+/// Read per player and then differenced by [`crate::evaluate`], exactly like
+/// every other term. That is not a double count: `d_opp = −d_me`, so at a
+/// centred pawn the two are equal and cancel, and at a decisive lead one
+/// saturates at the full 10 points while the other goes to zero — the
+/// difference spans `[−10, +10]`, which is the real range of the scoring
+/// table. `tests::the_band_model_differences_antisymmetrically` pins it.
+pub fn military_band(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
+    let d = f64::from(signed_distance(state, p));
+    sm.steps
+        .iter()
+        .map(|&(entry, gain)| gain * sm.phi(d - entry + 0.5))
+        .sum()
+}
+
+/// `loot(p)`: the coins `p` expects to strip off the opponent by pushing the
+/// pawn across a loot token, in victory-point units.
+///
+/// Only counts tokens still on the board on *this* state — a token already
+/// triggered has moved into the coin totals the point projection reads, and
+/// charging for it again would double it. Capped at the coins the opponent
+/// actually holds, matching [`duels_strategy::MilitaryRead::loot_damage`].
+///
+/// Not commitment-scaled: two coins off a rich opponent is worth the same
+/// whether or not this player has a military plan.
+pub fn military_loot(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
+    let track = data::military();
+    let d = f64::from(signed_distance(state, p));
+    let opp_coins = f64::from(state.player(p.other()).coins());
+    let mut out = 0.0;
+    for (i, &(distance, coins)) in track.loot.iter().enumerate() {
+        if !state.loot_available(p, i) {
+            continue;
+        }
+        let take = f64::from(coins).min(opp_coins);
+        out += (take / 3.0) * sm.phi(d - f64::from(distance) + 0.5);
+    }
+    out
+}
+
+/// The marginal value of one more shield to `p` at the root pawn position:
+/// the band model's local slope. Used to price a red card's shields inside
+/// [`crate::menu`]'s take-value function.
+pub fn military_slope(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
+    let d = f64::from(signed_distance(state, p));
+    sm.steps
+        .iter()
+        .map(|&(entry, gain)| gain * (sm.phi(d + 1.0 - entry + 0.5) - sm.phi(d - entry + 0.5)))
+        .sum()
+}
+
+// ---------------------------------------------------------------------------
+// Coins
+// ---------------------------------------------------------------------------
+
+/// The points channel of a coin pile: `c / 3` while the game still has moves
+/// left in it, `floor(c / 3)` once the rounding is about to be real.
+///
+/// The real rule is `floor(c / 3)`, and [`crate::CoinModel::Legacy`] uses it
+/// throughout. The trouble is that mid-game it makes the evaluation a *step*
+/// function of coins: earning the second of three coins is worth exactly
+/// nothing, so a move that leaves the player one coin short of a rounding
+/// boundary scores identically to one that leaves them three short, and every
+/// comparison in that band is decided by whatever tiny term happens to be
+/// next in line. With a dozen more decisions to come the pile will be spent
+/// and re-earned several times over before the floor is ever applied, so the
+/// smooth rate is the honest expectation; near the end it is not.
+pub fn coin_points(state: &GameState, p: Player, endgame_decisions: f64) -> f64 {
+    let c = f64::from(state.player(p).coins());
+    if decisions_left(state, p) <= endgame_decisions {
+        (c / 3.0).floor()
+    } else {
+        c / 3.0
+    }
+}
+
+/// The liquidity channel: a concave `β·c_ref·(1 − e^(−c/c_ref))`.
+///
+/// One function in place of the two ad hoc coin terms it replaces — a cap on
+/// "cash for the contested card" and a penalty for falling under a safety
+/// floor. Both were trying to say the same thing, which is that the *first*
+/// few coins are worth much more than a coin's face value and further ones
+/// quickly are not, and a saturating exponential says it once, continuously,
+/// with no thresholds to fall off.
+pub fn coin_liquidity(state: &GameState, p: Player, beta: f64, c_ref: f64) -> f64 {
+    if c_ref <= 0.0 {
+        return 0.0;
+    }
+    let c = f64::from(state.player(p).coins());
+    beta * c_ref * (1.0 - (-c / c_ref).exp())
+}
+
+/// The marginal victory-point value of one more coin to `p`, for callers that
+/// have to price a cost. `liquidity_weight` is `p`'s blended multiplier on the
+/// points channel.
+pub fn coin_marginal(
+    state: &GameState,
+    p: Player,
+    smooth: bool,
+    liquidity_weight: f64,
+    coins_div3: f64,
+    beta: f64,
+    c_ref: f64,
+) -> f64 {
+    let linear = liquidity_weight * coins_div3 / 3.0;
+    if !smooth || c_ref <= 0.0 {
+        return linear;
+    }
+    let c = f64::from(state.player(p).coins());
+    linear + beta * (-c / c_ref).exp()
 }
 
 /// The escalating "somebody is about to win outright" term: quadratic in how
@@ -674,6 +1002,188 @@ mod tests {
         assert!(
             strong_v > plain_v,
             "law/theology/strategy on the board should read higher: {strong_v} vs {plain_v}"
+        );
+    }
+
+    #[test]
+    fn the_band_steps_match_the_real_scoring_table() {
+        // `data/military.json` scores 0 / 2 / 5 / 10 at distances 0 / 1-2 /
+        // 3-5 / 6-8, so the boundaries are at 1, 3 and 6 and the gains are 2,
+        // 3 and 5.
+        assert_eq!(band_steps(), [(1.0, 2.0), (3.0, 3.0), (6.0, 5.0)]);
+    }
+
+    #[test]
+    fn the_band_model_differences_antisymmetrically() {
+        // `d_opp = -d_me` by construction, so `V(me) - V(opp)` must be an odd
+        // function of the pawn's position: zero at the centre, equal and
+        // opposite at mirrored distances. This is the property that makes
+        // reading the term per player and differencing it *not* a double
+        // count -- the difference spans the real table's [-10, +10], not
+        // twice it.
+        let sm = MilSmoothing::of(12.0, 0.8, 0.35, 0.55);
+        let diff = |conflict: i8| -> f64 {
+            let st = StateBuilder::new()
+                .age(2)
+                .conflict(conflict)
+                .coins(Player::One, 7)
+                .coins(Player::Two, 7)
+                .build();
+            military_band(&st, Player::One, &sm) - military_band(&st, Player::Two, &sm)
+        };
+        assert!(diff(0).abs() < 1e-12, "centred pawn reads {}", diff(0));
+        for d in 1..=8i8 {
+            assert!(
+                (diff(d) + diff(-d)).abs() < 1e-12,
+                "distance {d}: {} vs {}",
+                diff(d),
+                diff(-d)
+            );
+            assert!(diff(d) > diff(d - 1), "not monotone at {d}");
+        }
+        // ...and it saturates inside the real table's range rather than at
+        // twice it.
+        assert!(diff(8) < 10.5, "diff at the far band is {}", diff(8));
+        assert!(diff(8) > 7.0, "diff at the far band is only {}", diff(8));
+    }
+
+    #[test]
+    fn crossing_a_band_boundary_is_worth_more_than_a_shield_inside_one() {
+        // The whole point of the step function: the shield that takes the
+        // pawn from 2 to 3 (2 VP -> 5 VP) is worth more than the one that
+        // takes it from 1 to 2 (2 VP -> 2 VP), which the flat legacy term
+        // prices identically.
+        let sm = MilSmoothing::of(8.0, 0.8, 0.35, 0.55);
+        let at = |c: i8| {
+            let st = StateBuilder::new().age(2).conflict(c).build();
+            military_band(&st, Player::One, &sm)
+        };
+        let inside = at(2) - at(1);
+        let crossing = at(3) - at(2);
+        assert!(
+            crossing > inside,
+            "crossing 2->3 ({crossing}) should beat 1->2 ({inside})"
+        );
+        // The legacy term cannot tell them apart at all.
+        let legacy = |c: i8| {
+            let st = StateBuilder::new().age(2).conflict(c).build();
+            military_position(&st, Player::One)
+        };
+        assert_eq!(legacy(2) - legacy(1), legacy(3) - legacy(2));
+    }
+
+    #[test]
+    fn the_loot_term_only_prices_tokens_still_on_the_board() {
+        let sm = MilSmoothing::of(8.0, 0.8, 0.35, 0.55);
+        let live = StateBuilder::new()
+            .age(2)
+            .conflict(3)
+            .coins(Player::Two, 10)
+            .build();
+        let spent = StateBuilder::new()
+            .age(2)
+            .conflict(3)
+            .coins(Player::Two, 10)
+            .loot_taken(Player::One, 0)
+            .build();
+        let a = military_loot(&live, Player::One, &sm);
+        let b = military_loot(&spent, Player::One, &sm);
+        assert!(a > b, "an untaken token should be worth more: {a} vs {b}");
+
+        // ...and it is capped by what the opponent actually holds.
+        let broke = StateBuilder::new()
+            .age(2)
+            .conflict(3)
+            .coins(Player::Two, 0)
+            .build();
+        assert_eq!(military_loot(&broke, Player::One, &sm), 0.0);
+    }
+
+    #[test]
+    fn the_smooth_coin_model_has_no_rounding_plateau_until_the_endgame() {
+        // Mid-game, one more coin is always worth something; the floored
+        // model pays nothing for two coins out of three.
+        let mid = |coins: u16| {
+            let st = StateBuilder::new()
+                .age(1)
+                .deal(&["clay-pool"; 20])
+                .coins(Player::One, coins)
+                .current(Player::One)
+                .build();
+            coin_points(&st, Player::One, 2.0)
+        };
+        assert!(mid(4) > mid(3), "{} vs {}", mid(4), mid(3));
+        assert!(mid(5) > mid(4));
+
+        // With two decisions left the real rounding is about to happen, and
+        // the model says so.
+        let late = |coins: u16| {
+            let st = StateBuilder::new()
+                .age(3)
+                .open_slots(&[(18, "clay-pool"), (19, "quarry")])
+                .coins(Player::One, coins)
+                .current(Player::One)
+                .build();
+            (
+                decisions_left(&st, Player::One),
+                coin_points(&st, Player::One, 2.0),
+            )
+        };
+        assert!(late(4).0 <= 2.0, "test setup: {} decisions left", late(4).0);
+        assert_eq!(late(4).1, 1.0);
+        assert_eq!(late(5).1, 1.0);
+        assert_eq!(late(6).1, 2.0);
+    }
+
+    #[test]
+    fn the_resource_bill_makes_a_second_copy_of_a_scarce_resource_pay() {
+        // Two cities, identical except for how many glass sources one holds.
+        // Nothing in the term names glass; what it reads is that the pool
+        // still wants glass and the opponent cannot make any, so the price
+        // they face is high.
+        let build = |mine: &[&str]| -> f64 {
+            let st = StateBuilder::new()
+                .age(2)
+                .deal(&[
+                    "sawmill",
+                    "brickyard",
+                    "shelf-quarry",
+                    "glassblower",
+                    "drying-room",
+                    "walls",
+                    "horse-breeders",
+                    "barracks",
+                    "archery-range",
+                    "parade-ground",
+                    "library",
+                    "dispensary",
+                    "school",
+                    "laboratory",
+                    "courthouse",
+                    "statue",
+                    "temple",
+                    "aqueduct",
+                    "rostrum",
+                    "forum",
+                ])
+                .built(Player::One, mine)
+                .coins(Player::One, 20)
+                .coins(Player::Two, 20)
+                .current(Player::One)
+                .build();
+            let supply = DevSupply::of(&duels_strategy::Board::of(&st));
+            resource_bill(&st, Player::Two, &supply, 0.6)
+        };
+        let none = build(&[]);
+        let one = build(&["glassworks"]);
+        let both = build(&["glassworks", "press"]);
+        assert!(
+            one > none,
+            "one grey source should already raise their bill: {one} vs {none}"
+        );
+        assert!(
+            both > one,
+            "a second grey source raises it further: {both} vs {one}"
         );
     }
 

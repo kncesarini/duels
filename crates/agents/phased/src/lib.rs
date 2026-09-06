@@ -44,10 +44,16 @@
 //!
 //! ```text
 //! score(state, me) = terminal_result
-//!                  | Σ_k [ T_k(me) − T_k(opp) ] + A(action)
+//!                  | Σ_k [ T_k(me) − T_k(opp) ] + A(action) + M(state, me)
 //! T_k(p)           = w_k(S(c(p))) × base_k × raw_k(state, p)
 //! A(action)        = w_deny × deny_scale × duels_strategy::deny_vp(action)
+//! M(state, me)     = ±λ × menu(next mover)          (see [`menu`])
 //! ```
+//!
+//! `M` is the one term that is *not* read per player and differenced: it
+//! prices what the position hands to whoever moves next, which is one player,
+//! not both. It is still antisymmetric — swapping `me` flips its sign — so the
+//! whole evaluation remains zero-sum.
 //!
 //! Terms are read **per player** and then differenced, rather than as a
 //! single difference under one weight, so that each side's science ladder
@@ -76,42 +82,229 @@
 //! `tests::the_blend_off_and_a_zero_commitment_position_agree_bit_for_bit`
 //! asserts the two agree bit for bit.
 //!
+//! # Round two: five changes, measured one at a time
+//!
+//! The first cut of this crate had one working plan and two broken ones. It
+//! beat `greedy-ev` by six hundred Elo and it beat `mcts-uct` 8% of the
+//! time — and *every one of those 32 wins was scientific supremacy*. Never
+//! military, never points. Two implementation faults and three missing ideas
+//! were diagnosed from real match data. All five are [`Config`] options; all
+//! five default to on; [`Config::v1`] turns all five off and reproduces the
+//! previous agent bit for bit (`tests/legacy_identity.rs`), which is what lets
+//! `phased` and `phased:base=v1` be benchmarked against each other out of one
+//! binary.
+//!
+//! **1. `next_age_start` was double its intended magnitude.** The term is read
+//! per player and then differenced, and taking the very first shield from a
+//! centred pawn flips who is projected to start the next age — so the
+//! *differenced* swing was twice the weight written down, about eight victory
+//! points for a single shield. `phased` consequently kept 1.5% of the red
+//! cards it saw in Age I. Halving the weights to `[1.5, 1.0, 0.0]` matches
+//! `docs/strategy-backlog.md` §1.2's 1-3 VP estimate for the start-of-age
+//! choice.
+//!
+//! **2. [`MilitaryModel::Band`].** End-of-game military scoring is a step
+//! function (0 / 2 / 5 / 10 victory points at pawn distances 0 / 1-2 / 3-5 /
+//! 6-8) plus two loot tokens; a flat reward per step prices the shield that
+//! crosses 2→3 exactly like the one that does nothing. The steps are smoothed
+//! by how many shields are still in play, because what a position is worth is
+//! the expectation of the step function over where the pawn ends up — see
+//! [`terms::MilSmoothing`].
+//!
+//! **3. [`CoinModel::Smooth`].** Three ad hoc coin terms — a floored points
+//! channel, a capped race-liquidity bonus and a safety-floor penalty —
+//! replaced by one continuous function, with the real `floor(coins / 3)`
+//! restored once the rounding is about to actually happen.
+//!
+//! **4. [`EconomyModel::Bill`].** The development term prices what a city's
+//! own production *saves it*. Nothing priced what that production *costs the
+//! opponent*. Read per player and differenced, [`terms::resource_bill`] is
+//! where monopoly value comes from, with nothing anywhere saying "grey is
+//! good". This is the single largest gain of the round.
+//!
+//! **5. [`menu`]: the opponent's menu, and chain equity.** What the next
+//! mover's best affordable card is worth to them, and what a chain starter is
+//! worth for the successor it unlocks. Both priced once per decision from the
+//! root; see that module for why, and for the stand-down rule that keeps the
+//! first one from reading a hidden card.
+//!
 //! # Measured
 //!
-//! Preliminary, at default `Config` — a sanity check, not the full acceptance
-//! campaign (no parameter sweep, no held-out test set). All paired and
-//! seat-swapped through `duels-arena` at `Nodes(1)`, which is the whole budget
-//! a 1-ply agent uses:
+//! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
+//! noted. A 1-ply agent ignores its budget entirely, so a `TimeMs` budget
+//! changes nothing for it — `--budget time_ms:50` reproduces the `Nodes(1)`
+//! result below to the game — and the only wall-clock figure worth reporting
+//! is the per-decision cost further down.
+//!
+//! Against the agent this crate shipped with (`phased:base=v1`), 600 games per
+//! seed range, adding one change at a time:
 //!
 //! ```text
-//! phased vs greedy-ev   400 games  seed 1     392-8    Elo +666  [+548, +784]
-//! phased vs greedy-ev   400 games  seed 5001  391-9    Elo +646  [+534, +758]
-//! phased vs greedy-ev   400 games  seed 9001  394-6    Elo +713  [+579, +848]
-//! phased vs greedy       300 games seed 1     297-3    Elo +772
-//! phased vs strategist   300 games seed 1     296-4    Elo +728
-//! phased vs random       300 games seed 1     291-9    Elo +595
-//!   (for scale: greedy-ev vs random is 221-79, Elo +178)
-//! phased vs mcts-uct     200 games  Nodes(2000)  16-184  Elo -419
+//!                                          seed 1              seed 5001
+//! next_age_start halved (alone)            +9 [-25, +43]       (neutral)
+//! MilitaryModel::Band (alone)              +14 [-20, +48]      (neutral)
+//! CoinModel::Smooth (alone)                -17 [-51, +17]      (neutral)
+//! the three together                       +38 [+10, +66]      +47 [+19, +75]
+//!   + EconomyModel::Bill                   +167 [+136, +198]   +201 [+169, +234]
+//!   + the opponent menu                    +208 [+175, +241]   +228 [+194, +262]
+//!   + chain equity                         +233 [+199, +267]   +226 [+192, +260]
+//!   + the two fitted weights = the default +329 [+288, +371]   +292 [+254, +330]
 //! ```
 //!
-//! Three disjoint seed ranges agree, so the margin over `greedy-ev` is real
-//! rather than a seed artefact. `mcts-uct` remains far ahead — this is a 1-ply
-//! evaluation against a real search, and the project's standing finding that
-//! simulation beats hand-crafted judgement for *position value* in this game
-//! is not contradicted by any of the above.
+//! Every row but the last holds the two fitted weights at the value their own
+//! units imply, so the table is a clean "what did each idea buy". They are
+//! reproducible as
+//! `phased:base=v1,start1=1.5,start2=1.0,mil=band,coin=smooth,band=1.0,bill=1.0,chaineq=0,lambda=0`
+//! plus, in order, `econ=bill`, `lambda=0.6`, `chaineq=1.0`; the last row is
+//! the bare `phased`.
 //!
-//! Where the wins come from is as informative as the count: against
-//! `greedy-ev` roughly 45% of them are scientific supremacy and only ~9%
-//! military, and 77% of games reach five distinct symbols for somebody. The
-//! science ladder is doing most of the work.
+//! and, at the default, the same thing as a leave-one-out:
 //!
-//! `examples/take_profile.rs` shows the mechanism directly. In Age I,
-//! `greedy-ev` builds 99% of the blue cards it sees and *discards* 77% of
-//! brown, 100% of grey and 65% of green — it has no term for what a card
-//! produces, so anything without printed points is a bill worth cashing in.
-//! `phased` keeps 69% of brown, 87% of grey and 83% of green, and discards
-//! 99% of red. See that example's own docs for the full table and for what
-//! `mcts-uct` does, which is different again.
+//! ```text
+//!                            seed 1    seed 5001    the term is worth
+//! default                    +329      +292
+//! economy_model = legacy      +61       +58         +268 / +234
+//! menu lambda = 0            +191      +216         +139 /  +76
+//! military_model = legacy    +206      +201         +123 /  +91
+//! military_band 2.0 -> 1.0   +265      +267          +64 /  +25
+//! coin_model = legacy        +277      +287          +52 /   +5
+//! next_age_start back to 4/3 +292      +277          +38 /  +15
+//! chain_equity = 0           +278      +309          +51 /  -17
+//! ```
+//!
+//! Two disjoint seed ranges agree in sign on everything except chain equity,
+//! which is indistinguishable from zero and is kept on the strength of the
+//! pooled result and of the fact that [`menu`] needs its table anyway. The
+//! three Round-one fixes are individually noise and jointly worth about +40;
+//! the resource bill is more than half the round on its own.
+//!
+//! Against the rest of the ladder, 400 games per seed range at seeds 1 and
+//! 5001 (`Nodes(1)`; `alphabeta` at `Nodes(2000)` over 200 games each):
+//!
+//! ```text
+//!                    new default          previous agent
+//! vs random          400-0 / 398-2        291-9 over 300   (Elo +595)
+//! vs greedy          399-1 / 397-3        297-3 over 300   (Elo +772)
+//! vs greedy-ev       398-2 / 396-4        392-8 over 400   (Elo +666)
+//! vs strategist      399-1 / 399-1        296-4 over 300   (Elo +728)
+//! vs alphabeta       32-168 / 33-167      32-168 / 18-182
+//! ```
+//!
+//! No regressions: `alphabeta` is the only ladder opponent close enough to
+//! measure a change against, and 65 wins in 400 against the previous agent's
+//! 50 is an improvement.
+//!
+//! # `mcts-uct`: the bar that was met, and the one that was not
+//!
+//! Over 400 paired games at `Nodes(2000)`, `examples/matchup_profile.rs`:
+//!
+//! ```text
+//!                        wins    military  science  civilian
+//! previous agent  s1     32/400         0       32         0
+//! previous agent  s5001  30/400         0       30         0
+//! new default     s1     21/400         1        9        11
+//! new default     s5001  24/400         3        6        15
+//! ```
+//!
+//! The **win-condition spread is fixed, on both seed ranges**: the agent now
+//! wins by all three routes rather than only one. It also stops conceding the
+//! military track — the pawn's mean final position moves from -5.9 in the
+//! previous agent's games to -1.7, and `mcts-uct`'s own military-supremacy
+//! wins drop from 101 in 400 to 40.
+//!
+//! The **aggregate rate against `mcts-uct` got worse**, 62/800 to 45/800
+//! pooled across the two seed ranges (7.8% to 5.6%),
+//! and that is the honest negative of this round. It is the one opponent that
+//! moved the wrong way while everything else moved a long way right, which is
+//! exactly the failure mode you would expect from fitting two weights against
+//! one baseline. Three things are worth saying about it. First, `mcts-uct`
+//! plays a fast yellow/red tempo game (3.8 red and 4.6 yellow cards a game
+//! against this agent's 2.6 and 2.5) and wins 334 of its 376 games on points,
+//! not on a race: a 1-ply evaluation losing a long positional game to a real
+//! search is this project's oldest finding, not a new one. Second, the
+//! previous agent's 7.8% was *entirely* scientific supremacy on both seed
+//! ranges — it entered one lottery every game and lost every other game it
+//! played, 738-0 — so the two numbers do not measure the same kind of
+//! competence. Third, at a *wall-clock* budget
+//! (`time_ms:100`, 100 games, seed 1, single match on a quiet machine) the two
+//! are level: both win 6, the old agent's six all by scientific supremacy and
+//! the new agent's split 2 science / 4 civilian.
+//!
+//! # Choosing `military_band`
+//!
+//! Two weights in [`EvalWeights::default`] are fitted rather than derived
+//! ([`EvalWeights::military_band`] and [`EvalWeights::resource_bill`]), and
+//! the first one has a real trade-off behind it that the next round should
+//! see rather than inherit:
+//!
+//! ```text
+//! band   Elo vs v1 (s1/s5001)   vs alphabeta   mil. wins vs mcts   Age I red keep
+//! 1.0      +265 / +267            72/400            0                20.9%
+//! 1.5      +322 / +261            68/400            -                29.1%
+//! 1.75     +324 / +290            56/400            -                38.1%
+//! 2.0      +329 / +292            65/400            1                41.0%   <- default
+//! 2.5      +334 / +322            45/400            1 and 6          45.5%
+//! ```
+//!
+//! `1.0` is what the term's own units imply — it is already in victory
+//! points — and it is also what leaves the Age I red-card keep rate lowest,
+//! which is where this round's calibration guidance expected it to land after
+//! the `next_age_start` fix. It is also the only value measured that never
+//! wins a game by military supremacy against `mcts-uct`. `2.5` is the Elo
+//! optimum and the only value that loses ground against `alphabeta` relative
+//! to the previous agent. `2.0` is the largest value that clears every bar at
+//! once, and is the default for that reason and no other — but its 41% red
+//! keep is higher than the calibration expected, and if the right answer is
+//! "keep red low and accept never beating `mcts-uct` militarily", then
+//! `phased:band=1.0` is one spec string away and the table above is the whole
+//! argument.
+//!
+//! # What one decision costs
+//!
+//! `examples/decision_cost.rs`, every configuration timed on the *same* 2847
+//! positions (timing each one on its own self-play games measures the wrong
+//! thing: a configuration that steers towards positions with fewer chance
+//! outcomes looks faster while doing more work per decision, and written that
+//! way this benchmark reported the full default as 15% *cheaper* than the same
+//! agent with the menu term switched off).
+//!
+//! ```text
+//! v1 (the previous agent)                 35.7 us/decision
+//! default, menu and chain equity off      39.8 us/decision   +11%
+//! default, menu off                       40.3 us/decision   +13%
+//! default (menu lambda = 0.6)             45.2 us/decision   +26%
+//! ```
+//!
+//! [`menu::menu_term`] is the first term in this crate whose cost scales with
+//! the number of *chance outcomes* an action has — Age I's worst case is a
+//! two-slot reveal from an eleven-card pool, over a hundred outcomes for one
+//! candidate — so it is the one that was worth measuring. It costs about 5 us
+//! per decision, and Age I is not its worst case in practice (37.1 -> 40.2 us
+//! there, against 40.3 -> 45.2 overall): the per-outcome work is bounded by
+//! the handful of accessible slots, not by the outcome count alone.
+//!
+//! # Take profile
+//!
+//! `examples/take_profile.rs`, Age I keep rates over 40 self-play games:
+//!
+//! ```text
+//!             brown  grey   blue   green  yellow  red
+//! phased      90.8   79.2   82.1   51.8   59.9    41.0
+//! phased-v1   68.1   88.9   87.7   79.1   69.7     1.5
+//! mcts-uct    80.2   76.4   73.6   25.9   78.9    50.7
+//! ```
+//!
+//! Red moves from "never" to "often". At the `military_band` value the term's
+//! own units imply it lands at 20.9% instead, which is the number the
+//! calibration for this round expected; see "Choosing `military_band`" above
+//! for why the default is not there.
+//!
+//! The green column is the cost of the round, and it is a real one: the
+//! resource bill makes production and denial compete with the science ladder,
+//! this agent reaches 3.5 distinct symbols where the previous one reached 4.4,
+//! and 35 of its 78 losses to the previous agent are scientific supremacy.
+//! That is a trade made knowingly, and it is where the next round should
+//! probably look first.
 //!
 //! # Public information only
 //!
@@ -127,6 +320,7 @@
 #![warn(missing_docs)]
 
 pub mod blend;
+pub mod menu;
 pub mod terms;
 
 use duels_agents_api::{Agent, AgentSpec, Budget};
@@ -137,7 +331,64 @@ use duels_strategy::{deny_vp, stance_in, Context, PriorWeights, Stance, ThreatWe
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 pub use blend::{Blend, Commitment, TermWeights};
-pub use terms::{DevSupply, MAX_UNITS};
+pub use menu::{ChainTable, MenuTables, TakeValue};
+pub use terms::{DevSupply, MilSmoothing, MAX_UNITS};
+
+/// How the evaluation prices the conflict pawn's position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MilitaryModel {
+    /// A flat reward per step of pawn position — the original.
+    Legacy,
+    /// The real end-of-game scoring table and the loot tokens, as step
+    /// functions smoothed by how many shields are still in play. See
+    /// [`terms::MilSmoothing`].
+    #[default]
+    Band,
+}
+
+/// How the evaluation prices a coin pile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoinModel {
+    /// Three separate terms: `floor(coins / 3)`, a capped race-liquidity
+    /// bonus, and a penalty for falling below a safety floor — the original.
+    Legacy,
+    /// One smooth function: a linear points channel plus a saturating
+    /// liquidity channel. See [`terms::coin_points`] / [`terms::coin_liquidity`].
+    #[default]
+    Smooth,
+}
+
+/// How the evaluation prices a player's exposure to the resource market.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EconomyModel {
+    /// The average per-unit trade price the player faces — the original.
+    Legacy,
+    /// The coins they still expect to *pay*, over the pool that is actually
+    /// coming. Read per player and differenced, this is where monopoly value
+    /// comes from. See [`terms::resource_bill`].
+    #[default]
+    Bill,
+}
+
+/// The knobs of the opponent-menu term.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuWeights {
+    /// Weight on the whole term. Zero switches it off entirely and restores
+    /// the pre-existing evaluation bit for bit.
+    pub lambda: f64,
+    /// Softmax temperature. Larger spreads credit further down the menu;
+    /// towards zero it becomes a plain maximum.
+    pub tau: f64,
+}
+
+impl Default for MenuWeights {
+    fn default() -> Self {
+        Self {
+            lambda: 0.6,
+            tau: 1.5,
+        }
+    }
+}
 
 /// Scores within this distance of the best are treated as tied, and one is
 /// chosen uniformly at random.
@@ -187,10 +438,25 @@ impl Default for ScienceWeights {
 /// with each other and with [`EvalWeights::instant_result`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EvalWeights {
-    /// Reward per step of conflict-pawn position, per player. Board position
-    /// is compounding pressure — loot tokens, proximity to an instant win —
-    /// before it pays off in points. Scaled by military commitment.
+    /// Reward per step of conflict-pawn position, per player, under
+    /// [`MilitaryModel::Legacy`]. Scaled by military commitment.
     pub military_position: f64,
+    /// Weight on the smoothed end-of-game scoring bands under
+    /// [`MilitaryModel::Band`]. In victory points already, so one is the
+    /// honest rate. Scaled by military commitment, like the term it replaces.
+    pub military_band: f64,
+    /// Weight on the smoothed loot tokens under [`MilitaryModel::Band`]. Not
+    /// commitment-scaled: two coins off a rich opponent is worth the same
+    /// whether or not this player has a military plan.
+    pub military_loot: f64,
+    /// `κ` in `σ = max(σ_min, κ·√S_rem)`: how wide the pawn's remaining travel
+    /// is per square root of the shields still in play.
+    pub military_sigma_scale: f64,
+    /// `σ_min`: the floor on that width, so a game with no shields left still
+    /// reads the bands as steps rather than as a discontinuity.
+    pub military_sigma_min: f64,
+    /// `s / σ`: how much of that width the logistic actually uses.
+    pub military_logistic_scale: f64,
     /// Weight on the quadratic "somebody is about to win outright" term. Not
     /// commitment-scaled: an opponent three steps from the capital is urgent
     /// whether or not this player has a military plan of their own.
@@ -222,10 +488,31 @@ pub struct EvalWeights {
     pub coin_safety_floor: f64,
     /// Weight on the shortfall below that cushion.
     pub coin_safety_penalty: f64,
-    /// Weight on the average per-unit trade price a player faces.
+    /// Weight on the average per-unit trade price a player faces, under
+    /// [`EconomyModel::Legacy`].
     pub resource_vulnerability: f64,
+    /// Weight on the resource bill under [`EconomyModel::Bill`]. The bill is
+    /// in coins, so the term itself divides by three; this multiplies it.
+    pub resource_bill: f64,
+    /// `β` in the smooth coin model's liquidity channel.
+    pub coin_smooth_beta: f64,
+    /// `c_ref` in the smooth coin model: the pile size past which further cash
+    /// is points rather than liquidity.
+    pub coin_smooth_ref: f64,
+    /// The decision count at or below which the smooth coin model switches its
+    /// points channel back to the real `floor(coins / 3)`, because the
+    /// rounding is about to actually happen.
+    pub coin_endgame_decisions: f64,
+    /// Weight on the forward value of chain starters whose successor is still
+    /// in the game. Commitment-scaled by the development weight: forward
+    /// economic value fades for the same reason development does.
+    pub chain_equity: f64,
+    /// The opponent-menu term.
+    pub menu: MenuWeights,
     /// Penalty per point of free chain-build value handed to the opponent for
-    /// their very next turn.
+    /// their very next turn. Subsumed by [`EvalWeights::menu`] — a free chain
+    /// build is just one kind of high-value accessible card — and switched off
+    /// automatically whenever `menu.lambda` is non-zero.
     pub deny_chain_gift: f64,
     /// Weight on the rough power of drafted-but-unbuilt wonders.
     pub wonder_potential: f64,
@@ -251,6 +538,31 @@ impl Default for EvalWeights {
             // Half of `greedy-ev`'s 0.6 / 3.0, because these are read per
             // player and then differenced, which doubles them.
             military_position: 0.3,
+            // Fitted, like `resource_bill` below, and the same caveat
+            // applies: the band term is already in victory points, so `1.0` is
+            // the honest rate and anything above it says the *rest* of the
+            // evaluation under-prices the conflict pawn rather than that the
+            // scoring table is wrong. Lowering `vp_projection` to 0.4
+            // instead — the same relative scaling, if that were all this
+            // was — is much worse (+195 / +201 Elo against the previous agent,
+            // versus +329 / +292 here), so it is not simply a units mismatch.
+            //
+            // Two is not the Elo maximum; it is the largest value that clears
+            // every bar at once. See the crate docs' "Choosing
+            // `military_band`" table: the Elo optimum is flat from 2.0 to 2.5,
+            // 2.5 is the only value measured that loses ground against
+            // `alphabeta` relative to the previous agent, and 1.0 — the value
+            // the term's own units imply — never wins a game by military
+            // supremacy against `mcts-uct` at all. The Age I red-card keep
+            // rate this produces (41%) is reported there too, because it is
+            // higher than the calibration this round was given expected and
+            // that is a judgement the next round should revisit rather than
+            // inherit silently.
+            military_band: 2.0,
+            military_loot: 1.0,
+            military_sigma_scale: 0.8,
+            military_sigma_min: 0.35,
+            military_logistic_scale: 0.55,
             military_endgame_urgency: 1.5,
             vp_projection: 1.0,
             coins_div3: 1.0,
@@ -263,9 +575,32 @@ impl Default for EvalWeights {
             coin_safety_floor: 3.0,
             coin_safety_penalty: 0.5,
             resource_vulnerability: 0.4,
+            // Fitted, not derived. The term divides the bill by three, which
+            // is the rate at which coins become victory points at scoring; at
+            // `1.0` that is all this weight would say. Three reproduces
+            // consistently better on two disjoint seed ranges (+265 / +267 Elo
+            // against the previous agent, versus +233 / +226 at one), which
+            // says a coin the opponent is forced to spend on trade is worth
+            // roughly a whole victory point rather than a third of one. That
+            // is not implausible — a trade payment costs them the coin *and*
+            // whatever they would rather have bought with it — but it is a
+            // measurement, not an argument, and is flagged as such.
+            resource_bill: 3.0,
+            coin_smooth_beta: 0.6,
+            coin_smooth_ref: 5.0,
+            coin_endgame_decisions: 2.0,
+            chain_equity: 1.0,
+            menu: MenuWeights::default(),
             deny_chain_gift: 0.5,
             wonder_potential: 0.5,
-            next_age_start: [4.0, 3.0, 0.0],
+            // A starter flip is worth roughly three victory points in Age I
+            // and two in Age II — `docs/strategy-backlog.md` §1.2's estimate.
+            // These are read *per player* and then differenced, and the flip
+            // moves both sides at once, so the differenced swing is twice the
+            // number written here. Getting that wrong is what made a single
+            // Age I shield read as an eight-point catastrophe and drove the
+            // red-card keep rate to ~1%.
+            next_age_start: [1.5, 1.0, 0.0],
             deny: 1.0,
             deny_opponent_commit_boost: 1.5,
             instant_result: 1000.0,
@@ -280,6 +615,40 @@ pub struct Config {
     pub eval: EvalWeights,
     /// The commitment blend.
     pub blend: Blend,
+    /// How the conflict pawn is priced.
+    pub military_model: MilitaryModel,
+    /// How coins are priced.
+    pub coin_model: CoinModel,
+    /// How resource-market exposure is priced.
+    pub economy_model: EconomyModel,
+}
+
+impl Config {
+    /// The configuration this crate shipped with: every model at its original
+    /// setting, no chain equity, no opponent menu, and the original
+    /// `next_age_start` magnitudes.
+    ///
+    /// Kept so the arena can benchmark against the exact previous agent in one
+    /// binary (`phased:base=v1`), and so
+    /// `tests/legacy_identity.rs` can assert that this configuration
+    /// reproduces a verbatim copy of the old evaluation move for move.
+    pub fn v1() -> Config {
+        Config {
+            eval: EvalWeights {
+                next_age_start: [4.0, 3.0, 0.0],
+                chain_equity: 0.0,
+                menu: MenuWeights {
+                    lambda: 0.0,
+                    ..MenuWeights::default()
+                },
+                ..EvalWeights::default()
+            },
+            blend: Blend::default(),
+            military_model: MilitaryModel::Legacy,
+            coin_model: CoinModel::Legacy,
+            economy_model: EconomyModel::Legacy,
+        }
+    }
 }
 
 impl Config {
@@ -289,8 +658,30 @@ impl Config {
         let e = &self.eval;
         let b = &self.blend;
         format!(
-            "mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
+            "models={}/{}/{},menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
+             smooth={:.2}@{:.1}|\
+             mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
              blend={},a={:.2},b={:.2},n={:.1},c0={:.2},floors={:.2}/{:.2}/{:.2}/{:.2}/{:.2},boosts={:.2}/{:.2}",
+            match self.military_model {
+                MilitaryModel::Legacy => "legacy",
+                MilitaryModel::Band => "band",
+            },
+            match self.coin_model {
+                CoinModel::Legacy => "legacy",
+                CoinModel::Smooth => "smooth",
+            },
+            match self.economy_model {
+                EconomyModel::Legacy => "legacy",
+                EconomyModel::Bill => "bill",
+            },
+            e.menu.lambda,
+            e.menu.tau,
+            e.chain_equity,
+            e.resource_bill,
+            e.military_band,
+            e.military_loot,
+            e.coin_smooth_beta,
+            e.coin_smooth_ref,
             e.military_position,
             e.military_endgame_urgency,
             e.vp_projection,
@@ -340,6 +731,8 @@ pub struct Root {
     supply: DevSupply,
     deny_scale: f64,
     age: u8,
+    smoothing: MilSmoothing,
+    menu: MenuTables,
 }
 
 impl Root {
@@ -370,14 +763,67 @@ impl Root {
         let mut weights = [TermWeights::of(commit_me, &config.blend); 2];
         weights[opp.index()] = TermWeights::of(commit_opp, &config.blend);
 
+        let supply = DevSupply::of(&ctx.board);
+        // Shields still obtainable anywhere in the game, straight off the
+        // military read — the width of the pawn's remaining random walk.
+        let shields_remaining = f64::from(stance.military.visible)
+            + stance.military.expected_hidden
+            + stance.military.expected_future_ages;
+        let smoothing = MilSmoothing::of(
+            shields_remaining,
+            config.eval.military_sigma_scale,
+            config.eval.military_sigma_min,
+            config.eval.military_logistic_scale,
+        );
+
+        // The pricing context both forward-looking terms share. Building it
+        // is the whole of their per-decision cost: two `TakeValue`s, the
+        // seventeen-link chain table, and one `v` per card face up at the
+        // root. Everything downstream is a table lookup plus an affordability
+        // check.
+        let take = [Player::One, Player::Two].map(|p| {
+            TakeValue::of(
+                state,
+                p,
+                &supply,
+                &smoothing,
+                &config,
+                weights[p.index()].liquidity,
+            )
+        });
+        let chain = if config.eval.chain_equity == 0.0 && config.eval.menu.lambda == 0.0 {
+            ChainTable::empty()
+        } else {
+            ChainTable::of(state, &ctx.board, &ctx.expected, &take)
+        };
+        let menu = if config.eval.menu.lambda == 0.0 {
+            MenuTables::unpriced(state, take, chain)
+        } else {
+            MenuTables::of(state, &ctx.board, take, chain)
+        };
+
         Root {
             deny_scale: 1.0 + (config.eval.deny_opponent_commit_boost - 1.0) * commit_opp.s,
-            supply: DevSupply::of(&ctx.board),
+            supply,
             age: state.age(),
+            smoothing,
+            menu,
             stance,
             weights,
             config,
         }
+    }
+
+    /// The root-fixed military smoothing.
+    #[inline]
+    pub fn smoothing(&self) -> &MilSmoothing {
+        &self.smoothing
+    }
+
+    /// The root-fixed pricing tables the forward-looking terms share.
+    #[inline]
+    pub fn menu(&self) -> &MenuTables {
+        &self.menu
     }
 
     /// The configuration in force.
@@ -454,41 +900,91 @@ pub fn evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
         };
     }
     player_value(state, me, root) - player_value(state, me.other(), root)
+        + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
 }
 
 /// Every term, read for one player and weighted by *that player's* root-fixed
 /// commitment multipliers.
 fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let e = &root.config.eval;
+    let c = &root.config;
     let w = &root.weights[p.index()];
     let breakdown = scoring::breakdown(state, p);
 
     // --- fading with commitment -------------------------------------------
     let points = w.vp * e.vp_projection * terms::card_and_token_vp(&breakdown);
-    let liquidity = w.liquidity * e.coins_div3 * f64::from(breakdown.coins);
+
+    // Coins. `Legacy` splits into three terms (a floored points channel, a
+    // capped race-liquidity bonus, and a shortfall penalty inside `economy`);
+    // `Smooth` replaces all three with one continuous function.
+    let (liquidity, race_liquidity, coin_safety) = match c.coin_model {
+        CoinModel::Legacy => (
+            w.liquidity * e.coins_div3 * f64::from(breakdown.coins),
+            w.race_liquidity
+                * e.race_card_liquidity
+                * terms::race_liquidity(state, p, e.race_liquidity_cap),
+            e.coin_safety_penalty * -terms::coin_shortfall(state, p, e.coin_safety_floor),
+        ),
+        CoinModel::Smooth => (
+            w.liquidity * e.coins_div3 * terms::coin_points(state, p, e.coin_endgame_decisions)
+                + terms::coin_liquidity(state, p, e.coin_smooth_beta, e.coin_smooth_ref),
+            0.0,
+            0.0,
+        ),
+    };
+
     let development = w.development
         * e.development
-        * terms::development_value(state, p, &root.supply, e.development_take_rate);
-    let economy = w.economy
-        * (e.coin_safety_penalty * -terms::coin_shortfall(state, p, e.coin_safety_floor)
-            + e.resource_vulnerability * -terms::average_trade_price(state, p));
+        * terms::development_value_with(
+            state,
+            p,
+            &root.supply,
+            e.development_take_rate,
+            // With `Bill` in force the post's value arrives through the lower
+            // `price_r` it produces; crediting it separately would double it.
+            c.economy_model == EconomyModel::Legacy,
+        );
+    let chain_equity =
+        w.development * e.chain_equity * menu::chain_equity(state, p, root.menu.chain());
+
+    let market = match c.economy_model {
+        EconomyModel::Legacy => e.resource_vulnerability * -terms::average_trade_price(state, p),
+        EconomyModel::Bill => {
+            e.resource_bill * -terms::resource_bill(state, p, &root.supply, e.development_take_rate)
+                / 3.0
+        }
+    };
+    let economy = w.economy * (coin_safety + market);
 
     // --- sharpening with commitment ---------------------------------------
     let science = w.science * e.science_ladder * terms::science_ladder(state, p, &e.science);
-    let military = w.military * e.military_position * terms::military_position(state, p);
-    let race_liquidity = w.race_liquidity
-        * e.race_card_liquidity
-        * terms::race_liquidity(state, p, e.race_liquidity_cap);
+    let military = match c.military_model {
+        MilitaryModel::Legacy => {
+            w.military * e.military_position * terms::military_position(state, p)
+        }
+        MilitaryModel::Band => {
+            w.military * e.military_band * terms::military_band(state, p, &root.smoothing)
+                + e.military_loot * terms::military_loot(state, p, &root.smoothing)
+        }
+    };
 
     // --- never scaled -----------------------------------------------------
     let urgency = e.military_endgame_urgency * terms::military_urgency(state, p);
     let start = terms::next_age_start(state, p, e);
     let wonders = e.wonder_potential * terms::wonder_potential(state, p);
-    let gift = -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age);
+    // The opponent-menu term subsumes this one — a free chain build is just
+    // one kind of high-value accessible card, and it is priced there properly
+    // instead of at a flat `2 + VP`.
+    let gift = if e.menu.lambda == 0.0 {
+        -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age)
+    } else {
+        0.0
+    };
 
     points
         + liquidity
         + development
+        + chain_equity
         + economy
         + science
         + military
@@ -937,6 +1433,61 @@ mod tests {
         );
         agent.choose(&obs, &legal, Budget::Nodes(1));
         assert_eq!(agent.root_builds(), 2);
+    }
+
+    /// Root-fixing for the *pricing* tables, not just the weights.
+    ///
+    /// `menu`'s take-value function calls the cost engine, which is the
+    /// expensive part of this crate. The tables are built inside
+    /// [`Root::new`], so the counter that already proves the blend is
+    /// evaluated once per decision proves the same for them — but the
+    /// behavioural half needs its own test: a candidate that changes what a
+    /// card costs must still be scored against the *root* price, or a move
+    /// would be credited once for the position it creates and again for
+    /// having made the menu look different.
+    #[test]
+    fn the_menu_pricing_tables_are_root_fixed_and_built_once() {
+        // Player One holds nothing; taking the Glassworks would halve what
+        // every glass-costing card costs them.
+        let st = StateBuilder::new()
+            .age(1)
+            .open_slots(&[(18, "glassworks"), (19, "baths")])
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+            .build();
+        let me = st.current_player();
+        let root = Root::new(&st, me, Config::default());
+        let glass = st.face_up_card(18).expect("slot 18 is face up");
+        let before = root.menu().value(me, glass);
+
+        // Apply the move that changes the pricing context...
+        let mut after = st;
+        let mut rng = StdRng::seed_from_u64(5);
+        engine::apply(&mut after, Action::Build { slot: 18 }, &mut rng).unwrap();
+        let rebuilt = Root::new(&after, after.current_player(), Config::default());
+
+        // ...the root table still reports the root price, and a table rebuilt
+        // on the result genuinely disagrees, so this is not vacuous.
+        assert_eq!(
+            root.menu().value(me, glass).to_bits(),
+            before.to_bits(),
+            "the root table moved without anybody rebuilding it"
+        );
+        let other = st.face_up_card(19).expect("slot 19 is face up");
+        assert_ne!(
+            root.menu().value(me, other).to_bits(),
+            rebuilt.menu().value(me, other).to_bits(),
+            "the pricing context did not actually change, so this test proves nothing"
+        );
+
+        // And the counter: one `choose` builds one `Root`, and therefore one
+        // set of pricing tables, however many candidates it scores.
+        let mut agent = PhasedAgent::new(4);
+        let legal = engine::legal_actions(&st);
+        assert!(legal.len() > 2);
+        agent.choose(&st.observation(), &legal, Budget::Nodes(1));
+        assert_eq!(agent.root_builds(), 1);
     }
 
     /// The behavioural half of root-fixing: a candidate action that would

@@ -26,11 +26,14 @@
 //! identical arithmetic produce identical bits, and a discrepancy of any size
 //! means something read what it should not have.
 
-use duels_agent_phased::{evaluate, expected_value, Blend, Config, PhasedAgent, Root};
+use duels_agent_phased::{
+    evaluate, expected_value, Blend, CoinModel, Config, EconomyModel, MilitaryModel, PhasedAgent,
+    Root,
+};
 use duels_agents_api::{Agent, Budget};
 use duels_core::observation::Observation;
-use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards};
-use duels_core::{engine, GameState, Player};
+use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards, StateBuilder};
+use duels_core::{engine, Action, GameState, Player};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -281,5 +284,135 @@ fn two_differently_seeded_agents_score_every_candidate_identically() {
     for seed in 0..8u64 {
         let mut agent = PhasedAgent::new(seed);
         assert!(legal.contains(&agent.choose(&obs, &legal, Budget::Nodes(1))));
+    }
+}
+
+/// Every configuration option this crate offers, exercised over the same real
+/// positions.
+///
+/// The property is not "the default configuration does not leak"; it is "no
+/// configuration does". Each new model is a different set of reads on the
+/// post-outcome state, and one of them (the opponent menu) reads cards in the
+/// structure, so each has to be attacked separately rather than trusted to
+/// inherit the default's clean bill of health.
+#[test]
+fn the_property_holds_under_every_model_combination() {
+    let mut configs = vec![Config::default(), Config::v1()];
+    for military_model in [MilitaryModel::Legacy, MilitaryModel::Band] {
+        for coin_model in [CoinModel::Legacy, CoinModel::Smooth] {
+            for economy_model in [EconomyModel::Legacy, EconomyModel::Bill] {
+                configs.push(Config {
+                    military_model,
+                    coin_model,
+                    economy_model,
+                    ..Config::default()
+                });
+            }
+        }
+    }
+    for (i, config) in configs.iter().enumerate() {
+        for seed in 0..6u64 {
+            for &steps in &[7usize, 17, 29, 43] {
+                let st = advance(seed, steps, 0x1234_5678_9ABC_DEF0);
+                if st.is_over() {
+                    continue;
+                }
+                let obs = st.observation();
+                let mut rng_a = StdRng::seed_from_u64(seed * 31 + steps as u64);
+                let mut rng_b = StdRng::seed_from_u64(0xDEAD_BEEF ^ seed ^ (steps as u64) << 8);
+                let a = obs.sample_state(&mut rng_a);
+                let b = obs.sample_state(&mut rng_b);
+                assert_everything_agrees(
+                    &a,
+                    &b,
+                    &format!("config {i}, seed {seed} steps {steps}"),
+                    *config,
+                );
+            }
+        }
+    }
+}
+
+/// **The age-ending case**, which is the one that actually bites.
+///
+/// A move that empties the structure makes the engine deal a whole new age
+/// out of a deck no `Observation` can see. `Observation::sample_state` invents
+/// that deck, so two samples of the *same* observation produce two different
+/// Age II structures — and any term that reads a card in the structure on the
+/// post-action state would score the age-ending move differently in the two
+/// worlds. This is exactly the bug that was found while
+/// `terms::chain_gift_exposure` was being built, and it is what
+/// `menu::menu_term`'s stand-down rule exists to prevent.
+///
+/// So this test does not merely hope an age-ending action turns up somewhere
+/// in a sweep: it builds a position with one card left, asserts that the move
+/// really does end the age, asserts that the two sampled worlds really do
+/// deal *different* next ages (otherwise the test would be vacuous), and only
+/// then asserts the scores agree bit for bit.
+#[test]
+fn an_age_ending_action_scores_identically_in_two_invented_futures() {
+    for (age, last_slot) in [(1u8, 19u8), (2u8, 19u8)] {
+        let st = StateBuilder::new()
+            .age(age)
+            .open_slots(&[(last_slot, "clay-pool")])
+            .built(Player::One, &["scriptorium", "palisade", "tavern"])
+            .built(Player::Two, &["theater", "altar"])
+            .coins(Player::One, 12)
+            .coins(Player::Two, 9)
+            .conflict(2)
+            .current(Player::One)
+            .build();
+
+        let obs = st.observation();
+        let mut rng_a = StdRng::seed_from_u64(0x1111_2222);
+        let mut rng_b = StdRng::seed_from_u64(0x8888_9999);
+        let a = obs.sample_state(&mut rng_a);
+        let b = obs.sample_state(&mut rng_b);
+        assert_eq!(a.observation(), b.observation());
+
+        let action = Action::Discard { slot: last_slot };
+        assert!(engine::legal_actions(&a).contains(&action));
+
+        // The two worlds really do invent different next ages.
+        let mut after_a = a;
+        let mut after_b = b;
+        let outcome = engine::chance_outcomes(&a, action);
+        assert_eq!(
+            outcome.len(),
+            1,
+            "an age-ending discard of a face-up card has no chance node of its own"
+        );
+        engine::apply_with_outcome(&mut after_a, action, &outcome[0].0).unwrap();
+        engine::apply_with_outcome(&mut after_b, action, &outcome[0].0).unwrap();
+        assert_eq!(after_a.age(), age + 1, "the move must end the age");
+        let structure = |s: &GameState| -> Vec<Option<duels_core::data::CardId>> {
+            (0..20u8).map(|i| s.face_up_card(i)).collect()
+        };
+        assert_ne!(
+            structure(&after_a),
+            structure(&after_b),
+            "age {age}: both samples invented the same next age, so this test is vacuous"
+        );
+
+        // ...and every configuration scores the age-ending move identically
+        // regardless of which future it happened to invent.
+        for (i, config) in [Config::default(), Config::v1()].iter().enumerate() {
+            let me = a.current_player();
+            let root_a = Root::new(&a, me, *config);
+            let root_b = Root::new(&b, me, *config);
+            same_bits(
+                expected_value(&a, action, me, &root_a),
+                expected_value(&b, action, me, &root_b),
+                &format!("age {age}, config {i}: the age-ending discard"),
+            );
+            // And the whole slate of candidates, for good measure.
+            for &candidate in &engine::legal_actions(&a) {
+                same_bits(
+                    expected_value(&a, candidate, me, &root_a),
+                    expected_value(&b, candidate, me, &root_b),
+                    &format!("age {age}, config {i}: {candidate:?}"),
+                );
+            }
+        }
     }
 }
