@@ -2241,6 +2241,49 @@ mod tests {
         );
     }
 
+    /// **The Shipowners Guild cannot project at all in Age III**, and that is a
+    /// property of the card data rather than of this model: Age III prints no
+    /// brown or grey card (`no_production_source_survives_into_age_three`
+    /// counts it off `data/cards.json`), so by the time the guild is on the
+    /// table neither city can add another one and `ρ_(brown+grey)` is exactly
+    /// zero. The guild is therefore priced on the board as it stands, which is
+    /// correct rather than a limitation — every other guild's category can
+    /// still grow.
+    #[test]
+    fn the_shipowners_guild_projects_nothing_in_age_three_because_nothing_is_left_to_deal() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "shipowners-guild"), (19, "palace")])
+            .built(Player::One, &["lumber-yard", "glassworks", "press"])
+            .built(Player::Two, &["quarry"])
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&st));
+        assert_eq!(supply.raw_and_manufactured_fraction(), 0.0);
+        let g = GuildTable::of(&st, &supply, &EvalWeights::default());
+        assert_eq!(
+            g.hat(CountTarget::RawAndManufactured).to_bits(),
+            g.live(CountTarget::RawAndManufactured).to_bits()
+        );
+        assert_eq!(g.live(CountTarget::RawAndManufactured), 3.0);
+
+        // ...whereas in Age I, with Age II's three brown and two grey cards
+        // still to be dealt, the same category has a pool behind it and does
+        // project.
+        let earlier = StateBuilder::new()
+            .age(1)
+            .built(Player::One, &["lumber-yard", "glassworks", "press"])
+            .built(Player::Two, &["quarry"])
+            .coins(Player::One, 20)
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&Board::of(&earlier));
+        assert!(supply.raw_and_manufactured_fraction() > 0.0);
+        let g = GuildTable::of(&earlier, &supply, &EvalWeights::default());
+        assert!(g.hat(CountTarget::RawAndManufactured) > g.live(CountTarget::RawAndManufactured));
+    }
+
     /// The Builders Guild's projection comes from [`wonder_p_build`], and goes
     /// to exactly the live count once the seven-wonder cap has closed — at
     /// which point no further wonder can be built by anybody.
