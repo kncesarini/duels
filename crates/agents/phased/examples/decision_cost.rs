@@ -69,10 +69,31 @@ fn main() {
         ..menu_off
     };
 
+    // Round three's own increment: the terminal rails, and the differenced
+    // menu shield price. Both are gated on cheap early exits -- a rail cannot
+    // fire unless somebody is within one action's shields of a capital or
+    // holds five distinct symbols -- so what this measures is mostly the cost
+    // of *asking*.
+    let rails_off = Config {
+        rails: duels_agent_phased::RailModel::Off,
+        eval: EvalWeights {
+            imminent: 0.0,
+            ..Config::default().eval
+        },
+        ..Config::default()
+    };
+    let one_sided = Config {
+        menu_shield_pricing: duels_agent_phased::MenuShieldPricing::OneSided,
+        ..Config::default()
+    };
+
     let mut rows: Vec<Row> = [
-        ("v1 (the previous agent)", Config::v1()),
+        ("v1 (the round-one agent)", Config::v1()),
+        ("v2 (the round-two agent)", Config::v2()),
         ("default, menu and chain equity off", no_chain),
         ("default, menu off", menu_off),
+        ("default, rails off", rails_off),
+        ("default, one-sided menu shield price", one_sided),
         ("default (menu lambda = 0.6)", Config::default()),
     ]
     .into_iter()

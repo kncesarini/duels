@@ -50,7 +50,12 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`default`), the three model switches
+//! * `phased` -- `base` (`v1`/`v2`/`default`), the terminal rails
+//!   (`rails` `on`/`off`, `imminent`), the menu's shield price
+//!   (`shield_price`/`shieldprice`, `onesided`/`diff`), the military
+//!   smoothing horizon (`horizon`, a number of rounds or `supply` for the old
+//!   supply-wide width), the production lock-in multiplier
+//!   (`production_lock_in`/`lockin`), the three model switches
 //!   `military_model`/`mil`, `coin_model`/`coin` and `economy_model`/`econ`,
 //!   `blend` (`on`/`off`), the two forward-looking terms' weights
 //!   `menu_lambda`/`lambda`, `menu_tau`/`tau` and `chain_equity`/`chaineq`,
@@ -83,8 +88,8 @@ use duels_agent_mcts_uct::{
     Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
 };
 use duels_agent_phased::{
-    Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MilitaryModel,
-    PhasedAgent,
+    Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, MenuShieldPricing,
+    MilitaryModel, PhasedAgent, RailModel,
 };
 use duels_agents_api::Agent;
 
@@ -308,9 +313,34 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
         match k {
             "base" => match v {
                 "v1" => cfg = PhasedConfig::v1(),
+                "v2" => cfg = PhasedConfig::v2(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
+            "rails" => {
+                cfg.rails = match v {
+                    "on" | "true" => RailModel::On,
+                    "off" | "false" => RailModel::Off,
+                    other => return Err(format!("phased: unknown rails \"{other}\"")),
+                }
+            }
+            "imminent" => cfg.eval.imminent = parse_field(k, v)?,
+            "shield_price" | "shieldprice" => {
+                cfg.menu_shield_pricing = match v {
+                    "onesided" | "one_sided" => MenuShieldPricing::OneSided,
+                    "diff" | "differenced" => MenuShieldPricing::Differenced,
+                    other => return Err(format!("phased: unknown shield_price \"{other}\"")),
+                }
+            }
+            "horizon" => {
+                cfg.military_horizon = match v {
+                    "supply" | "none" | "off" => None,
+                    other => Some(other.parse::<f64>().map_err(|e| {
+                        format!("phased: horizon \"{other}\" is not a number: {e}")
+                    })?),
+                }
+            }
+            "production_lock_in" | "lockin" => cfg.eval.production_lock_in = parse_field(k, v)?,
             "military_model" | "mil" => {
                 cfg.military_model = match v {
                     "legacy" => MilitaryModel::Legacy,
@@ -655,7 +685,21 @@ mod tests {
     #[test]
     fn phased_base_v1_is_the_configuration_the_crate_shipped_with() {
         assert_eq!(parse_phased_config("base=v1").unwrap(), PhasedConfig::v1());
+        assert_eq!(parse_phased_config("base=v2").unwrap(), PhasedConfig::v2());
         assert_eq!(parse_phased_config("").unwrap(), PhasedConfig::default());
+        // The round-three keys, and their "off" values reproducing v2's.
+        let off = parse_phased_config(
+            "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0",
+        )
+        .unwrap();
+        assert_eq!(off, PhasedConfig::v2());
+        assert_eq!(
+            parse_phased_config("horizon=5").unwrap().military_horizon,
+            Some(5.0)
+        );
+        assert!(parse_phased_config("rails=maybe").is_err());
+        assert!(parse_phased_config("shieldprice=sideways").is_err());
+        assert!(parse_phased_config("horizon=wide").is_err());
         assert_ne!(PhasedConfig::v1(), PhasedConfig::default());
     }
 

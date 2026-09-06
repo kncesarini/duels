@@ -27,8 +27,8 @@
 //! means something read what it should not have.
 
 use duels_agent_phased::{
-    evaluate, expected_value, Blend, CoinModel, Config, EconomyModel, MilitaryModel, PhasedAgent,
-    Root,
+    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel,
+    MenuShieldPricing, MilitaryModel, PhasedAgent, RailModel, Root,
 };
 use duels_agents_api::{Agent, Budget};
 use duels_core::observation::Observation;
@@ -297,7 +297,19 @@ fn two_differently_seeded_agents_score_every_candidate_identically() {
 /// inherit the default's clean bill of health.
 #[test]
 fn the_property_holds_under_every_model_combination() {
-    let mut configs = vec![Config::default(), Config::v1()];
+    let mut configs = vec![Config::default(), Config::v1(), Config::v2()];
+    for rails in [RailModel::Off, RailModel::On] {
+        for menu_shield_pricing in [MenuShieldPricing::OneSided, MenuShieldPricing::Differenced] {
+            for military_horizon in [None, Some(2.0), Some(5.0)] {
+                configs.push(Config {
+                    rails,
+                    menu_shield_pricing,
+                    military_horizon,
+                    ..Config::default()
+                });
+            }
+        }
+    }
     for military_model in [MilitaryModel::Legacy, MilitaryModel::Band] {
         for coin_model in [CoinModel::Legacy, CoinModel::Smooth] {
             for economy_model in [EconomyModel::Legacy, EconomyModel::Bill] {
@@ -415,4 +427,128 @@ fn an_age_ending_action_scores_identically_in_two_invented_futures() {
             }
         }
     }
+}
+
+/// **The age-ending case, for the rails specifically.**
+///
+/// [`rail_owner`] asks whether an accessible card would end the game outright,
+/// which means reading cards in the structure, which makes it the third thing
+/// in this crate that could score a move by which world the throwaway sample
+/// happened to invent. A move that empties the structure deals a whole new age
+/// from a deck no `Observation` can see, so two samples of the *same* position
+/// disagree about what is on the table afterwards.
+///
+/// Provoking that takes some care, because the military half of the rails
+/// cannot reach across an age boundary at all: an age that ends with the pawn
+/// off centre puts the engine into `Phase::ChooseFirstPlayer`, where the rails
+/// stand down anyway, and an age that ends with the pawn centred leaves the
+/// capital nine shields away, which is further than any single action can
+/// travel. The **science** half can: a player sitting on five distinct symbols
+/// with a centred pawn closes the moment a green card carrying their sixth
+/// lands face up and affordable — and whether the next age deals one there is
+/// precisely the sample's invention.
+///
+/// So both players are given five symbols, missing different ones, both of
+/// which are printed on an Age II card. The test then asserts, over many
+/// draws: that the two invented Age IIs really differ, that at least one of
+/// them really would fire a rail if the stand-down were lifted (otherwise the
+/// case is vacuous), and that every candidate scores identically anyway.
+#[test]
+fn an_age_ending_action_cannot_let_the_rails_read_the_next_age() {
+    // Player One holds every symbol but Mortar (Age II: the Dispensary);
+    // Player Two every symbol but Inkwell (Age II: the Library).
+    const ONE: [&str; 5] = [
+        "workshop",
+        "apothecary",
+        "scriptorium",
+        "academy",
+        "university",
+    ];
+    const TWO: [&str; 5] = ["laboratory", "school", "dispensary", "study", "observatory"];
+
+    let mut provoked = 0usize;
+    let mut pairs = 0usize;
+    for draw in 0..80u64 {
+        // The pawn is centred, so the age ends with the last card's taker
+        // simply starting the next one — no `ChooseFirstPlayer` in the way.
+        let st = StateBuilder::new()
+            .age(1)
+            .open_slots(&[(19, "clay-pool")])
+            .built(Player::One, &ONE)
+            .built(Player::Two, &TWO)
+            .conflict(0)
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build();
+        assert_eq!(st.player(Player::One).distinct_science(), 5);
+        assert_eq!(st.player(Player::Two).distinct_science(), 5);
+
+        let obs = st.observation();
+        let mut rng_a = StdRng::seed_from_u64(0x51A7_E000 + draw);
+        let mut rng_b = StdRng::seed_from_u64(0x0DDB_A110 ^ (draw << 17));
+        let a = obs.sample_state(&mut rng_a);
+        let b = obs.sample_state(&mut rng_b);
+        assert_eq!(a.observation(), b.observation());
+
+        let action = Action::Discard { slot: 19 };
+        let outcome = engine::chance_outcomes(&a, action);
+        assert_eq!(outcome.len(), 1);
+        let (mut after_a, mut after_b) = (a, b);
+        engine::apply_with_outcome(&mut after_a, action, &outcome[0].0).unwrap();
+        engine::apply_with_outcome(&mut after_b, action, &outcome[0].0).unwrap();
+        assert_eq!(after_a.age(), 2, "the move must end the age");
+        assert_eq!(after_a.phase(), duels_core::state::Phase::Turn);
+
+        let structure = |s: &GameState| -> Vec<Option<duels_core::data::CardId>> {
+            (0..20u8).map(|i| s.face_up_card(i)).collect()
+        };
+        if structure(&after_a) == structure(&after_b) {
+            // The two draws happened to coincide; nothing to compare.
+            continue;
+        }
+        pairs += 1;
+
+        // Vacuity guard: passing the *post-action* age as the root age is what
+        // lifting the stand-down would mean, and at least one invented future
+        // must then hand somebody a closing card.
+        for world in [&after_a, &after_b] {
+            if rail_owner(world, world.age(), RailModel::On).is_some() {
+                provoked += 1;
+            }
+        }
+
+        // ...and with the root age where it really is, both futures score
+        // every candidate identically.
+        for (i, config) in [Config::default(), Config::v1(), Config::v2()]
+            .iter()
+            .enumerate()
+        {
+            let me = a.current_player();
+            let root_a = Root::new(&a, me, *config);
+            let root_b = Root::new(&b, me, *config);
+            assert_eq!(
+                rail_owner(&after_a, root_a.age(), config.rails),
+                None,
+                "draw {draw}, config {i}: a rail read a card from an age the \
+                 observation cannot see"
+            );
+            for &candidate in &engine::legal_actions(&a) {
+                same_bits(
+                    expected_value(&a, candidate, me, &root_a),
+                    expected_value(&b, candidate, me, &root_b),
+                    &format!("draw {draw}, config {i}: {candidate:?}"),
+                );
+            }
+        }
+    }
+    assert!(
+        pairs > 40,
+        "only {pairs} distinct pairs of futures compared"
+    );
+    assert!(
+        provoked > 0,
+        "no invented Age II ever contained a closing card, so the stand-down \
+         was never actually under test"
+    );
 }

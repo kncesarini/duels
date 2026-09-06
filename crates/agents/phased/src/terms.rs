@@ -87,6 +87,23 @@ pub struct DevSupply {
     pub f: [[f64; NUM_RESOURCES]; MAX_UNITS],
     /// How many cards the pool holds. Zero means every fraction is zero.
     pub pool_size: u32,
+    /// How locked-in each city's production already is: `0` while every brown
+    /// and grey card in the game is still to come, rising to exactly `1` once
+    /// none is.
+    ///
+    /// **Age III has no production cards at all** — the base game prints nine
+    /// brown and four grey, six and two of them in Age I and three and two in
+    /// Age II, and none in Age III (counted off `data/cards.json` here rather
+    /// than asserted from memory; `crate::tests::production_is_completely_
+    /// frozen_by_age_three` pins it). So an Age III position has a lock-in of
+    /// exactly one: whatever a city produces at the end of Age II is what it
+    /// will produce for the rest of the game, and the resource bill it faces
+    /// from there is not an estimate of something still fixable but a bill it
+    /// is definitely going to pay.
+    ///
+    /// Mid-Age-II it is partial, which is the interesting case and the reason
+    /// this is a continuous factor rather than an `age == 3` branch.
+    pub production_lock_in: f64,
 }
 
 impl DevSupply {
@@ -118,11 +135,29 @@ impl DevSupply {
         } else {
             1.0 / f64::from(pool_size)
         };
+        let production = production_mask();
+        let total = production.count_ones();
+        let still_coming = (pool & production).count_ones();
         DevSupply {
             f: std::array::from_fn(|k| std::array::from_fn(|r| f64::from(counts[k][r]) * scale)),
             pool_size,
+            production_lock_in: if total == 0 {
+                1.0
+            } else {
+                1.0 - f64::from(still_coming) / f64::from(total)
+            },
         }
     }
+}
+
+/// Every brown and grey card in the game, as a mask.
+///
+/// Resolved from [`duels_core::data::CardType`] rather than by slug, so a
+/// change to `data/cards.json` cannot silently desynchronise it.
+pub fn production_mask() -> u128 {
+    let s = data::statics();
+    s.card_masks[data::CardType::RawMaterial.index()]
+        | s.card_masks[data::CardType::ManufacturedGood.index()]
 }
 
 /// What `p`'s own production is worth, in coins they will not have to spend.
@@ -628,6 +663,115 @@ pub fn band_steps() -> [(f64, f64); 3] {
     })
 }
 
+/// How wide a distribution the pawn's remaining travel should be smoothed
+/// over, given the shields still in play and how many rounds the player
+/// actually has left to use them.
+///
+/// # Why the supply alone is the wrong width
+///
+/// [`MilSmoothing::of`] takes `S_rem`, every shield still obtainable *anywhere
+/// in the game*. Early on that is around twenty, which makes `σ ≈ 0.8·√20 ≈
+/// 3.6` and the logistic width `s ≈ 2.0` — wide enough that the "step
+/// function" the band model exists to represent is, for most of the game,
+/// indistinguishable from a straight line. The whole point of the band model
+/// is that the shield crossing 2→3 is worth more than the one crossing 1→2,
+/// and at that width it barely is.
+///
+/// The pawn is not going to travel `√S_rem`, though: it is going to travel
+/// however far the *next few rounds* carry it, and the rest of `S_rem` belongs
+/// to a future in which the position will have been re-evaluated many times.
+/// So the width is taken over a horizon of `h` rounds' worth of the shield
+/// stream instead:
+///
+/// ```text
+/// s̄   = S_rem / rounds_left        (shields per round of this player's)
+/// S_h = min(S_rem, h · s̄)
+/// ```
+///
+/// `horizon = None` restores `S_h = S_rem` exactly, bit for bit, which is what
+/// [`crate::Config::v2`] uses.
+pub fn horizon_supply(shields_remaining: f64, rounds_left: f64, horizon: Option<f64>) -> f64 {
+    match horizon {
+        None => shields_remaining,
+        Some(h) if h > 0.0 && rounds_left > 0.0 => {
+            shields_remaining.min(h * (shields_remaining / rounds_left))
+        }
+        Some(_) => shields_remaining,
+    }
+}
+
+/// The smoothed scoring bands as a function of a pawn distance, rather than of
+/// a position.
+///
+/// Factored out of [`military_band`] so [`military_shield_delta`] can evaluate
+/// the same curve at `d + k` without inventing a hypothetical `GameState`.
+#[inline]
+pub fn band_at(distance: f64, sm: &MilSmoothing) -> f64 {
+    sm.steps
+        .iter()
+        .map(|&(entry, gain)| gain * sm.phi(distance - entry + 0.5))
+        .sum()
+}
+
+/// [`military_loot`] as a function of a pawn distance. Which tokens are still
+/// on the board, and what the victim can actually pay, still come from
+/// `state`.
+pub fn loot_at(state: &GameState, p: Player, distance: f64, sm: &MilSmoothing) -> f64 {
+    let track = data::military();
+    let opp_coins = f64::from(state.player(p.other()).coins());
+    let mut out = 0.0;
+    for (i, &(at, coins)) in track.loot.iter().enumerate() {
+        if !state.loot_available(p, i) {
+            continue;
+        }
+        let take = f64::from(coins).min(opp_coins);
+        out += (take / 3.0) * sm.phi(distance - f64::from(at) + 0.5);
+    }
+    out
+}
+
+/// Exactly what `k` more shields for `p` would move in the main evaluation.
+///
+/// [`crate::evaluate`] reads the military terms per player and differences
+/// them, under each player's own root-fixed commitment multiplier, so the
+/// swing `k` shields produce is
+///
+/// ```text
+/// Δ(k) = band · [ w_p · (B(d+k) − B(d))  +  w_opp · (B(−d) − B(−d−k)) ]
+///      + loot · [ (L_p(d+k) − L_p(d))    +  (L_opp(−d) − L_opp(−d−k)) ]
+/// ```
+///
+/// A **finite difference**, not `k` times a one-shield slope: a three-shield
+/// card that crosses a band boundary is not three separate one-shield steps,
+/// and the whole reason the band model exists is that the steps are not
+/// evenly spaced. It is also two-sided — the opponent's band falls as mine
+/// rises, and that half was simply missing from the price
+/// [`crate::menu::TakeValue`] used to put on a shield, which is why the menu
+/// systematically under-valued red cards relative to the evaluation that
+/// scored the position they produced.
+pub fn military_shield_delta(
+    state: &GameState,
+    p: Player,
+    shields: u8,
+    sm: &MilSmoothing,
+    band_weight: f64,
+    loot_weight: f64,
+    military_multiplier: (f64, f64),
+) -> f64 {
+    if shields == 0 {
+        return 0.0;
+    }
+    let d = f64::from(signed_distance(state, p));
+    let k = f64::from(shields);
+    let (w_p, w_opp) = military_multiplier;
+    let opp = p.other();
+    let band = w_p * (band_at(d + k, sm) - band_at(d, sm))
+        + w_opp * (band_at(-d, sm) - band_at(-d - k, sm));
+    let loot = (loot_at(state, p, d + k, sm) - loot_at(state, p, d, sm))
+        + (loot_at(state, opp, -d, sm) - loot_at(state, opp, -d - k, sm));
+    band_weight * band + loot_weight * loot
+}
+
 /// `band(p)`: the expected end-of-game military victory points, as a smoothed
 /// step function of the pawn's signed distance.
 ///
@@ -638,11 +782,7 @@ pub fn band_steps() -> [(f64, f64); 3] {
 /// difference spans `[−10, +10]`, which is the real range of the scoring
 /// table. `tests::the_band_model_differences_antisymmetrically` pins it.
 pub fn military_band(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
-    let d = f64::from(signed_distance(state, p));
-    sm.steps
-        .iter()
-        .map(|&(entry, gain)| gain * sm.phi(d - entry + 0.5))
-        .sum()
+    band_at(f64::from(signed_distance(state, p)), sm)
 }
 
 /// `loot(p)`: the coins `p` expects to strip off the opponent by pushing the
@@ -656,18 +796,7 @@ pub fn military_band(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
 /// Not commitment-scaled: two coins off a rich opponent is worth the same
 /// whether or not this player has a military plan.
 pub fn military_loot(state: &GameState, p: Player, sm: &MilSmoothing) -> f64 {
-    let track = data::military();
-    let d = f64::from(signed_distance(state, p));
-    let opp_coins = f64::from(state.player(p.other()).coins());
-    let mut out = 0.0;
-    for (i, &(distance, coins)) in track.loot.iter().enumerate() {
-        if !state.loot_available(p, i) {
-            continue;
-        }
-        let take = f64::from(coins).min(opp_coins);
-        out += (take / 3.0) * sm.phi(d - f64::from(distance) + 0.5);
-    }
-    out
+    loot_at(state, p, f64::from(signed_distance(state, p)), sm)
 }
 
 /// The marginal value of one more shield to `p` at the root pawn position:

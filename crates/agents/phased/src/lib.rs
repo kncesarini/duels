@@ -43,12 +43,18 @@
 //! # The evaluation
 //!
 //! ```text
-//! score(state, me) = terminal_result
+//! score(state, me) = terminal_result                          (Rail A)
+//!                  | ±imminent                                (Rails B/C/C', see [`rails`])
 //!                  | Σ_k [ T_k(me) − T_k(opp) ] + A(action) + M(state, me)
 //! T_k(p)           = w_k(S(c(p))) × base_k × raw_k(state, p)
 //! A(action)        = w_deny × deny_scale × duels_strategy::deny_vp(action)
 //! M(state, me)     = ±λ × menu(next mover)          (see [`menu`])
 //! ```
+//!
+//! The first two lines are *rails*, not terms: they replace the weighted sum
+//! rather than adding to it, because the question they answer — is this
+//! position already decided, and for whom? — is not commensurable with a few
+//! victory points of city quality. See [`rails`].
 //!
 //! `M` is the one term that is *not* read per player and differenced: it
 //! prices what the position hands to whoever moves next, which is one player,
@@ -128,6 +134,166 @@
 //! root; see that module for why, and for the stand-down rule that keeps the
 //! first one from reading a hidden card.
 //!
+//! # Round three: a rail instead of a gradient
+//!
+//! Round two left one term doing a job it was never shaped for.
+//! [`terms::military_urgency`] is a smooth quadratic in how far past the
+//! second loot token the conflict pawn sits, and it was the only thing in the
+//! evaluation claiming to notice an imminent loss. It is blind to whether a
+//! closing card exists, blind to whether anybody can afford it, blind to
+//! whether there are two of them, and it pays out at pawn positions where
+//! nothing at all is about to happen. `military_band = 2.0` was carrying the
+//! same load from the other direction: double the honest price of *every*
+//! shield in the game, in the hope that the occasional supremacy win made it
+//! back.
+//!
+//! Round three replaces both with a question that has a yes/no answer,
+//! adapted from the fix that was worth +26 Elo in `mcts-uct`'s rollout
+//! policy — *take an available win, block an available one-move loss*. The
+//! 1-ply form asks it of the **post-action state** the evaluator is already
+//! scoring, and answers it from the rules: [`duels_strategy::closing_sources`]
+//! enumerates the actions that would end the game outright for either player,
+//! cross-checked action-for-action against the engine by
+//! `duels-strategy/tests/closing_sources_cross_check.rs`.
+//!
+//! Five changes, all [`Config`] options, all reproduced exactly by
+//! [`Config::v2`] (`tests/v2_identity.rs`):
+//!
+//! 1. **[`rails`] (default on).** Rails B, C and C′ over the post-action
+//!    state. Elo-neutral, and adopted on the audit rather than on the Elo —
+//!    see below.
+//! 2. **`military_band` 2.0 → 1.0 (the term's own units).** The single
+//!    largest gain of the round, and the one the rails paid for: with a real
+//!    imminence detector in place, the inflated slope has nothing left to buy.
+//! 3. **[`MenuShieldPricing::Differenced`] (default on).** [`menu`] priced a
+//!    red card's shields at `k ×` a one-sided slope while the evaluation that
+//!    scored the resulting position priced the same shields *differenced*
+//!    across both players and under both players' weights — a real unit
+//!    inconsistency, and a systematic under-valuation of red cards on the
+//!    menu. Now an exact finite difference
+//!    ([`terms::military_shield_delta`]), Strategy token included. Elo-neutral;
+//!    adopted because it removes an inconsistency, not because it wins games.
+//! 4. **[`Config::military_horizon`] (default off).** A better-motivated
+//!    smoothing width that makes no measurable difference. Honest negative.
+//! 5. **[`EvalWeights::production_lock_in`] (default off).** Age III really
+//!    does print no brown or grey card, so an Age III resource bill is a fact
+//!    rather than a projection — and amplifying the term by that consistently
+//!    *costs* Elo. Honest negative.
+//!
+//! ## The audit, which is the actual result
+//!
+//! A rail is a guarantee, and a guarantee is audited rather than sampled.
+//! `duels-arena/examples/rail_audit.rs` replays real games and recomputes, at
+//! every decision, **from the engine** rather than from the agent's own reads,
+//! what was available. 200 self-play games per seed range at `Nodes(1)`:
+//!
+//! ```text
+//!                                              this agent            phased:base=v2
+//!                                            seed 1    seed 5001    seed 1    seed 5001
+//! Rail A  an available win was taken          19/19       32/32      21/21       30/30
+//! Rail B  an available block was taken        39/39       41/41      27/37       31/34
+//! Rail C  an undeniable close was taken         2/2        5/6         2/2         5/7
+//!         ...of those already on the table      0/0        1/1         0/0         2/2
+//! B/C'    a rail firing on a closer was right  703/703    631/631    817/817     587/587
+//! C       a rail calling it decisive was right   6/6        9/9        20/20         8/8
+//! supremacy losses that were NOT blockable      9/9      12/12        5/9        9/12
+//! ```
+//!
+//! **The bottom row is the round.** The round-two agent lost seven games
+//! across the two seed ranges to a military or scientific supremacy that a
+//! candidate on the table at its own last decision would have removed. This
+//! agent loses none: **zero blockable supremacy losses**, on both seed ranges,
+//! and Rail B at 100% against 73% and 91%.
+//!
+//! The last two rows before the bottom are *precision*: when a rail fires,
+//! does the engine agree? That matters more than recall, since a rail that
+//! fires wrongly misvalues a move by five hundred points. It is **100% on
+//! every run**, and on the `Nodes(2000)` runs against `alphabeta` and
+//! `mcts-uct` too. (The detector is the same code in both columns, so the
+//! `phased:base=v2` figures are the same read taken over the positions that
+//! agent reached rather than a property of the round-two agent, which never
+//! consults it.)
+//!
+//! Rail C's recall is the honest negative of the round. It reads 5/6 on one
+//! range, and the miss is not a fault so much as a boundary: of the eight
+//! undeniable closes the audit found across the two ranges, only one was
+//! *already on the table* when the candidate was played. The rest were closes
+//! that every opposing reply happened to uncover — real, and a searching agent
+//! would find them, but invisible to a rail that reads the post-action state
+//! and does no search. Restricted to the closes it can see, Rail C is 1/1 and
+//! 0/0, and 1/1 again against `alphabeta`. It is a rare guard that is right
+//! when it speaks, not a term that earns its keep every game, and both halves
+//! are reported rather than only the flattering one.
+//!
+//! The same audit against the two search agents, 200 games each at
+//! `Nodes(2000)` and seed 1, which is where the losses actually are:
+//!
+//! ```text
+//!                                        vs alphabeta     vs mcts-uct
+//! Rail A  an available win was taken        14/14            12/12
+//! Rail B  an available block was taken     328/328          138/138
+//! Rail C  an undeniable close was taken       3/4              3/3
+//! B/C'    firing on a closer was right    6521/6521        2337/2337
+//! C       calling it decisive was right       7/7            19/19
+//! supremacy losses that were NOT blockable  72/72            25/25
+//! ```
+//!
+//! Ninety-seven military or scientific supremacy losses between them, and not
+//! one of them had a candidate on the table that would have removed the
+//! threat. Against a real search the rails have three hundred and twenty-eight
+//! blocks to make and make all of them.
+//!
+//! ## Elo, measured one change at a time
+//!
+//! Against `phased:base=v2`, 600 games per seed range at `Nodes(1)`:
+//!
+//! ```text
+//!                                  seed 1                 seed 5001
+//! the new default            +35.4 [+7.5, +63.3]     +37.7 [+9.8, +65.7]
+//! ```
+//!
+//! and, as a leave-one-out against the new default itself (800 games per seed
+//! range, so each row is a paired head-to-head of exactly that one change):
+//!
+//! ```text
+//!                                   seed 1     seed 5001    the change is worth
+//! military_band back to 2.0          -56.0        -31.8       +56 / +32
+//! production lock-in switched on     -20.4        -13.0       (off is better)
+//! rails switched off                  -9.5         -2.6       +10 /  +3
+//! one-sided menu shield price         -3.9         +4.3        neutral
+//! horizon = 2                         +5.2         -0.9        neutral
+//! horizon = 3                         +2.6         +3.5        neutral
+//! horizon = 5                         +1.7         +2.6        neutral
+//! ```
+//!
+//! Only one row's confidence interval clears zero on both ranges, and it is
+//! `military_band`. The rails are Elo-neutral in self-play and always were
+//! going to be: they fire on a few hundred of seven thousand decisions, and
+//! two agents that both hold the same rails cannot gain from them against each
+//! other. What they buy is the bottom row of the audit table.
+//!
+//! ## Against the ladder
+//!
+//! 400 games per seed range at seeds 1 and 5001 (`Nodes(1)`; `alphabeta` and
+//! `mcts-uct` at `Nodes(2000)`):
+//!
+//! ```text
+//!                    this agent           round two (phased:base=v2)
+//! vs random          400-0  / 399-1       398-2 / 396-4 (round two's own figures)
+//! vs greedy          400-0  / 397-3
+//! vs greedy-ev       398-2  / 395-5
+//! vs strategist      398-2  / 399-1
+//! vs alphabeta        77/400 / 76/400      66/400 / 80/400
+//! vs mcts-uct         44/400 / —           21/400 / 24/400 (round two's own figures)
+//! ```
+//!
+//! `alphabeta` is the only ladder opponent close enough to measure a change
+//! against, and 77 and 76 wins in 400 clear the ~72 that `military_band = 1.0`
+//! was worth in round two's own sweep. Against `mcts-uct`, 44 wins in 400
+//! (11.0%) against round two's 21 and 24, with the win-condition spread
+//! holding — military 1, science 19, civilian 24 — so the military-supremacy
+//! column is nonzero at `band = 1.0`, which round two reported it never was.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -200,11 +366,21 @@
 //!
 //! ```text
 //!                        wins    military  science  civilian
-//! previous agent  s1     32/400         0       32         0
-//! previous agent  s5001  30/400         0       30         0
-//! new default     s1     21/400         1        9        11
-//! new default     s5001  24/400         3        6        15
+//! round one       s1     32/400         0       32         0
+//! round one       s5001  30/400         0       30         0
+//! round two       s1     21/400         1        9        11
+//! round two       s5001  24/400         3        6        15
+//! round three     s1     44/400         1       19        24
+//! round three     s5001  33/400         1       14        18
 //! ```
+//!
+//! The last two rows are this round's, and they undo the paragraph below:
+//! the aggregate rate is back up, to 77/800 pooled (9.6%) against round one's
+//! 62/800 and round two's 45/800, *and* the win-condition spread round two
+//! bought is intact. What is left of the honest negative is that `mcts-uct`
+//! still wins nine games in ten, for the reason this project has recorded
+//! since its first agent: a 1-ply evaluation loses a long positional game to a
+//! real search.
 //!
 //! The **win-condition spread is fixed, on both seed ranges**: the agent now
 //! wins by all three routes rather than only one. It also stops conceding the
@@ -232,36 +408,45 @@
 //!
 //! # Choosing `military_band`
 //!
-//! Two weights in [`EvalWeights::default`] are fitted rather than derived
-//! ([`EvalWeights::military_band`] and [`EvalWeights::resource_bill`]), and
-//! the first one has a real trade-off behind it that the next round should
-//! see rather than inherit:
+//! Round two shipped `2.0` and flagged it as a judgement to revisit rather
+//! than inherit. Round three revisited it and the answer changed, so both
+//! tables are kept here: the argument is more useful than the number.
+//!
+//! Round two's sweep, against `Config::v1`:
 //!
 //! ```text
 //! band   Elo vs v1 (s1/s5001)   vs alphabeta   mil. wins vs mcts   Age I red keep
 //! 1.0      +265 / +267            72/400            0                20.9%
 //! 1.5      +322 / +261            68/400            -                29.1%
 //! 1.75     +324 / +290            56/400            -                38.1%
-//! 2.0      +329 / +292            65/400            1                41.0%   <- default
+//! 2.0      +329 / +292            65/400            1                41.0%   <- was default
 //! 2.5      +334 / +322            45/400            1 and 6          45.5%
 //! ```
 //!
-//! `1.0` is what the term's own units imply — it is already in victory
-//! points — and it is also what leaves the Age I red-card keep rate lowest,
-//! which is where this round's calibration guidance expected it to land after
-//! the `next_age_start` fix. It is also the only value measured that never
-//! wins a game by military supremacy against `mcts-uct`. `2.5` is the Elo
-//! optimum and the only value that loses ground against `alphabeta` relative
-//! to the previous agent. `2.0` is the largest value that clears every bar at
-//! once, and is the default for that reason and no other — but its 41% red
-//! keep is higher than the calibration expected, and if the right answer is
-//! "keep red low and accept never beating `mcts-uct` militarily", then
-//! `phased:band=1.0` is one spec string away and the table above is the whole
-//! argument.
+//! At the time, `2.0` was the largest value that cleared every bar at once and
+//! `1.0` was the only value measured that never beat `mcts-uct` militarily.
+//! What changed is not the sweep but what else is in the evaluation. The
+//! inflated slope was buying one thing — the occasional supremacy win — by
+//! doubling the honest price of every shield in the game, all game, whether or
+//! not anything was about to happen. [`rails`] buys the same thing by asking
+//! whether a closing card *exists and is affordable*, which is both cheaper
+//! and correct. With the rails in place, `1.0` is simply better:
+//!
+//! ```text
+//! band   Elo vs the default (s1/s5001)   vs alphabeta      mil. wins vs mcts   Age I red keep
+//! 1.0     (the default)                   77/400, 76/400        1 and 1          26.3%
+//! 2.0      -56.0 / -31.8                  —                     —                41.0%
+//! ```
+//!
+//! The Age I red keep rate lands at 26.3%, which is where this project's
+//! calibration guidance expected an honest slope to put it (~20-25%), and the
+//! military-supremacy column against `mcts-uct` is *not* zero any more — the
+//! thing `1.0` was previously rejected for. `2.0` remains one spec string away
+//! (`phased:band=2.0`), and the two tables above are the whole argument.
 //!
 //! # What one decision costs
 //!
-//! `examples/decision_cost.rs`, every configuration timed on the *same* 2847
+//! `examples/decision_cost.rs`, every configuration timed on the *same* 5715
 //! positions (timing each one on its own self-play games measures the wrong
 //! thing: a configuration that steers towards positions with fewer chance
 //! outcomes looks faster while doing more work per decision, and written that
@@ -269,19 +454,30 @@
 //! agent with the menu term switched off).
 //!
 //! ```text
-//! v1 (the previous agent)                 35.7 us/decision
-//! default, menu and chain equity off      39.8 us/decision   +11%
-//! default, menu off                       40.3 us/decision   +13%
-//! default (menu lambda = 0.6)             45.2 us/decision   +26%
+//! v1 (the round-one agent)                36.6 us/decision
+//! default, menu and chain equity off      41.7 us/decision   +14%
+//! default, menu off                       43.0 us/decision   +17%
+//! default, rails off                      47.4 us/decision   +29%
+//! default, one-sided menu shield price    47.4 us/decision   +30%
+//! default (menu lambda = 0.6)             47.0 us/decision   +29%
+//! v2 (the round-two agent)                47.6 us/decision   +30%
 //! ```
 //!
 //! [`menu::menu_term`] is the first term in this crate whose cost scales with
 //! the number of *chance outcomes* an action has — Age I's worst case is a
 //! two-slot reveal from an eleven-card pool, over a hundred outcomes for one
 //! candidate — so it is the one that was worth measuring. It costs about 5 us
-//! per decision, and Age I is not its worst case in practice (37.1 -> 40.2 us
-//! there, against 40.3 -> 45.2 overall): the per-outcome work is bounded by
-//! the handful of accessible slots, not by the outcome count alone.
+//! per decision: the per-outcome work is bounded by the handful of accessible
+//! slots, not by the outcome count alone.
+//!
+//! **Round three costs nothing measurable.** The default, the same agent with
+//! the rails switched off, and the round-two agent are 47.0, 47.4 and 47.6
+//! us — a spread smaller than the run-to-run variation, with the full default
+//! nominally the *fastest* of the three. That is not an accident of the
+//! benchmark: [`duels_strategy::closing_sources`] takes a one-comparison early
+//! exit unless somebody is within one action's shields of a capital or holds
+//! five distinct symbols, which is a few hundred of every seven thousand
+//! decisions, and Rail C's denial walk runs only inside that.
 //!
 //! # Take profile
 //!
@@ -289,22 +485,21 @@
 //!
 //! ```text
 //!             brown  grey   blue   green  yellow  red
-//! phased      90.8   79.2   82.1   51.8   59.9    41.0
+//! phased      92.9   75.9   78.8   51.4   62.3    26.3
 //! phased-v1   68.1   88.9   87.7   79.1   69.7     1.5
 //! mcts-uct    80.2   76.4   73.6   25.9   78.9    50.7
 //! ```
 //!
-//! Red moves from "never" to "often". At the `military_band` value the term's
-//! own units imply it lands at 20.9% instead, which is the number the
-//! calibration for this round expected; see "Choosing `military_band`" above
-//! for why the default is not there.
+//! Red moves from "never" (round one's 1.5%) to 26.3%, which is where this
+//! project's calibration guidance expected an honest slope to put it. Round
+//! two's `military_band = 2.0` overshot to 41%; see "Choosing
+//! `military_band`" above.
 //!
-//! The green column is the cost of the round, and it is a real one: the
-//! resource bill makes production and denial compete with the science ladder,
-//! this agent reaches 3.5 distinct symbols where the previous one reached 4.4,
-//! and 35 of its 78 losses to the previous agent are scientific supremacy.
-//! That is a trade made knowingly, and it is where the next round should
-//! probably look first.
+//! The green column is the cost of round two, and it is a real one: the
+//! resource bill makes production and denial compete with the science ladder.
+//! Round three does not undo it — 51.4% against round one's 79.1% — but it no
+//! longer costs games to `mcts-uct`, where the science-supremacy column is
+//! back to 19 and 14 wins in 400.
 //!
 //! # Public information only
 //!
@@ -321,6 +516,7 @@
 
 pub mod blend;
 pub mod menu;
+pub mod rails;
 pub mod terms;
 
 use duels_agents_api::{Agent, AgentSpec, Budget};
@@ -332,7 +528,22 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 pub use blend::{Blend, Commitment, TermWeights};
 pub use menu::{ChainTable, MenuTables, TakeValue};
+pub use rails::{rail_owner, rail_value, RailModel};
 pub use terms::{DevSupply, MilSmoothing, MAX_UNITS};
+
+/// How [`menu::TakeValue`] prices the shields on a red card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuShieldPricing {
+    /// `k x` the one-sided local slope of this player's own band — the
+    /// round-two behaviour, kept so [`Config::v2`] reproduces it bit for bit.
+    /// Inconsistent with the evaluation it feeds, which prices the same shield
+    /// *differenced* across both players and under both players' weights.
+    OneSided,
+    /// The exact finite difference of what the main evaluation would move, via
+    /// [`terms::military_shield_delta`], Strategy token included.
+    #[default]
+    Differenced,
+}
 
 /// How the evaluation prices the conflict pawn's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -530,6 +741,17 @@ pub struct EvalWeights {
     /// Magnitude assigned when a move actually ends the game. Far larger than
     /// every other term's plausible range put together.
     pub instant_result: f64,
+    /// Magnitude assigned when one of [`rails`]' terminal rails fires: the
+    /// game is not over, but which way it goes is already settled. Half of
+    /// [`EvalWeights::instant_result`], so an actual win still outranks a
+    /// certain one, and far above every ordinary term put together, so a rail
+    /// really does dominate rather than merely nudge.
+    pub imminent: f64,
+    /// How much the production-lock-in factor
+    /// ([`DevSupply::production_lock_in`]) raises the development and resource
+    /// bill terms once a city's production can no longer be fixed. Zero
+    /// switches it off and restores the previous arithmetic exactly.
+    pub production_lock_in: f64,
 }
 
 impl Default for EvalWeights {
@@ -538,27 +760,22 @@ impl Default for EvalWeights {
             // Half of `greedy-ev`'s 0.6 / 3.0, because these are read per
             // player and then differenced, which doubles them.
             military_position: 0.3,
-            // Fitted, like `resource_bill` below, and the same caveat
-            // applies: the band term is already in victory points, so `1.0` is
-            // the honest rate and anything above it says the *rest* of the
-            // evaluation under-prices the conflict pawn rather than that the
-            // scoring table is wrong. Lowering `vp_projection` to 0.4
-            // instead — the same relative scaling, if that were all this
-            // was — is much worse (+195 / +201 Elo against the previous agent,
-            // versus +329 / +292 here), so it is not simply a units mismatch.
+            // **One, and derived rather than fitted.** The band term is
+            // already in victory points, so `1.0` is the honest rate; round
+            // two shipped `2.0` because the Elo curve was flat above it and
+            // because `1.0` never once beat `mcts-uct` militarily, and
+            // recorded that as a judgement to revisit rather than inherit.
             //
-            // Two is not the Elo maximum; it is the largest value that clears
-            // every bar at once. See the crate docs' "Choosing
-            // `military_band`" table: the Elo optimum is flat from 2.0 to 2.5,
-            // 2.5 is the only value measured that loses ground against
-            // `alphabeta` relative to the previous agent, and 1.0 — the value
-            // the term's own units imply — never wins a game by military
-            // supremacy against `mcts-uct` at all. The Age I red-card keep
-            // rate this produces (41%) is reported there too, because it is
-            // higher than the calibration this round was given expected and
-            // that is a judgement the next round should revisit rather than
-            // inherit silently.
-            military_band: 2.0,
+            // Round three revisits it, and `1.0` now wins outright: +28 / +57
+            // Elo against `phased:base=v2` over 600 games on each of two
+            // disjoint seed ranges. What changed is that the "occasional
+            // supremacy win" the inflated slope was buying is now carried by
+            // the terminal rails ([`rails`]), which ask whether a closing card
+            // *exists and is affordable* instead of paying a smooth premium
+            // on every shield in the hope that one day it adds up. Doubling
+            // the price of every red card in the game was always a strange way
+            // to say "do not miss a win".
+            military_band: 1.0,
             military_loot: 1.0,
             military_sigma_scale: 0.8,
             military_sigma_min: 0.35,
@@ -604,6 +821,17 @@ impl Default for EvalWeights {
             deny: 1.0,
             deny_opponent_commit_boost: 1.5,
             instant_result: 1000.0,
+            imminent: 500.0,
+            // **Off by default, and measured that way.** The lock-in factor
+            // is real — Age III genuinely prints no brown or grey card, so an
+            // Age III resource bill is a fact rather than a projection — but
+            // amplifying the development and bill terms by it costs Elo:
+            // −24 / −15 against the same agent with it switched off, over 800
+            // games on each of two disjoint seed ranges. Sweeping it (0.25,
+            // 0.5, 1.0) never found a value that helped. Kept as an option
+            // with the measurement written down, not enabled on the strength
+            // of the argument.
+            production_lock_in: 0.0,
         }
     }
 }
@@ -621,6 +849,23 @@ pub struct Config {
     pub coin_model: CoinModel,
     /// How resource-market exposure is priced.
     pub economy_model: EconomyModel,
+    /// Whether the terminal rails are consulted. See [`rails`].
+    pub rails: RailModel,
+    /// How the opponent-menu term prices a red card's shields.
+    pub menu_shield_pricing: MenuShieldPricing,
+    /// How many of this player's own rounds the military smoothing width looks
+    /// ahead over. See [`terms::horizon_supply`].
+    ///
+    /// **`None` — the whole remaining shield supply — by default, unchanged
+    /// from round two.** Narrowing the width to a horizon is a
+    /// better-motivated model, and it does sharpen the bands: at the supply
+    /// width two shields are worth almost exactly twice one, which is not
+    /// what a step function is supposed to do. It also makes no difference
+    /// anybody can measure — `h` of 2, 3 and 5 all landed within a couple of
+    /// Elo of the supply width over 800 games on each of two disjoint seed
+    /// ranges — and the convention here is not to move a default on a neutral
+    /// result. The option stays available as `phased:horizon=3`.
+    pub military_horizon: Option<f64>,
 }
 
 impl Config {
@@ -641,12 +886,35 @@ impl Config {
                     lambda: 0.0,
                     ..MenuWeights::default()
                 },
-                ..EvalWeights::default()
+                ..Config::v2().eval
             },
             blend: Blend::default(),
             military_model: MilitaryModel::Legacy,
             coin_model: CoinModel::Legacy,
             economy_model: EconomyModel::Legacy,
+            ..Config::v2()
+        }
+    }
+
+    /// The configuration the *second* round of work shipped with: no terminal
+    /// rails, the one-sided menu shield price, the supply-wide military
+    /// smoothing width, no production lock-in, and `military_band = 2.0`.
+    ///
+    /// `tests/v2_identity.rs` asserts this reproduces that agent's arithmetic
+    /// bit for bit, which is what makes `phased` against `phased:base=v2` a
+    /// single-binary measurement.
+    pub fn v2() -> Config {
+        Config {
+            eval: EvalWeights {
+                military_band: 2.0,
+                imminent: 0.0,
+                production_lock_in: 0.0,
+                ..EvalWeights::default()
+            },
+            rails: RailModel::Off,
+            menu_shield_pricing: MenuShieldPricing::OneSided,
+            military_horizon: None,
+            ..Config::default()
         }
     }
 }
@@ -658,7 +926,8 @@ impl Config {
         let e = &self.eval;
         let b = &self.blend;
         format!(
-            "models={}/{}/{},menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
+            "models={}/{}/{},rails={}/{:.0},shieldprice={},horizon={},lockin={:.2},\
+             menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
              smooth={:.2}@{:.1}|\
              mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
              blend={},a={:.2},b={:.2},n={:.1},c0={:.2},floors={:.2}/{:.2}/{:.2}/{:.2}/{:.2},boosts={:.2}/{:.2}",
@@ -674,6 +943,20 @@ impl Config {
                 EconomyModel::Legacy => "legacy",
                 EconomyModel::Bill => "bill",
             },
+            match self.rails {
+                RailModel::Off => "off",
+                RailModel::On => "on",
+            },
+            e.imminent,
+            match self.menu_shield_pricing {
+                MenuShieldPricing::OneSided => "onesided",
+                MenuShieldPricing::Differenced => "diff",
+            },
+            match self.military_horizon {
+                None => "supply".to_string(),
+                Some(h) => format!("{h:.1}"),
+            },
+            e.production_lock_in,
             e.menu.lambda,
             e.menu.tau,
             e.chain_equity,
@@ -769,8 +1052,16 @@ impl Root {
         let shields_remaining = f64::from(stance.military.visible)
             + stance.military.expected_hidden
             + stance.military.expected_future_ages;
+        // ...narrowed, optionally, to the shields the next few of *this*
+        // player's rounds will actually see. See `terms::horizon_supply` for
+        // why the whole remaining supply makes the step function read as a
+        // straight line for most of a game.
         let smoothing = MilSmoothing::of(
-            shields_remaining,
+            terms::horizon_supply(
+                shields_remaining,
+                terms::decisions_left(state, me),
+                config.military_horizon,
+            ),
             config.eval.military_sigma_scale,
             config.eval.military_sigma_min,
             config.eval.military_logistic_scale,
@@ -789,6 +1080,10 @@ impl Root {
                 &smoothing,
                 &config,
                 weights[p.index()].liquidity,
+                (
+                    weights[p.index()].military,
+                    weights[p.other().index()].military,
+                ),
             )
         });
         let chain = if config.eval.chain_equity == 0.0 && config.eval.menu.lambda == 0.0 {
@@ -899,6 +1194,22 @@ pub fn evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
             GameResult::Draw => 0.0,
         };
     }
+    // Rails B, C and C' — see [`rails`]. A rail *replaces* the weighted sum
+    // rather than adding to it: the question it answers ("is this position
+    // already decided, and for whom?") is not commensurable with a few
+    // victory points of city quality, and a magnitude large enough to
+    // dominate every ordinary term would be indistinguishable from a
+    // replacement anyway. Antisymmetric by construction, so the evaluation
+    // stays zero-sum.
+    if let Some(v) = rails::rail_value(
+        state,
+        me,
+        root.age,
+        root.config.rails,
+        root.config.eval.imminent,
+    ) {
+        return v;
+    }
     player_value(state, me, root) - player_value(state, me.other(), root)
         + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
 }
@@ -933,8 +1244,14 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
         ),
     };
 
+    // How much of what this city produces is still fixable. In Age III the
+    // answer is "none of it" — there is no brown or grey card left in the
+    // game — so the development credit and the resource bill both stop being
+    // projections and start being facts, and are worth more accordingly.
+    let lock = 1.0 + e.production_lock_in * root.supply.production_lock_in;
     let development = w.development
         * e.development
+        * lock
         * terms::development_value_with(
             state,
             p,
@@ -950,7 +1267,9 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let market = match c.economy_model {
         EconomyModel::Legacy => e.resource_vulnerability * -terms::average_trade_price(state, p),
         EconomyModel::Bill => {
-            e.resource_bill * -terms::resource_bill(state, p, &root.supply, e.development_take_rate)
+            e.resource_bill
+                * lock
+                * -terms::resource_bill(state, p, &root.supply, e.development_take_rate)
                 / 3.0
         }
     };
@@ -1786,6 +2105,307 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // The terminal rails
+    // -----------------------------------------------------------------
+
+    /// Rail B, end to end through the agent: a one-shield-from-the-capital
+    /// opponent with a red card on the table, and one candidate that takes
+    /// that card away.
+    ///
+    /// The ordinary evaluation is happy to leave it there — a Quarry is a
+    /// perfectly good pick — which is exactly the failure the rails exist to
+    /// stop. `phased:base=v2` really does leave it, and this test asserts
+    /// both halves so it cannot pass for the wrong reason.
+    #[test]
+    fn the_rails_block_a_loss_the_ordinary_evaluation_walks_into() {
+        let position = || {
+            StateBuilder::new()
+                .age(3)
+                .open_slots(&[(18, "circus"), (19, "palace")])
+                .conflict(-7)
+                .coins(Player::One, 30)
+                .coins(Player::Two, 30)
+                .current(Player::One)
+                .build()
+        };
+        let st = position();
+        let me = st.current_player();
+        // Player Two is two shields from the capital and the Circus is worth
+        // exactly two; anything that leaves it there loses.
+        assert!(duels_strategy::closing_sources(&st, Player::Two).any());
+
+        let mut agent = PhasedAgent::with_config(7, Config::default());
+        let legal = engine::legal_actions(&st);
+        let chosen = agent.choose(&st.observation(), &legal, Budget::Nodes(1));
+        assert!(
+            matches!(
+                chosen,
+                Action::Build { slot: 18 }
+                    | Action::Discard { slot: 18 }
+                    | Action::BuildWonder { slot: 18, .. }
+            ),
+            "the rails let the opponent's winning card stand: chose {chosen:?}"
+        );
+
+        // Every candidate that leaves slot 18 alone is pinned at −imminent,
+        // and every candidate that takes it is not.
+        let root = Root::new(&st, me, Config::default());
+        let w = EvalWeights::default();
+        for &action in &legal {
+            let touches = matches!(
+                action,
+                Action::Build { slot: 18 }
+                    | Action::Discard { slot: 18 }
+                    | Action::BuildWonder { slot: 18, .. }
+            );
+            let v = expected_value(&st, action, me, &root);
+            if touches {
+                assert!(v > -w.imminent, "{action:?} scored {v}");
+            } else {
+                assert!(v <= -w.imminent, "{action:?} scored {v}, not blocked");
+            }
+        }
+    }
+
+    /// ...and the guarantee really does come from the rail, not from the
+    /// ordinary terms happening to agree.
+    ///
+    /// On this particular position the round-two agent blocks too — a
+    /// two-card structure makes the closing red card the obviously
+    /// attractive pick anyway. What it does *not* have is any guarantee: no
+    /// candidate is scored anywhere near `-imminent`, so the ordering is
+    /// decided by a handful of victory points and would flip under a wider
+    /// structure. `examples/rail_audit.rs` is where the difference is
+    /// measured on real games rather than argued from one position.
+    #[test]
+    fn without_the_rails_nothing_is_pinned_and_a_few_points_decide_it() {
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "circus"), (19, "palace")])
+            .conflict(-7)
+            .coins(Player::One, 30)
+            .coins(Player::Two, 30)
+            .current(Player::One)
+            .build();
+        let me = st.current_player();
+        let root = Root::new(&st, me, Config::v2());
+        let w = Config::v2().eval;
+        assert_eq!(w.imminent, 0.0, "v2 must carry no rail magnitude at all");
+        for &action in &engine::legal_actions(&st) {
+            let v = expected_value(&st, action, me, &root);
+            assert!(
+                v.abs() < 100.0,
+                "{action:?} scored {v}: the round-two agent has no terminal \
+                 rail, so nothing should be pinned"
+            );
+        }
+    }
+
+    /// Taking the win still outranks merely having one, so Rail A cannot be
+    /// swallowed by Rail C′.
+    #[test]
+    fn an_actual_win_outranks_a_certain_one() {
+        let w = EvalWeights::default();
+        assert!(
+            w.instant_result > w.imminent,
+            "instant_result {} must dominate imminent {}",
+            w.instant_result,
+            w.imminent
+        );
+        let st = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "circus"), (19, "palace")])
+            .conflict(7)
+            .coins(Player::One, 30)
+            .coins(Player::Two, 30)
+            .current(Player::One)
+            .build();
+        let me = st.current_player();
+        let root = Root::new(&st, me, Config::default());
+        let win = expected_value(&st, Action::Build { slot: 18 }, me, &root);
+        let other = expected_value(&st, Action::Build { slot: 19 }, me, &root);
+        assert_eq!(win, w.instant_result);
+        assert!(win > other);
+    }
+
+    // -----------------------------------------------------------------
+    // The menu's shield price
+    // -----------------------------------------------------------------
+
+    /// The differenced price of `k` shields is what the evaluation actually
+    /// moves when the pawn advances `k` — which the one-sided price is not,
+    /// in either magnitude or shape.
+    #[test]
+    fn the_differenced_shield_price_matches_what_the_evaluation_really_moves() {
+        // A pawn one step short of the 3-5 band, so the second shield crosses
+        // a boundary the first does not.
+        let st = StateBuilder::new()
+            .age(2)
+            .deal(&AGE_TWO_DEAL)
+            .conflict(2)
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+            .build();
+        let me = st.current_player();
+        let root = Root::new(&st, me, Config::default());
+        let base = evaluate(&st, me, &root);
+
+        for k in 1..=3i8 {
+            let moved = StateBuilder::new()
+                .age(2)
+                .deal(&AGE_TWO_DEAL)
+                .conflict(2 + k)
+                .coins(Player::One, 20)
+                .coins(Player::Two, 20)
+                .current(Player::One)
+                .build();
+            let want = evaluate(&moved, me, &root) - base;
+            let got = terms::military_shield_delta(
+                &st,
+                me,
+                u8::try_from(k).unwrap(),
+                root.smoothing(),
+                root.config().eval.military_band,
+                root.config().eval.military_loot,
+                (root.weights(me).military, root.weights(me.other()).military),
+            );
+            assert!(
+                (want - got).abs() < 1e-9,
+                "{k} shields: the evaluation moves {want}, the price says {got}"
+            );
+        }
+    }
+
+    /// It is a finite difference, not `k` times a slope — which matters
+    /// precisely because the scoring table's steps are not evenly spaced.
+    ///
+    /// The test has to switch the horizon on to show it, and that is the
+    /// point of the horizon: at the default supply-wide smoothing the bands
+    /// are so blurred that two shields really are worth almost exactly twice
+    /// one, which is the "step function that behaves like a straight line"
+    /// complaint written down as an assertion.
+    #[test]
+    fn the_shield_price_is_not_linear_in_the_number_of_shields() {
+        let st = StateBuilder::new()
+            .age(2)
+            .deal(&AGE_TWO_DEAL)
+            .conflict(1)
+            .coins(Player::One, 20)
+            .coins(Player::Two, 20)
+            .current(Player::One)
+            .build();
+        let me = st.current_player();
+        let price = |config: Config, k: u8| {
+            let root = Root::new(&st, me, config);
+            terms::military_shield_delta(
+                &st,
+                me,
+                k,
+                root.smoothing(),
+                root.config().eval.military_band,
+                root.config().eval.military_loot,
+                (root.weights(me).military, root.weights(me.other()).military),
+            )
+        };
+        let sharp = Config {
+            military_horizon: Some(3.0),
+            ..Config::default()
+        };
+        assert_eq!(price(sharp, 0), 0.0);
+        assert!(
+            price(sharp, 2) > 2.0 * price(sharp, 1),
+            "{} vs {}",
+            price(sharp, 2),
+            price(sharp, 1)
+        );
+
+        // ...and at the default width the same quantity is within a few
+        // percent of linear.
+        let wide = Config::default();
+        let ratio = price(wide, 2) / (2.0 * price(wide, 1));
+        assert!(
+            (0.95..1.10).contains(&ratio),
+            "the supply-wide smoothing should be near-linear, ratio {ratio}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The horizon-based smoothing width, and production lock-in
+    // -----------------------------------------------------------------
+
+    /// A horizon narrows the smoothing, which is the whole point: with the
+    /// full remaining supply the "step function" is nearly a straight line.
+    #[test]
+    fn a_horizon_sharpens_the_bands_and_none_reproduces_the_old_width() {
+        let shields = 20.0;
+        let rounds = 18.0;
+        assert_eq!(
+            terms::horizon_supply(shields, rounds, None).to_bits(),
+            shields.to_bits()
+        );
+        let wide = MilSmoothing::of(shields, 0.8, 0.35, 0.55);
+        let narrow = MilSmoothing::of(
+            terms::horizon_supply(shields, rounds, Some(3.0)),
+            0.8,
+            0.35,
+            0.55,
+        );
+        assert!(narrow.s < wide.s, "{} vs {}", narrow.s, wide.s);
+        // ...and a sharper width really does separate the boundary-crossing
+        // shield from the one that crosses nothing.
+        let contrast = |sm: &MilSmoothing| {
+            let at = |c: i8| {
+                let st = StateBuilder::new().age(2).conflict(c).build();
+                terms::military_band(&st, Player::One, sm)
+            };
+            (at(3) - at(2)) - (at(2) - at(1))
+        };
+        assert!(contrast(&narrow) > contrast(&wide));
+        // A horizon longer than the game is a no-op.
+        assert_eq!(
+            terms::horizon_supply(shields, rounds, Some(1000.0)).to_bits(),
+            shields.to_bits()
+        );
+    }
+
+    /// Age III really has no brown or grey card in it, so a city's production
+    /// is frozen — the fact the lock-in factor is built on, checked against
+    /// the card data rather than asserted from memory.
+    #[test]
+    fn production_is_completely_frozen_by_age_three() {
+        let by_age = |age: u8| {
+            duels_core::data::statics().age_masks[usize::from(age) - 1] & terms::production_mask()
+        };
+        assert_eq!(by_age(1).count_ones(), 8, "six brown and two grey in Age I");
+        assert_eq!(
+            by_age(2).count_ones(),
+            5,
+            "three brown and two grey in Age II"
+        );
+        assert_eq!(by_age(3).count_ones(), 0, "Age III prints no production");
+
+        // ...so an Age III position reads a lock-in of exactly one.
+        let late = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "palace"), (19, "town-hall")])
+            .current(Player::One)
+            .build();
+        let supply = DevSupply::of(&duels_strategy::Board::of(&late));
+        assert_eq!(supply.production_lock_in.to_bits(), 1.0f64.to_bits());
+
+        // ...and an Age I position reads less than one, so it is a factor
+        // rather than a constant.
+        let early = engine::new_game(4);
+        let early = DevSupply::of(&duels_strategy::Board::of(&early));
+        assert!(
+            early.production_lock_in < 0.5,
+            "Age I lock-in is {}",
+            early.production_lock_in
+        );
     }
 
     #[test]

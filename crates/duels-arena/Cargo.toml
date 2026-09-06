@@ -20,3 +20,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
 rayon = "1"
+duels-strategy = { path = "../duels-strategy" }

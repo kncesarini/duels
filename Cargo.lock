@@ -470,6 +470,7 @@ dependencies = [
  "duels-agent-strategist",
  "duels-agents-api",
  "duels-core",
+ "duels-strategy",
  "rand 0.8.8",
  "rayon",
  "serde",
