@@ -8,6 +8,7 @@
 import { create } from "zustand";
 
 import type { Action } from "./generated/Action";
+import type { AnalysisPayload } from "./generated/AnalysisPayload";
 import type { Catalog } from "./generated/Catalog";
 import type { Player } from "./generated/Player";
 import type { StatePayload } from "./generated/StatePayload";
@@ -22,7 +23,15 @@ import {
   SPEED_FACTOR,
   type Settings,
 } from "./lib/settings";
-import { connectRoomSocket, createRoom, fetchAgents, fetchCatalog, sendAction } from "./lib/api";
+import {
+  connectRoomSocket,
+  createRoom,
+  fetchAgents,
+  fetchAnalysis,
+  fetchCatalog,
+  fetchExport,
+  sendAction,
+} from "./lib/api";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "closed" | "error";
 
@@ -87,6 +96,11 @@ interface GameStore {
 
   settings: Settings;
 
+  /** Advanced mode only: `duels-eval`'s read of the live position, refreshed
+   * whenever the position changes. Null while off, in flight, or failed. */
+  analysis: AnalysisPayload | null;
+  analysisError: string | null;
+
   loadCatalog: () => Promise<void>;
   loadAgents: () => Promise<void>;
   startVsBot: (seed?: number, agent?: string) => Promise<void>;
@@ -100,6 +114,33 @@ interface GameStore {
   review: (index: number | null) => void;
   stepReview: (delta: number) => void;
   updateSettings: (patch: Partial<Settings>) => void;
+  loadAnalysis: () => Promise<void>;
+  /** Build the flag-a-position bundle: the export (seed + full move list), the
+   * analysis as it currently reads, and the typed reasoning. Returns the JSON
+   * text to copy or download. */
+  buildFlagBundle: (notes: string) => Promise<string>;
+}
+
+/** The JSON a flagged position is exported as. Not a generated type: its
+ * parts come from generated ones (`ExportPayload`, `AnalysisPayload`), but the
+ * bundle itself is assembled here, and its shape is the contract with whatever
+ * later reads a directory of these. */
+export interface FlagBundle {
+  /** The room's setup seed. `duels_server::room::replay(seed, moves)`
+   * reconstructs the exact position this was flagged in. */
+  seed: number;
+  moves: Action[];
+  /** What the position read as when it was flagged. */
+  current_win_probability: number;
+  /** The same, for every action legal at the time. */
+  action_win_probabilities: Array<{ action: Action; value: number; win_probability: number }>;
+  /** `duels_eval::Config::params_string()` of the generation that produced
+   * those numbers, so a later round of tuning cannot be mistaken for this one. */
+  eval_generation: string;
+  /** Free text: what is wrong with the evaluation here, and why. */
+  notes: string;
+  /** Context that costs nothing to record and saves reconstructing it. */
+  captured: { room_id: string; turn: number; age: number; current_player: Player; value: number };
 }
 
 let socket: WebSocket | null = null;
@@ -108,6 +149,9 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let playTimer: ReturnType<typeof setTimeout> | null = null;
 let playQueue: number[] = [];
 let pendingSince = 0;
+/** Guards against a slow analysis response landing after a newer one (or after
+ * the game was left) and overwriting it. */
+let analysisEpoch = 0;
 
 function clearReconnectTimer() {
   if (reconnectTimer !== null) {
@@ -237,6 +281,11 @@ function onState(payload: StatePayload) {
     lensOverride: changedPlayer ? null : st.lensOverride,
   });
 
+  // The position changed, so any analysis on screen is now about a position
+  // that is no longer live. Refetch (advanced mode only) - after your own
+  // move, after the opponent's, and on the replay a reconnect delivers.
+  if (st.settings.advanced) void useGameStore.getState().loadAnalysis();
+
   if (payload.replay || payload.steps.length === 0) {
     clearPlayTimer();
     playQueue = [];
@@ -299,7 +348,10 @@ function connect(roomId: string, mode: "bot" | "hotseat", reconnectAttempt = 0) 
       selectedSlot: null,
       lensOverride: null,
       pending: false,
+      analysis: null,
+      analysisError: null,
     });
+    analysisEpoch += 1;
   } else {
     useGameStore.setState({ status: "reconnecting", pending: false });
   }
@@ -366,6 +418,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   settings: initialSettings,
 
+  analysis: null,
+  analysisError: null,
+
   loadCatalog: async () => {
     if (get().catalog) return;
     try {
@@ -431,7 +486,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   leaveGame: () => {
     closeSocket();
+    analysisEpoch += 1;
     set({
+      analysis: null,
+      analysisError: null,
       roomId: null,
       mode: null,
       status: "idle",
@@ -463,5 +521,66 @@ export const useGameStore = create<GameStore>((set, get) => ({
     saveSettings(next);
     applySettings(next);
     set({ settings: next });
+    // Turning advanced mode on mid-game should show the current position
+    // straight away rather than waiting for the next move; turning it off
+    // should drop what is on screen rather than leaving it to go stale.
+    if (patch.advanced === true) void get().loadAnalysis();
+    if (patch.advanced === false) {
+      analysisEpoch += 1;
+      set({ analysis: null, analysisError: null });
+    }
+  },
+
+  loadAnalysis: async () => {
+    const { roomId } = get();
+    if (!roomId) return;
+    const epoch = ++analysisEpoch;
+    try {
+      const analysis = await fetchAnalysis(roomId);
+      if (epoch !== analysisEpoch) return;
+      set({ analysis, analysisError: null });
+    } catch (e) {
+      if (epoch !== analysisEpoch) return;
+      // Leave the last good analysis on screen and label it: a failed refresh
+      // is much less confusing than numbers silently vanishing mid-game.
+      set({ analysisError: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  buildFlagBundle: async (notes) => {
+    const { roomId, analysis } = get();
+    if (!roomId) throw new Error("not in a game");
+    // Both fetched fresh, so the move list and the numbers describe the same
+    // position rather than one being however stale the last refresh left it.
+    // They cannot drift apart between the two calls: the flag control is only
+    // reachable while this browser is the seat on move, and nothing else
+    // advances a room. The cached analysis is the fallback for a failed
+    // refresh - a bundle with slightly older numbers still replays exactly,
+    // and is far better than losing the reasoning already typed.
+    const exported = await fetchExport(roomId);
+    const current = await fetchAnalysis(roomId).catch((e: unknown) => {
+      if (analysis) return analysis;
+      throw e;
+    });
+    const bundle: FlagBundle = {
+      seed: exported.seed,
+      moves: exported.moves,
+      current_win_probability: current.win_probability,
+      action_win_probabilities: current.actions.map((a) => ({
+        action: a.action,
+        value: a.value,
+        win_probability: a.win_probability,
+      })),
+      eval_generation: current.eval_generation,
+      notes,
+      captured: {
+        room_id: exported.room_id,
+        turn: current.turn,
+        age: current.age,
+        current_player: current.current_player,
+        value: current.value,
+      },
+    };
+    return JSON.stringify(bundle, null, 2);
   },
 }));

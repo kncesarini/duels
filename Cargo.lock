@@ -527,6 +527,7 @@ dependencies = [
  "duels-agent-strategist",
  "duels-agents-api",
  "duels-core",
+ "duels-eval",
  "futures-util",
  "rand 0.8.8",
  "reqwest",

@@ -1,4 +1,5 @@
-//! `POST /rooms`, `GET /rooms/:id`, `GET /catalog` and `GET /agents`.
+//! `POST /rooms`, `GET /rooms/:id`, `GET /rooms/:id/analysis`,
+//! `GET /rooms/:id/export`, `GET /catalog` and `GET /agents`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -7,7 +8,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::protocol::{Catalog, CreateRoomRequest, CreateRoomResponse, RoomInfo};
+use crate::protocol::{
+    AnalysisPayload, Catalog, CreateRoomRequest, CreateRoomResponse, ExportPayload, RoomInfo,
+};
 use crate::room::Rooms;
 
 /// A REST error: just a status code and a message.
@@ -50,6 +53,37 @@ pub async fn get_room(
         .get(&id)
         .ok_or_else(|| not_found(format!("no room {id}")))?;
     Ok(Json(room.info().await))
+}
+
+/// `GET /rooms/:id/analysis`: `duels-eval`'s read of the room's current
+/// position and of every action legal in it, for the web client's advanced
+/// mode.
+///
+/// Not part of the WebSocket protocol on purpose. It is an opt-in developer /
+/// analysis tool that a client fetches when it wants one, so putting it in
+/// every broadcast would make every ordinary player pay for it — and it is
+/// derived, cacheable-by-position data that no client needs in order to play.
+pub async fn get_analysis(
+    State(rooms): State<Arc<Rooms>>,
+    Path(id): Path<String>,
+) -> Result<Json<AnalysisPayload>, AppError> {
+    let room = rooms
+        .get(&id)
+        .ok_or_else(|| not_found(format!("no room {id}")))?;
+    Ok(Json(room.analysis().await))
+}
+
+/// `GET /rooms/:id/export`: the seed and move list that reconstruct this
+/// room's exact position, for a position the project owner wants to flag and
+/// come back to. See [`crate::room::replay`].
+pub async fn get_export(
+    State(rooms): State<Arc<Rooms>>,
+    Path(id): Path<String>,
+) -> Result<Json<ExportPayload>, AppError> {
+    let room = rooms
+        .get(&id)
+        .ok_or_else(|| not_found(format!("no room {id}")))?;
+    Ok(Json(room.export().await))
 }
 
 static CATALOG: OnceLock<Catalog> = OnceLock::new();
