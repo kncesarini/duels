@@ -523,10 +523,7 @@ use duels_core::{engine, Action, Observation};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-pub use leaf::{
-    temperature, win_probability, LeafValue, TEMPERATURE_AGE_I, TEMPERATURE_AGE_II,
-    TEMPERATURE_AGE_III, TEMPERATURE_OVERALL,
-};
+pub use leaf::LeafValue;
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode};
 
@@ -853,10 +850,7 @@ mod tests {
                 state.current_player(),
                 duels_eval::Config::default(),
             );
-            let want = win_probability(
-                duels_eval::evaluate(&state, Player::One, &root),
-                state.age(),
-            );
+            let want = duels_eval::win_probability(&state, Player::One, &root);
             assert_eq!(
                 got.to_bits(),
                 want.to_bits(),

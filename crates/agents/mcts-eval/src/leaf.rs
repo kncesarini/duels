@@ -46,38 +46,30 @@
 //!
 //! `duels_eval::evaluate` returns a number on a rough victory-point scale;
 //! this tree backs up win probabilities in `[0, 1]` (see [`crate::tree`]'s
-//! value convention). The mapping between them is a logistic
+//! value convention). The mapping is `duels_eval::win_probability` — moved
+//! there (not duplicated) so every consumer of the evaluation, not just this
+//! search, reads one calibration. It is a logistic
 //!
 //! ```text
-//! P(Player One wins) = 1 / (1 + exp(-v / T))
+//! P(me wins) = 1 / (1 + exp(-evaluate(state, me, root) / T(state.age())))
 //! ```
 //!
 //! whose one parameter `T` — the *temperature*, in victory points — was fitted
 //! by maximum likelihood over 28,723 self-play positions by
-//! `duels-eval`'s `examples/calibrate.rs`. That fit is the source of the
-//! constants below, and its headline finding is that **one constant is the
-//! wrong model**: the evaluation is nearly twice as sharp in Age III as in
-//! Age I, with sign accuracy climbing 0.60 → 0.70 in step.
-//!
-//! | age | fitted `T` (VP) | sign accuracy | positions |
-//! |---|---|---|---|
-//! | I | 47.57 | 0.602 | 11,452 |
-//! | II | 43.75 | 0.679 | 8,877 |
-//! | III | 25.18 | 0.701 | 8,394 |
-//! | all positions | 38.61 | 0.655 | 28,723 |
-//!
-//! (Reproduce with `cargo run --release -p duels-eval --example calibrate --
-//! 200`.)
-//!
-//! So [`temperature`] is a per-age lookup. It reads the **leaf's** age, not
-//! the root's, because that is what the fit is conditioned on.
+//! `duels-eval`'s `examples/calibrate.rs`. Its headline finding is that **one
+//! constant is the wrong model**: the evaluation is nearly twice as sharp in
+//! Age III as in Age I, with sign accuracy climbing 0.60 → 0.70 in step — see
+//! `duels_eval::win_probability_temperature`'s docs for the full per-age
+//! table. So the temperature is a per-age lookup, and it reads the **leaf's**
+//! age, not the root's, because that is what the fit is conditioned on.
 //!
 //! ## The temperature is a calibration constant, and it is not re-fitted here
 //!
 //! Worth saying out loud, because it is the one place this crate's
-//! live-tracking design (see the crate docs) has a seam. The constants below
-//! were fitted against the `duels-eval` generation that was current when the
-//! leaf value was measured. A later `duels-eval` round that changes the
+//! live-tracking design (see the crate docs) has a seam. The constants in
+//! `duels_eval::win_probability_temperature` were fitted against the
+//! `duels-eval` generation that was current when this leaf value was
+//! measured. A later `duels-eval` round that changes the
 //! *scale* of `evaluate`'s output — as opposed to its ranking of positions —
 //! would leave them mildly mis-calibrated until somebody re-runs
 //! `calibrate.rs` and updates them.
@@ -100,7 +92,7 @@
 //! position being scored are the *same* position. In this tree they are not:
 //! one `Root` is built at the search root and every leaf, however deep and
 //! however many ages later, is priced against it. `duels_eval::evaluate` reads
-//! `Root`'s cached age for its rails and its menu term while [`temperature`]
+//! `Root`'s cached age for its rails and its menu term while `duels_eval::win_probability_temperature`
 //! reads the leaf's own, so a deep leaf is scored by a hybrid the calibration
 //! never saw.
 //!
@@ -131,54 +123,16 @@
 
 use duels_core::{GameState, Player};
 
-/// The maximum-likelihood temperature for an Age I position, in victory
-/// points, from `duels-eval`'s `examples/calibrate.rs` over 28,723 `phased`
-/// self-play positions.
-pub const TEMPERATURE_AGE_I: f64 = 47.57;
-
-/// The same fit restricted to Age II positions.
-pub const TEMPERATURE_AGE_II: f64 = 43.75;
-
-/// The same fit restricted to Age III positions, where the evaluation is
-/// nearly twice as sharp as in Age I.
-pub const TEMPERATURE_AGE_III: f64 = 25.18;
-
-/// The same fit over every position at once, kept for reference: it is what a
-/// single flat constant would have been, and the per-age spread above is why
-/// this crate does not use it.
-pub const TEMPERATURE_OVERALL: f64 = 38.61;
-
-/// The calibrated temperature for a position in `age`.
-///
-/// Ages outside `1..=3` cannot occur — [`duels_core::GameState::age`] only
-/// ever reports one of the three — and are read as Age III, the sharpest
-/// setting, so a hypothetical fourth age could not accidentally get the
-/// flattest curve.
-#[inline]
-pub fn temperature(age: u8) -> f64 {
-    match age {
-        1 => TEMPERATURE_AGE_I,
-        2 => TEMPERATURE_AGE_II,
-        _ => TEMPERATURE_AGE_III,
-    }
-}
-
-/// Map a victory-point score for a position in `age` onto a win probability
-/// in `[0, 1]`, through the calibrated logistic.
-#[inline]
-pub fn win_probability(value: f64, age: u8) -> f64 {
-    1.0 / (1.0 + (-value / temperature(age)).exp())
-}
-
 /// The static value of `state` on this tree's `[0, 1]` scale, **always from
 /// [`Player::One`]'s perspective**, under the root-fixed pricing in `root`.
 ///
 /// Consumes no randomness at all, which is what makes
 /// [`LeafValue::Static`]'s RNG stream a property of the tree's chance nodes
-/// alone.
+/// alone. A thin wrapper over `duels_eval::win_probability` — see the module
+/// docs above for why the calibration itself lives there, not here.
 #[inline]
 pub(crate) fn static_value(state: &GameState, root: &duels_eval::Root) -> f64 {
-    win_probability(duels_eval::evaluate(state, Player::One, root), state.age())
+    duels_eval::win_probability(state, Player::One, root)
 }
 
 /// What the search backs up from a leaf it has just added to the tree.
@@ -198,7 +152,7 @@ pub enum LeafValue {
     /// default here — the whole point of this crate is that it is not.
     Rollout,
     /// Score the leaf with [`duels_eval::evaluate`] and map it through
-    /// [`win_probability`]. No playout, and no randomness consumed.
+    /// `duels_eval::win_probability`. No playout, and no randomness consumed.
     ///
     /// Kept available, and measurably *weaker* than the playout it replaces
     /// (`-171` Elo at `Nodes(2000)`): a static evaluation cannot see a
@@ -318,44 +272,11 @@ mod tests {
         duels_eval::Config::default()
     }
 
-    #[test]
-    fn the_temperature_lookup_is_the_calibrated_table() {
-        assert_eq!(temperature(1).to_bits(), TEMPERATURE_AGE_I.to_bits());
-        assert_eq!(temperature(2).to_bits(), TEMPERATURE_AGE_II.to_bits());
-        assert_eq!(temperature(3).to_bits(), TEMPERATURE_AGE_III.to_bits());
-        // Age III is the sharpest of the three, which is the finding the
-        // per-age lookup exists for.
-        assert!(temperature(3) < temperature(2));
-        assert!(temperature(2) < temperature(1));
-        // A flat constant would have been the overall fit, and it is bracketed
-        // by the per-age ones.
-        assert!(temperature(3) < TEMPERATURE_OVERALL);
-        assert!(TEMPERATURE_OVERALL < temperature(1));
-    }
-
-    /// The mapping's three fixed points, plus its monotonicity and its range.
-    #[test]
-    fn the_sigmoid_maps_victory_points_onto_a_probability() {
-        for age in 1..=3u8 {
-            assert_eq!(win_probability(0.0, age), 0.5, "age {age}");
-            let t = temperature(age);
-            // One temperature of advantage is the 73% point, by construction.
-            let at_t = win_probability(t, age);
-            assert!((at_t - 0.731_058_6).abs() < 1e-6, "age {age}: {at_t}");
-            // Symmetric about a half, and monotone.
-            assert!((win_probability(t, age) + win_probability(-t, age) - 1.0).abs() < 1e-12);
-            let mut last = 0.0;
-            for v in [-200.0, -50.0, -5.0, 0.0, 5.0, 50.0, 200.0] {
-                let p = win_probability(v, age);
-                assert!(p > last, "age {age}: not monotone at {v}");
-                assert!((0.0..=1.0).contains(&p));
-                last = p;
-            }
-        }
-        // The same score is worth more in Age III, where the evaluation is
-        // sharper.
-        assert!(win_probability(10.0, 3) > win_probability(10.0, 1));
-    }
+    // The calibration itself (the temperature table, the sigmoid's fixed
+    // points and monotonicity) is tested in `duels-eval`, where it now lives —
+    // see `duels_eval::tests::the_temperature_lookup_is_the_calibrated_table`
+    // and `duels_eval::tests::the_sigmoid_maps_victory_points_onto_a_probability`.
+    // What stays here is specific to this tree's own usage of it.
 
     /// A position the terminal rails own is scored `±imminent` — 500 victory
     /// points — and this sigmoid has to turn that into (very nearly) a
@@ -386,8 +307,8 @@ mod tests {
         );
 
         // ...and the complement, from the other side of the same rail.
-        let v = duels_eval::evaluate(&state, Player::Two, &root);
-        assert!(win_probability(v, state.age()) > 1.0 - 1e-8, "{v}");
+        let two = duels_eval::win_probability(&state, Player::Two, &root);
+        assert!(two > 1.0 - 1e-8, "{two}");
     }
 
     /// The evaluation is antisymmetric, so the two perspectives' probabilities
@@ -398,10 +319,7 @@ mod tests {
         for (i, state) in fixed_positions().into_iter().enumerate() {
             let root = duels_eval::Root::new(&state, state.current_player(), tracked());
             let one = static_value(&state, &root);
-            let two = win_probability(
-                duels_eval::evaluate(&state, Player::Two, &root),
-                state.age(),
-            );
+            let two = duels_eval::win_probability(&state, Player::Two, &root);
             assert!(
                 (one + two - 1.0).abs() < 1e-12,
                 "position {i}: {one} + {two} != 1"

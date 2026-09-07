@@ -33,9 +33,9 @@ use duels_core::observation::Observation;
 use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards, StateBuilder};
 use duels_core::{engine, Action, GameState, Player};
 use duels_eval::{
-    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, CountPricing, EconomyModel,
-    EvalWeights, GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel,
-    RailModel, Root, ScienceWeights, SupplyModel, WonderModel,
+    evaluate, expected_value, rail_owner, win_probability, Blend, CoinModel, Config, CountPricing,
+    EconomyModel, EvalWeights, GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel,
+    PendingModel, RailModel, Root, ScienceWeights, SupplyModel, WonderModel,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -124,6 +124,14 @@ fn assert_everything_agrees(a: &GameState, b: &GameState, ctx: &str, config: Con
             evaluate(a, p, &root_a),
             evaluate(b, p, &root_b),
             &format!("{ctx}: evaluate for {p:?}"),
+        );
+        // ...and its win-probability mapping, which reads state.age() on top
+        // of evaluate() itself — a second thing that must not depend on which
+        // hidden world produced `a`/`b`.
+        same_bits(
+            win_probability(a, p, &root_a),
+            win_probability(b, p, &root_b),
+            &format!("{ctx}: win_probability for {p:?}"),
         );
     }
 
