@@ -70,6 +70,18 @@ export default function SettingsMenu({ settings, onChange, onLeave, onClose }: P
           onChange={(e) => onChange({ compactLog: e.target.checked })}
         />
       </div>
+      <div className="row">
+        <label htmlFor="set-advanced" title="Also switchable with ?advanced=1 in the URL">
+          Advanced (AI analysis) mode
+        </label>
+        <input
+          id="set-advanced"
+          type="checkbox"
+          checked={settings.advanced}
+          onChange={(e) => onChange({ advanced: e.target.checked })}
+          data-testid="set-advanced"
+        />
+      </div>
       <hr />
       <div style={{ fontSize: 10.5, color: "var(--mute)" }}>
         Keyboard: ← → select a card · B build · D discard · 1-4 spend it on that wonder · Alt peek the other

@@ -12,8 +12,9 @@ use rand::{rngs::StdRng, SeedableRng};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
 use crate::protocol::{
-    ActionCost, CostLine, CostPlan, PlayerView, RoomInfo, RoomStatus, SeatSpec, ServerMessage,
-    SlotCostView, StatePayload, StepPayload, WonderCostView,
+    ActionAnalysis, ActionCost, AnalysisPayload, CostLine, CostPlan, ExportPayload, PlayerView,
+    RoomInfo, RoomStatus, SeatSpec, ServerMessage, SlotCostView, StatePayload, StepPayload,
+    WonderCostView,
 };
 
 /// Monotonic counter backing both room ids and (when the client doesn't
@@ -107,11 +108,93 @@ struct RoomInner {
     history: Vec<StepPayload>,
 }
 
+/// The RNG a room applies its moves against, derived from the game seed.
+///
+/// Kept as a named function rather than an inline expression in [`Room::new`]
+/// because [`replay`] has to derive the *identical* stream to reconstruct a
+/// room's position from an [`ExportPayload`]: `engine::apply` consumes
+/// randomness (only The Great Library does, per its docs, but "only rarely"
+/// is not "never"), so a replay that seeded a different stream would diverge
+/// on exactly the games that are most interesting to analyse.
+fn game_rng(seed: u64) -> StdRng {
+    StdRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15)
+}
+
+/// Reconstruct the `GameState` an [`ExportPayload`] describes: deal `seed`'s
+/// game and apply `moves` in order.
+///
+/// This is the whole point of the export format — a flagged position has to be
+/// reproducible later, offline, with no room and no server still alive. The
+/// result is the room's complete state, hidden layout included, not just its
+/// public `Observation`;
+/// `tests::an_export_replays_back_to_the_rooms_exact_state` asserts that
+/// equality directly.
+///
+/// Fails if a move is not legal in the position it is replayed into, which
+/// would mean the export did not come from this build of the engine.
+pub fn replay(seed: u64, moves: &[duels_core::Action]) -> Result<GameState, String> {
+    let mut state = engine::new_game(seed);
+    let mut rng = game_rng(seed);
+    for (i, &action) in moves.iter().enumerate() {
+        engine::apply(&mut state, action, &mut rng)
+            .map_err(|e| format!("move {i} ({action:?}) does not replay: {e}"))?;
+    }
+    Ok(state)
+}
+
+/// Price `state` and every action legal in it with [`duels_eval`], from the
+/// point of view of the seat on move.
+///
+/// A free function taking the state, rather than a method on [`Room`], so a
+/// test can drive it with a `StateBuilder` position — the endpoint's job is to
+/// describe a *position*, and being able to hand it a hand-built decisive one
+/// is the only way to check its numbers say what they should.
+fn analyse(room_id: &str, state: &GameState) -> AnalysisPayload {
+    let me = state.current_player();
+    // One `Root` for the whole position, exactly as `PhasedAgent::choose`
+    // builds one per decision: the commitment blend and the opponent-menu
+    // tables are root-fixed by design, and rebuilding them per action would
+    // both cost more and price the actions against different weights.
+    let root = duels_eval::Root::new(state, me, duels_eval::Config::default());
+    let value = duels_eval::evaluate(state, me, &root);
+    let actions = engine::legal_actions(state)
+        .into_iter()
+        .map(|action| {
+            let value = duels_eval::expected_value(state, action, me, &root);
+            ActionAnalysis {
+                action,
+                value,
+                // `win_probability_from_value`, not `win_probability`: an
+                // action that resolves a chance node has many possible
+                // resulting states and `expected_value` has already averaged
+                // over them, so there is no single post-action `GameState` to
+                // evaluate. The age is the one the decision is *made* in.
+                win_probability: duels_eval::win_probability_from_value(value, state.age()),
+            }
+        })
+        .collect();
+    AnalysisPayload {
+        room_id: room_id.to_string(),
+        turn: state.turn(),
+        age: state.age(),
+        current_player: me,
+        game_over: state.is_over(),
+        value,
+        win_probability: duels_eval::win_probability_from_value(value, state.age()),
+        actions,
+        eval_generation: duels_eval::Config::default().params_string(),
+    }
+}
+
 /// One room: two seats playing a single game, plus a broadcast channel every
 /// connected WebSocket subscribes to.
 pub struct Room {
     pub id: String,
     pub seats: [SeatSpec; 2],
+    /// The seed this room's game was dealt from. Kept so
+    /// [`Room::export`] can hand out a `{ seed, moves }` bundle that
+    /// reconstructs the position exactly.
+    pub seed: u64,
     inner: AsyncMutex<RoomInner>,
     tx: broadcast::Sender<ServerMessage>,
 }
@@ -119,7 +202,7 @@ pub struct Room {
 impl Room {
     fn new(id: String, seats: [SeatSpec; 2], seed: u64) -> Result<Arc<Self>, String> {
         let state = engine::new_game(seed);
-        let rng = StdRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let rng = game_rng(seed);
         let mut agents: [Option<Box<dyn Agent + Send>>; 2] = [None, None];
         let mut budgets = [Budget::Nodes(1), Budget::Nodes(1)];
         for (i, seat) in seats.iter().enumerate() {
@@ -135,6 +218,7 @@ impl Room {
         Ok(Arc::new(Self {
             id,
             seats,
+            seed,
             inner: AsyncMutex::new(RoomInner {
                 state,
                 rng,
@@ -173,6 +257,49 @@ impl Room {
                 RoomStatus::Playing
             },
             turn: inner.state.turn(),
+        }
+    }
+
+    /// This room's authoritative `GameState`, copied out.
+    ///
+    /// `GameState` is `Copy` and holds hidden information, so this is
+    /// deliberately not part of any wire type — it exists for server-side
+    /// analysis (see [`Room::analysis`]) and for tests that need to compare a
+    /// replayed position against the real one.
+    pub async fn state(&self) -> GameState {
+        self.inner.lock().await.state
+    }
+
+    /// What `duels-eval` makes of this room's current position, and of every
+    /// action available in it.
+    ///
+    /// Structurally the same work `duels-agent-phased` does to pick a move
+    /// (`PhasedAgent::choose`): build **one** `Root` for the position, then
+    /// score every legal action against it. Two differences, both because
+    /// this is for display rather than for playing:
+    ///
+    /// - the real `GameState` is evaluated instead of a sampled
+    ///   determinization of the `Observation`, which the server has and an
+    ///   agent does not, and which changes nothing (see
+    ///   [`AnalysisPayload`]'s note on why that is safe);
+    /// - the scores are also mapped onto win probabilities, and every one of
+    ///   them is returned rather than just the argmax.
+    pub async fn analysis(&self) -> AnalysisPayload {
+        analyse(&self.id, &self.state().await)
+    }
+
+    /// The seed and full move list this room's current position is built from.
+    /// See [`replay`], which turns one back into a `GameState`.
+    pub async fn export(&self) -> ExportPayload {
+        let inner = self.inner.lock().await;
+        ExportPayload {
+            room_id: self.id.clone(),
+            seed: self.seed,
+            // Every `StepPayload` this server records carries `Some(action)`
+            // (`step` is only ever called with one); `flatten` rather than
+            // `expect` so a future engine-initiated step with no action of its
+            // own could be added without this silently panicking on it.
+            moves: inner.history.iter().filter_map(|s| s.action).collect(),
         }
     }
 
@@ -425,5 +552,306 @@ impl Rooms {
 
     pub fn get(&self, id: &str) -> Option<Arc<Room>> {
         self.0.lock().unwrap().get(id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duels_core::Action;
+
+    /// Drive a real room several moves in, playing the human seat with a
+    /// deterministic "take the last legal action" policy (last, not first, so
+    /// the playout is not the same one `tests/integration.rs` drives and the
+    /// two do not share a blind spot). Returns the room.
+    async fn played_room(seed: u64, human_decisions: usize) -> Arc<Room> {
+        let rooms = Rooms::new();
+        let room = rooms
+            .create(
+                [
+                    SeatSpec::Human,
+                    SeatSpec::Agent {
+                        name: "greedy".to_string(),
+                    },
+                ],
+                Some(seed),
+            )
+            .expect("create room");
+        room.kick_off().await;
+        for _ in 0..human_decisions {
+            let legal = engine::legal_actions(&room.state().await);
+            let Some(&action) = legal.last() else { break };
+            room.apply_client_action(action)
+                .await
+                .expect("scripted action was legal");
+        }
+        room
+    }
+
+    /// The load-bearing property of the export format: what it hands out has
+    /// to reconstruct the position it came from *exactly*.
+    ///
+    /// `GameState`, not `Observation`: the whole point of exporting a flagged
+    /// position is that a later analysis can evaluate it, and every consumer
+    /// of `duels-eval` starts from a concrete state. An export that agreed on
+    /// public information but dealt a different hidden layout would replay
+    /// into a position with different chance outcomes ahead of it and would be
+    /// worthless for the intended workflow.
+    #[tokio::test]
+    async fn an_export_replays_back_to_the_rooms_exact_state() {
+        for seed in [1_u64, 7, 20260907, u64::MAX / 3] {
+            let room = played_room(seed, 12).await;
+            let export = room.export().await;
+            assert_eq!(export.seed, seed);
+            assert!(
+                export.moves.len() >= 12,
+                "seed {seed}: expected at least the human's moves, got {}",
+                export.moves.len()
+            );
+
+            let replayed = replay(export.seed, &export.moves).expect("export replays");
+            assert_eq!(
+                replayed,
+                room.state().await,
+                "seed {seed}: replaying the export did not reproduce the room's state"
+            );
+        }
+    }
+
+    /// The export is a *complete* history, not just the moves this browser
+    /// made: an agent seat's choices are in it too, in order, interleaved
+    /// where they actually happened.
+    #[tokio::test]
+    async fn the_export_carries_both_seats_moves_in_order() {
+        let room = played_room(31, 10).await;
+        let export = room.export().await;
+        let inner = room.inner.lock().await;
+        let actors: Vec<_> = inner.history.iter().filter_map(|s| s.actor).collect();
+        assert_eq!(actors.len(), export.moves.len());
+        assert!(
+            actors.contains(&duels_core::Player::One) && actors.contains(&duels_core::Player::Two),
+            "test setup: expected moves from both seats, got {actors:?}"
+        );
+    }
+
+    /// A replay that is handed a move the position does not allow says so
+    /// rather than quietly producing some other position.
+    #[tokio::test]
+    async fn replaying_an_impossible_move_is_an_error() {
+        let room = played_room(5, 4).await;
+        let mut export = room.export().await;
+        let legal = engine::legal_actions(&room.state().await);
+        let impossible = (0..duels_core::layout::SLOTS as u8)
+            .map(|slot| Action::Build { slot })
+            .find(|a| !legal.contains(a))
+            .expect("some slot is not buildable right now");
+        export.moves.push(impossible);
+        let err = replay(export.seed, &export.moves).expect_err("should not replay");
+        assert!(err.contains("does not replay"), "unhelpful error: {err}");
+    }
+
+    /// The analysis is a well-formed read of the position: one entry per legal
+    /// action, in the same order the client is offered them, every probability
+    /// in range, and the evaluation generation recorded.
+    #[tokio::test]
+    async fn the_analysis_prices_every_legal_action_in_order() {
+        let room = played_room(11, 14).await;
+        let state = room.state().await;
+        let legal = engine::legal_actions(&state);
+        assert!(legal.len() > 1, "test setup: need a real choice");
+
+        let analysis = room.analysis().await;
+        assert_eq!(analysis.room_id, room.id);
+        assert_eq!(analysis.turn, state.turn());
+        assert_eq!(analysis.age, state.age());
+        assert_eq!(analysis.current_player, state.current_player());
+        assert!(!analysis.game_over);
+        assert_eq!(
+            analysis
+                .actions
+                .iter()
+                .map(|a| a.action)
+                .collect::<Vec<_>>(),
+            legal,
+            "the analysis must line up with `legal_actions` position by position"
+        );
+        assert!((0.0..=1.0).contains(&analysis.win_probability));
+        for a in &analysis.actions {
+            assert!(
+                (0.0..=1.0).contains(&a.win_probability),
+                "{:?} mapped outside [0, 1]: {}",
+                a.action,
+                a.win_probability
+            );
+        }
+        assert_eq!(
+            analysis.eval_generation,
+            duels_eval::Config::default().params_string()
+        );
+    }
+
+    /// The numbers have to mean something, not merely be in range: on a
+    /// position where one action wins the game outright, that action must read
+    /// as a certainty and the alternatives must not.
+    ///
+    /// Player One is two spaces from Player Two's capital with `circus` (two
+    /// shields) sitting in an open slot and the coins to build it, so `Build`
+    /// on that slot ends the game by military supremacy immediately. This is
+    /// the sanity check that the endpoint is showing the *mover's* side of the
+    /// evaluation and not, say, a sign-flipped one — a bug that no in-range
+    /// assertion would catch.
+    #[test]
+    fn an_action_that_wins_outright_reads_as_a_certainty() {
+        use duels_core::testing::StateBuilder;
+        use duels_core::Player;
+
+        let state = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "circus"), (19, "palace")])
+            .conflict(7)
+            .coins(Player::One, 40)
+            .coins(Player::Two, 40)
+            .current(Player::One)
+            .build();
+
+        let analysis = analyse("room-test", &state);
+        assert_eq!(analysis.current_player, Player::One);
+        let winning = analysis
+            .actions
+            .iter()
+            .find(|a| a.action == Action::Build { slot: 18 })
+            .expect("building the closing card is legal");
+        assert!(
+            winning.win_probability > 0.999,
+            "an outright win should read as one, not {:.4}",
+            winning.win_probability
+        );
+
+        // And discarding it instead — handing the same card to the opponent's
+        // next turn — must not read the same way.
+        let discard = analysis
+            .actions
+            .iter()
+            .find(|a| a.action == Action::Discard { slot: 18 })
+            .expect("discarding it is also legal");
+        assert!(
+            discard.win_probability < winning.win_probability,
+            "throwing the win away scored {:.4}, taking it scored {:.4}",
+            discard.win_probability,
+            winning.win_probability
+        );
+    }
+
+    /// The mirror image of the test above, on the identical position with the
+    /// other seat to move: the same evaluation, read from the side that is
+    /// *about to lose*, must be a near-certain loss. Together the two pin the
+    /// orientation of every number this endpoint reports.
+    #[test]
+    fn the_same_position_read_from_the_losing_side_is_a_near_certain_loss() {
+        use duels_core::testing::StateBuilder;
+        use duels_core::Player;
+
+        let state = StateBuilder::new()
+            .age(3)
+            .open_slots(&[(18, "circus"), (19, "fortifications")])
+            .conflict(7)
+            .coins(Player::One, 40)
+            .coins(Player::Two, 7)
+            .current(Player::Two)
+            .build();
+
+        let analysis = analyse("room-test", &state);
+        assert_eq!(analysis.current_player, Player::Two);
+        assert!(
+            analysis.win_probability < 0.001,
+            "a rail-owned loss should read as one, not {:.4}",
+            analysis.win_probability
+        );
+    }
+
+    /// The win probability is genuinely the calibrated mapping of the value,
+    /// not a second, independently-invented curve — the reason
+    /// `duels-eval` owns `win_probability_from_value` at all.
+    #[tokio::test]
+    async fn the_reported_probabilities_are_the_calibrated_mapping_of_the_values() {
+        let room = played_room(23, 9).await;
+        let analysis = room.analysis().await;
+        let age = analysis.age;
+        assert_eq!(
+            analysis.win_probability.to_bits(),
+            duels_eval::win_probability_from_value(analysis.value, age).to_bits()
+        );
+        for a in &analysis.actions {
+            assert_eq!(
+                a.win_probability.to_bits(),
+                duels_eval::win_probability_from_value(a.value, age).to_bits(),
+                "{:?}",
+                a.action
+            );
+        }
+    }
+
+    /// Analysing a finished game reports the result rather than failing: the
+    /// advanced-mode client keeps polling after the last move.
+    #[tokio::test]
+    async fn a_finished_game_still_analyses() {
+        let room = played_room(20260907, 200).await;
+        let state = room.state().await;
+        assert!(state.is_over(), "test setup: game should have finished");
+
+        let analysis = room.analysis().await;
+        assert!(analysis.game_over);
+        assert!(analysis.actions.is_empty());
+        // A decided game is scored by the terminal rail, which is far outside
+        // the range any ordinary position reaches, so the logistic saturates.
+        assert!(
+            analysis.win_probability > 0.99 || analysis.win_probability < 0.01,
+            "a finished game should not read as a close position: {}",
+            analysis.win_probability
+        );
+
+        // And the export of a finished game still replays: this is exactly the
+        // case the project owner will flag most often ("that line lost, why
+        // did the evaluation like it?").
+        let export = room.export().await;
+        assert_eq!(replay(export.seed, &export.moves).expect("replays"), state);
+    }
+
+    /// How long one analysis takes on a real mid-game position. Ignored by
+    /// default (a timing measurement is not a correctness assertion, and
+    /// `CLAUDE.md` keeps benchmark-shaped runs out of the default `cargo test`
+    /// path); run with `cargo test -p duels-server --release -- --ignored
+    /// --nocapture analysis_cost`.
+    #[tokio::test]
+    #[ignore = "timing measurement, not an assertion"]
+    async fn analysis_cost_on_a_real_position() {
+        // `duels-server` is one of the crates `clippy.toml` explicitly exempts
+        // from the wall-clock ban, and a "how long does this take" measurement
+        // is the reason that exemption exists.
+        #[allow(clippy::disallowed_methods)]
+        let now = std::time::Instant::now;
+
+        for decisions in [6usize, 20, 30] {
+            let room = played_room(77, decisions).await;
+            let state = room.state().await;
+            if state.is_over() {
+                continue;
+            }
+            let legal = engine::legal_actions(&state).len();
+            // One warm-up, then a timed batch, so the first call's lazy
+            // static-data initialisation is not attributed to the endpoint.
+            let _ = room.analysis().await;
+            let start = now();
+            const REPS: u32 = 100;
+            for _ in 0..REPS {
+                std::hint::black_box(room.analysis().await);
+            }
+            let each = start.elapsed() / REPS;
+            println!(
+                "age {} turn {} ({legal} legal actions): {each:?} per analysis",
+                state.age(),
+                state.turn()
+            );
+        }
     }
 }

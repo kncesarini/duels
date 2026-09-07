@@ -349,6 +349,93 @@ pub struct StatePayload {
     pub breakdown: Option<[Breakdown; 2]>,
 }
 
+/// One legal action, priced by [`duels_eval`], for `GET /rooms/:id/analysis`.
+///
+/// `value` is `duels_eval::expected_value` — a victory-point-scale number,
+/// chance-averaged over every way the action's randomness could resolve —
+/// and `win_probability` is that same number put through
+/// `duels_eval::win_probability_from_value` at the current age's calibrated
+/// temperature. The pair is deliberately both: the probability is what a
+/// human reads at a glance, the raw value is what a later analysis of an
+/// exported position wants to reason about, since the probability mapping is
+/// monotone and therefore throws away scale near the tails.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActionAnalysis {
+    /// The action, exactly as it appears in [`StatePayload::legal_actions`].
+    pub action: Action,
+    /// `duels_eval::expected_value` for the player on move.
+    pub value: f64,
+    /// `value` mapped onto `[0, 1]` through the age-calibrated logistic.
+    pub win_probability: f64,
+}
+
+/// `GET /rooms/:id/analysis`: what `duels-eval` thinks of this room's current
+/// position, and of every action available in it.
+///
+/// Computed from the room's **real** `GameState` rather than a sampled
+/// determinization of its `Observation`. That is safe, and it is why this
+/// endpoint can exist at all: `duels_eval::evaluate` and
+/// `duels_eval::expected_value` are provably invariant to which
+/// hidden-information sample produced the state they are handed (a
+/// non-negotiable invariant of this workspace, asserted bit-for-bit in
+/// `duels-eval/tests/determinization_invariance.rs`), so nothing computed
+/// here can depend on a face-down identity, and nothing it returns can tell a
+/// player anything that public information does not already imply.
+///
+/// Everything is reported from the point of view of
+/// [`AnalysisPayload::current_player`], the seat on move — the same
+/// convention `duels-agent-phased` uses when it scores a decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AnalysisPayload {
+    /// The room this is an analysis of.
+    pub room_id: String,
+    /// `GameState::turn` when it was computed, so a client can tell a stale
+    /// analysis from a current one.
+    pub turn: u32,
+    /// The age the position is in (1, 2 or 3), which selects the calibrated
+    /// temperature the win probabilities were mapped through.
+    pub age: u8,
+    /// The seat on move, whose side every number here is from.
+    pub current_player: duels_core::Player,
+    /// True once the game has a result, in which case `actions` is empty and
+    /// `win_probability` reflects the terminal rail rather than a judgement.
+    pub game_over: bool,
+    /// `duels_eval::evaluate` for the current position, in victory points.
+    pub value: f64,
+    /// `duels_eval::win_probability` for the current position.
+    pub win_probability: f64,
+    /// Every legal action, in [`StatePayload::legal_actions`] order, priced.
+    pub actions: Vec<ActionAnalysis>,
+    /// `duels_eval::Config::default().params_string()`: the full parameter
+    /// encoding of the evaluation generation these numbers came from, so an
+    /// exported position is self-describing and a later round of tuning can
+    /// never be confused for the one that was actually flagged.
+    pub eval_generation: String,
+}
+
+/// `GET /rooms/:id/export`: everything needed to reconstruct this room's exact
+/// current position later, with no server, no room and no WebSocket.
+///
+/// [`crate::room::replay`] is the canonical reconstruction:
+/// `duels_core::engine::new_game(seed)` followed by every entry of `moves` in
+/// order, against an RNG derived from `seed` the same way the room derived
+/// its own. `room::tests::an_export_replays_back_to_the_rooms_exact_state`
+/// asserts that this reproduces the room's whole `GameState`, hidden layout
+/// included — not merely its public `Observation`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExportPayload {
+    /// The room this came from.
+    pub room_id: String,
+    /// The seed the room's game was dealt from.
+    pub seed: u64,
+    /// Every action applied to the room so far, in order — both seats' moves,
+    /// including any the server's agent seats chose.
+    pub moves: Vec<Action>,
+}
+
 /// A message the server sends over the room's WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

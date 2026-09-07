@@ -18,6 +18,10 @@ export interface Settings {
   confirm: boolean;
   /** Compact log entries drop the payment line. */
   compactLog: boolean;
+  /** Advanced (analysis) mode: overlays `duels-eval`'s read of the position
+   * and of every legal action, and offers the flag-a-position export. A
+   * developer/analysis tool, not a player-facing feature — off by default. */
+  advanced: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -27,17 +31,36 @@ export const DEFAULT_SETTINGS: Settings = {
   marks: false,
   confirm: false,
   compactLog: false,
+  advanced: false,
 };
 
 const KEY = "duels.settings";
 
 export function loadSettings(): Settings {
+  const stored = (() => {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return DEFAULT_SETTINGS;
+      return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) };
+    } catch {
+      return DEFAULT_SETTINGS;
+    }
+  })();
+  // `?advanced=1` turns analysis mode on without first finding the settings
+  // menu — handy for opening a position from a link. It is treated as exactly
+  // equivalent to ticking the checkbox, persisted included, so there is only
+  // one rule to remember: the box is on until it is unticked.
+  if (!advancedInUrl() || stored.advanced) return stored;
+  const next = { ...stored, advanced: true };
+  saveSettings(next);
+  return next;
+}
+
+function advancedInUrl(): boolean {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) };
+    return new URLSearchParams(window.location.search).get("advanced") === "1";
   } catch {
-    return DEFAULT_SETTINGS;
+    return false;
   }
 }
 

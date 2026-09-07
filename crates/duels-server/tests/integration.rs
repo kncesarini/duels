@@ -424,3 +424,133 @@ async fn a_late_connection_is_replayed_the_whole_history() {
         return;
     }
 }
+
+/// The two advanced-mode endpoints, over real HTTP: play a hot-seat room a few
+/// moves in, then check that `GET /rooms/:id/analysis` prices exactly the
+/// actions the WebSocket most recently offered, and that
+/// `GET /rooms/:id/export` hands back a bundle that replays to the room's
+/// exact position.
+///
+/// The replay half is asserted over the room's whole real `GameState` in
+/// `room::tests::an_export_replays_back_to_the_rooms_exact_state`. This one
+/// covers the part only an HTTP client can see: routing, JSON shape, and the
+/// two endpoints agreeing with the live WebSocket protocol.
+#[tokio::test]
+async fn analysis_and_export_describe_the_live_position() {
+    let addr = spawn_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    let create: CreateRoomResponse = client
+        .post(format!("{base}/rooms"))
+        .json(&CreateRoomRequest {
+            seats: [SeatSpec::Human, SeatSpec::Human],
+            seed: Some(4242),
+        })
+        .send()
+        .await
+        .expect("POST /rooms")
+        .json()
+        .await
+        .expect("decode CreateRoomResponse");
+
+    let ws_url = format!("ws://{addr}/rooms/{}/ws", create.room_id);
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("connect");
+
+    let mut applied = 0usize;
+    let live = loop {
+        let msg = ws.next().await.expect("closed").expect("ws error");
+        let WsMessage::Text(text) = msg else { continue };
+        let ServerMessage::State(state) = serde_json::from_str(&text).expect("json") else {
+            panic!("unexpected Error message: {text}");
+        };
+        if applied == 14 {
+            break state;
+        }
+        let action = *state.legal_actions.first().expect("a legal action");
+        ws.send(WsMessage::Text(
+            serde_json::to_string(&ClientMessage::Action { action }).expect("serialize"),
+        ))
+        .await
+        .expect("send");
+        applied += 1;
+    };
+
+    let analysis: duels_server::protocol::AnalysisPayload = client
+        .get(format!("{base}/rooms/{}/analysis", create.room_id))
+        .send()
+        .await
+        .expect("GET analysis")
+        .json()
+        .await
+        .expect("decode AnalysisPayload");
+
+    assert_eq!(analysis.room_id, create.room_id);
+    assert_eq!(analysis.turn, live.observation.turn);
+    assert_eq!(analysis.current_player, live.observation.current_player);
+    assert!(!analysis.game_over);
+    assert_eq!(
+        analysis
+            .actions
+            .iter()
+            .map(|a| a.action)
+            .collect::<Vec<_>>(),
+        live.legal_actions,
+        "the analysis must price exactly the actions the client was offered"
+    );
+    assert!(analysis.actions.len() > 1, "test setup: need a real choice");
+    assert!((0.0..=1.0).contains(&analysis.win_probability));
+    assert!(
+        !analysis.eval_generation.is_empty(),
+        "an export has to be able to say which evaluation produced it"
+    );
+    // Nor may every action score the same, or the display would be useless.
+    let best = analysis
+        .actions
+        .iter()
+        .map(|a| a.win_probability)
+        .fold(f64::MIN, f64::max);
+    let worst = analysis
+        .actions
+        .iter()
+        .map(|a| a.win_probability)
+        .fold(f64::MAX, f64::min);
+    assert!(
+        best > worst,
+        "every action scored identically ({best}); that is not a usable analysis"
+    );
+
+    let export: duels_server::protocol::ExportPayload = client
+        .get(format!("{base}/rooms/{}/export", create.room_id))
+        .send()
+        .await
+        .expect("GET export")
+        .json()
+        .await
+        .expect("decode ExportPayload");
+
+    assert_eq!(export.seed, 4242);
+    assert_eq!(export.moves.len(), applied);
+    let replayed = duels_server::room::replay(export.seed, &export.moves).expect("replays");
+    assert_eq!(
+        replayed.observation(),
+        live.observation,
+        "the exported bundle does not describe the position it came from"
+    );
+}
+
+#[tokio::test]
+async fn analysis_and_export_of_an_unknown_room_are_404s() {
+    let addr = spawn_server().await;
+    let base = format!("http://{addr}");
+    let client = reqwest::Client::new();
+    for path in ["analysis", "export"] {
+        let resp = client
+            .get(format!("{base}/rooms/room-does-not-exist/{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET {path}: {e}"));
+        assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+    }
+}
