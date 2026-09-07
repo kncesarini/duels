@@ -1,7 +1,8 @@
 // The age structure. Three visibility states, all of them readable:
 // accessible (full brightness, interactive), covered but face-up (dimmed,
 // cost row still rendered so you can plan ahead), and face-down (age glyph
-// only - that really is all anybody knows).
+// only - that really is all anybody knows, except that a guild's back is
+// purple, which the server tells us in `hidden_guild_slots`).
 
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Catalog } from "../generated/Catalog";
@@ -104,6 +105,7 @@ export default function Structure({
   }, [minCol, maxCol, minRow, maxRow]);
 
   const faceDown = observation.slots.filter((s) => s.state === "face_down").length;
+  const guildBacks = observation.slots.filter((s, i) => s.state === "face_down" && isGuildBack(observation, i)).length;
   const availableCount = [...accessible].filter((s) => observation.slots[s].state === "face_up").length;
   const affordable = [...accessible].filter((s) => {
     const p = slotPlan(lensView, s);
@@ -126,6 +128,7 @@ export default function Structure({
       <div className="meta">
         <b>Age {romanAge(observation.age)}</b> · {SHAPE[observation.age]} · <b>{availableCount}</b> available ·{" "}
         <b>{affordable}</b> affordable for {lensName} · {faceDown} face-down
+        {guildBacks > 0 && <span className="guild-hint"> ({guildBacks} guild)</span>}
         {chained.length > 0 && (
           <span className="chain-hint">
             {" · "}
@@ -142,6 +145,9 @@ export default function Structure({
         </span>
         <span>
           Face down<i style={{ background: "var(--back-a)" }} />
+        </span>
+        <span>
+          Face down (guild)<i style={{ background: "var(--guild)" }} />
         </span>
         <span>
           Can&apos;t afford<i style={{ background: "var(--badge-bad)" }} />
@@ -162,7 +168,7 @@ export default function Structure({
             return <div key={slot} className={`slot ${takenSlot === slot ? "pulse" : ""}`} style={style} />;
           }
           if (view.state === "face_down") {
-            return <CardBack key={slot} age={observation.age} style={style} />;
+            return <CardBack key={slot} age={observation.age} style={style} isGuild={isGuildBack(observation, slot)} />;
           }
           const card = cardById(catalog, view.card);
           if (!card) return null;
@@ -191,6 +197,16 @@ export default function Structure({
       </div>
     </div>
   );
+}
+
+/** Whether this face-down slot's back is purple, i.e. it holds one of the
+ * three guilds. `hidden_guild_slots` is a slot bitmask the server derives in
+ * `duels-core` (R-110); bit `i` corresponds to `observation.slots[i]`, the
+ * same indexing this component already draws from. Public information - a
+ * guild card back is a different colour in the physical game - and it says
+ * only guild-or-not, never which guild. */
+function isGuildBack(observation: Observation, slot: number): boolean {
+  return (observation.hidden_guild_slots & (1 << slot)) !== 0;
 }
 
 /** How many face-down cards this slot is currently sitting on top of. Read

@@ -290,6 +290,15 @@ pub struct HiddenInfo {
     /// How many of the face-down slots hold a guild card. Publicly known
     /// because exactly three guilds are dealt into Age III.
     pub hidden_guild_count: u32,
+    /// *Which* face-down slots hold a guild card, as a slot bitmask (bit `i`
+    /// for slot `i`, the same indexing as [`GameState::occupied_slots`]).
+    ///
+    /// Publicly known because guild cards have a distinguishable purple card
+    /// back: both players can see which face-down Age III slots are guilds
+    /// from the backs alone, without seeing *which* guild. Always a subset of
+    /// [`Self::hidden_slots`], and always zero in Ages I and II, which
+    /// contain no guilds (R-022).
+    pub hidden_guild_slots: u32,
 }
 
 impl HiddenInfo {
@@ -307,6 +316,15 @@ impl HiddenInfo {
 /// The pool is deliberately larger than the number of face-down slots: three
 /// cards were returned to the box unseen, so they remain candidates for every
 /// hidden slot until the age ends.
+///
+/// Two of the fields read a face-down slot's actual card, which is hidden
+/// information — but only to project it onto something that is public.
+/// [`HiddenInfo::hidden_guild_slots`] keeps a single bit per slot, guild or
+/// not, which is exactly what the purple card back shows (R-110); the
+/// `revealed_slots` loop below reads only slots that are already face up.
+/// Nothing here narrows *which* card sits in a face-down slot, and the
+/// determinization-invariance tests in `observation.rs` and
+/// `tests/properties.rs` are what pin that down.
 pub fn hidden_info(state: &GameState) -> HiddenInfo {
     let s = data::statics();
     let age = state.age();
@@ -339,11 +357,17 @@ pub fn hidden_info(state: &GameState) -> HiddenInfo {
         0
     };
 
+    // Which of those face-down slots is a guild: public from the card back.
+    let hidden_guild_slots = iter_slots(hidden_slots)
+        .filter(|&slot| s.guild_mask & (1u128 << state.slot_card_hidden(slot).index()) != 0)
+        .fold(0u32, |m, slot| m | (1u32 << slot));
+
     HiddenInfo {
         hidden_slots,
         unseen_guilds,
         unseen_plain,
         hidden_guild_count,
+        hidden_guild_slots,
     }
 }
 

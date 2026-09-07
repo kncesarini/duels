@@ -102,6 +102,23 @@ unknown_slot_pool: Array<string>,
  */
 hidden_guild_count: number, 
 /**
+ * *Which* face-down slots hold a guild card, as a slot bitmask: bit `i`
+ * is set exactly when `slots[i]` is [`SlotView::FaceDown`] and the card
+ * behind it is a guild. Same slot indexing as [`Observation::slots`].
+ *
+ * This is public information, and it is not a leak: guild cards have a
+ * distinguishable purple card back, so from the moment Age III is dealt
+ * both players can see which face-down slots are guilds without seeing
+ * *which* guild. Zero in Ages I and II, which contain no guilds, and
+ * zero for every empty or face-up slot.
+ *
+ * [`Observation::hidden_guild_count`] is the same fact aggregated, and
+ * is kept because it is derivable from the seen guilds alone; this field
+ * is strictly more informative and `hidden_guild_slots.count_ones()`
+ * equals it in any reachable position.
+ */
+hidden_guild_slots: number, 
+/**
  * The outcome, once the game is over.
  */
 result: GameResult | null, };

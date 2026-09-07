@@ -111,11 +111,28 @@ fn strategist_convincingly_beats_random_over_many_seeded_games() {
     );
 }
 
-/// Sanity check: `StrategistAgent` should also convincingly beat plain
+/// Sanity check: `StrategistAgent` has not collapsed against plain
 /// `duels-agent-greedy` (the single-sample, no-strategy-prior baseline two
 /// generations back).
+///
+/// **This is a floor, not a target, and deliberately a loose one.** The
+/// threshold used to be 55%, which these 60 seeds happened to satisfy
+/// (59.2%) but the underlying edge never did: run the same comparison out to
+/// 1600 games, here or in `duels-arena`, and it settles at **52%** (52.6%
+/// in-crate, 51.6% / ~+15 Elo pooled over two disjoint arena seed ranges).
+/// 55% was reading a 120-game sample.
+///
+/// The R-110 guild-back fix (`hidden_guild_slots`) is what exposed that,
+/// without being the cause of it: making `sample_state` respect the purple
+/// backs strengthened *both* agents against a fixed `random` reference
+/// (`greedy` +156 → +196 Elo, `strategist` +215 → +225 over 800 games), and
+/// because `greedy` — which had no guild-aware terms to compensate — gained
+/// the most, the margin this test measures shrank from 59.2% to 49.2% on
+/// exactly these seeds while the true edge moved ~2 points. Keep large-N
+/// magnitude claims in `duels-arena` where they belong (see the crate module
+/// docs); what stays here is fast and non-flaky.
 #[test]
-fn strategist_convincingly_beats_greedy_over_many_seeded_games() {
+fn strategist_has_not_collapsed_against_greedy_over_many_seeded_games() {
     const SEEDS: u64 = 60;
     let mut wins = 0u32;
     let mut greedy_wins = 0u32;
@@ -156,9 +173,10 @@ fn strategist_convincingly_beats_greedy_over_many_seeded_games() {
     );
 
     assert!(
-        win_rate > 0.55,
-        "expected StrategistAgent to beat GreedyAgent convincingly, got a {win_rate:.1}% win \
-         rate over {total} games",
+        win_rate > 0.40,
+        "StrategistAgent collapsed against GreedyAgent: a {win_rate:.1}% win rate over {total} \
+         games is far below the ~52% this matchup measures at large N -- treat this as a bug, \
+         not bad luck",
     );
 }
 

@@ -8,7 +8,10 @@
 //! * the cards that could be behind those slots appear only as an unordered
 //!   pool ([`Observation::unknown_slot_pool`]), together with how many of the
 //!   face-down slots hold a guild card — public because exactly three guilds
-//!   are dealt into Age III;
+//!   are dealt into Age III — and *which* of them do
+//!   ([`Observation::hidden_guild_slots`]), public because a guild's purple
+//!   card back is distinguishable from an ordinary Age III back (R-110). One
+//!   bit per slot, guild or not: never which guild;
 //! * the composition of the not-yet-dealt age decks is absent entirely (it is
 //!   derivable from the static card list, so there is nothing to carry);
 //! * the wonders not yet offered in the draft appear only as a pool.
@@ -153,6 +156,21 @@ pub struct Observation {
     pub unknown_slot_pool: Vec<CardId>,
     /// How many face-down slots hold a guild card.
     pub hidden_guild_count: u8,
+    /// *Which* face-down slots hold a guild card, as a slot bitmask: bit `i`
+    /// is set exactly when `slots[i]` is [`SlotView::FaceDown`] and the card
+    /// behind it is a guild. Same slot indexing as [`Observation::slots`].
+    ///
+    /// This is public information, and it is not a leak: guild cards have a
+    /// distinguishable purple card back, so from the moment Age III is dealt
+    /// both players can see which face-down slots are guilds without seeing
+    /// *which* guild. Zero in Ages I and II, which contain no guilds, and
+    /// zero for every empty or face-up slot.
+    ///
+    /// [`Observation::hidden_guild_count`] is the same fact aggregated, and
+    /// is kept because it is derivable from the seen guilds alone; this field
+    /// is strictly more informative and `hidden_guild_slots.count_ones()`
+    /// equals it in any reachable position.
+    pub hidden_guild_slots: u32,
     /// The outcome, once the game is over.
     pub result: Option<GameResult>,
 }
@@ -226,6 +244,7 @@ impl GameState {
             draft_first: self.draft_first(),
             unknown_slot_pool,
             hidden_guild_count: hidden.hidden_guild_count as u8,
+            hidden_guild_slots: hidden.hidden_guild_slots,
             result: self.result(),
         }
     }
@@ -251,7 +270,9 @@ impl Observation {
     ///
     /// Used by search-based agents: play out a determinized world, repeat with
     /// fresh samples, average. The sample respects every public constraint,
-    /// including that exactly three guild cards are in the Age III structure.
+    /// including that exactly three guild cards are in the Age III structure
+    /// and that they sit in the face-down slots whose backs are purple
+    /// ([`Observation::hidden_guild_slots`]).
     ///
     /// `sample_state(rng).observation() == *self` for every sample, which is
     /// asserted as a property test.
@@ -388,6 +409,13 @@ fn pad_deck(mut cards: Vec<CardId>, age_mask: u128) -> [CardId; SLOTS] {
 /// Sample a layout for the age currently on the table: face-up slots keep
 /// their card, face-down slots get a uniformly random consistent assignment,
 /// and emptied slots are backfilled with cards already taken from this age.
+///
+/// "Consistent" includes the card backs: a face-down slot in
+/// [`Observation::hidden_guild_slots`] gets a guild and one outside it gets a
+/// non-guild, because which backs are purple is public (R-110). The pool
+/// always suffices — every hidden guild slot's card is itself an unseen guild
+/// — so the assignment is exact and `sample_state(rng).observation()`
+/// reproduces the mask it came from.
 fn current_age_deck(obs: &Observation, rng: &mut StdRng) -> [CardId; SLOTS] {
     let s = data::statics();
     let age_mask = s.age_masks[(obs.age.max(1) - 1) as usize];
@@ -407,10 +435,9 @@ fn current_age_deck(obs: &Observation, rng: &mut StdRng) -> [CardId; SLOTS] {
     guilds.shuffle(rng);
     plain.shuffle(rng);
 
-    let mut hidden_slots: Vec<usize> = (0..SLOTS)
+    let hidden_slots: Vec<usize> = (0..SLOTS)
         .filter(|&i| obs.slots[i] == SlotView::FaceDown)
         .collect();
-    hidden_slots.shuffle(rng);
 
     // Anything of this age already taken can go in the emptied slots.
     let taken_here: u128 = obs
@@ -425,8 +452,11 @@ fn current_age_deck(obs: &Observation, rng: &mut StdRng) -> [CardId; SLOTS] {
     spare.shuffle(rng);
 
     let mut assigned: Vec<Option<CardId>> = obs.slots.iter().map(SlotView::card).collect();
-    for (n, &slot) in hidden_slots.iter().enumerate() {
-        let card = if n < obs.hidden_guild_count as usize {
+    for &slot in &hidden_slots {
+        // The card back says which class this slot is; only the identity
+        // inside that class is sampled. The `or_else` arms are unreachable in
+        // a reachable position and only keep a hand-built test state usable.
+        let card = if obs.hidden_guild_slots & (1u32 << slot) != 0 {
             guilds.pop()
         } else {
             plain.pop()
@@ -547,6 +577,28 @@ mod tests {
         st
     }
 
+    /// An Age III position whose face-down slots hold at least one guild and
+    /// at least one ordinary card — i.e. one where the purple backs and the
+    /// plain backs are both on the table.
+    fn an_age_three_position_with_mixed_backs() -> GameState {
+        for seed in 0..64u64 {
+            for steps in 40..70usize {
+                let st = advanced_game(seed, steps);
+                if st.age() != 3 || st.is_over() {
+                    continue;
+                }
+                let obs = st.observation();
+                let backs: Vec<u8> =
+                    iter_slots(st.occupied_slots() & !st.revealed_slots()).collect();
+                let guilds = obs.hidden_guild_slots.count_ones() as usize;
+                if guilds > 0 && guilds < backs.len() {
+                    return st;
+                }
+            }
+        }
+        panic!("no Age III position with both a purple and a plain back was reachable");
+    }
+
     #[test]
     fn face_down_slots_carry_no_card_id() {
         let st = advanced_game(4, 12);
@@ -574,14 +626,156 @@ mod tests {
         let before = st.observation();
         let hidden: Vec<u8> = iter_slots(st.occupied_slots() & !st.revealed_slots()).collect();
         assert!(hidden.len() >= 2);
+        // Same colour class only: a guild's purple back is public (R-110), so
+        // a guild-for-plain swap is a change to public information and is
+        // covered by `the_guild_backs_are_the_only_thing_a_hidden_swap_shows`
+        // instead.
+        let (a, b) = hidden
+            .iter()
+            .enumerate()
+            .flat_map(|(n, &a)| hidden[n + 1..].iter().map(move |&b| (a, b)))
+            .find(|&(a, b)| {
+                st.slot_card_hidden(a).def().is_guild() == st.slot_card_hidden(b).def().is_guild()
+            })
+            .expect("a same-class pair of face-down slots");
         let mut permuted = st;
-        permuted.swap_slot_cards(hidden[0], hidden[1]);
+        permuted.swap_slot_cards(a, b);
         assert_ne!(
-            st.slot_card_hidden(hidden[0]),
-            permuted.slot_card_hidden(hidden[0]),
+            st.slot_card_hidden(a),
+            permuted.slot_card_hidden(a),
             "the swap should actually change the hidden layout"
         );
         assert_eq!(before, permuted.observation());
+    }
+
+    /// The sharp half of R-110: the mask says guild-or-not per slot and
+    /// nothing else. Many different concrete `GameState`s — different guild
+    /// selections, different guilds in each guild slot, different plain cards
+    /// in each plain slot — all produce the *same* `hidden_guild_slots`, and
+    /// indeed the same whole observation.
+    #[test]
+    fn the_guild_backs_are_the_only_thing_a_hidden_swap_shows() {
+        let st = an_age_three_position_with_mixed_backs();
+        let obs = st.observation();
+        let hidden: Vec<u8> = iter_slots(st.occupied_slots() & !st.revealed_slots()).collect();
+
+        // Every same-class permutation of the hidden layout is invisible.
+        for (n, &a) in hidden.iter().enumerate() {
+            for &b in &hidden[n + 1..] {
+                let same_class = st.slot_card_hidden(a).def().is_guild()
+                    == st.slot_card_hidden(b).def().is_guild();
+                let mut swapped = st;
+                swapped.swap_slot_cards(a, b);
+                let after = swapped.observation();
+                if same_class {
+                    assert_eq!(
+                        obs, after,
+                        "swapping slots {a} and {b} of the same class showed"
+                    );
+                } else {
+                    // A cross-class swap is a change to *public* state, and
+                    // the mask must track it exactly — the two bits flip and
+                    // nothing else about the observation moves.
+                    assert_eq!(
+                        after.hidden_guild_slots,
+                        obs.hidden_guild_slots ^ (1u32 << a) ^ (1u32 << b),
+                        "the mask did not follow a cross-class swap of {a} and {b}"
+                    );
+                    assert_eq!(
+                        Observation {
+                            hidden_guild_slots: obs.hidden_guild_slots,
+                            ..after
+                        },
+                        obs,
+                        "a cross-class swap changed more than the guild mask"
+                    );
+                }
+            }
+        }
+
+        // Swapping a boxed card in for a face-down one of the same class is
+        // likewise invisible, mask included.
+        let mut boxed_in = st;
+        assert!(crate::testing::swap_a_boxed_card_into_play(&mut boxed_in));
+        assert_eq!(obs, boxed_in.observation());
+    }
+
+    /// The determinization-invariance half: two different
+    /// [`Observation::sample_state`] draws of the same real observation agree
+    /// bit-for-bit on `hidden_guild_slots` (and on everything else), even
+    /// though they disagree about which card sits behind which back.
+    #[test]
+    fn hidden_guild_slots_is_invariant_across_determinizations() {
+        let mut differing_layouts = 0;
+        for seed in 0..12u64 {
+            for steps in [30usize, 45, 60, 70] {
+                let st = advanced_game(seed, steps);
+                let obs = st.observation();
+                let hidden: Vec<u8> =
+                    iter_slots(st.occupied_slots() & !st.revealed_slots()).collect();
+                let mut rng = StdRng::seed_from_u64(seed * 977 + steps as u64);
+                let a = obs.sample_state(&mut rng);
+                let b = obs.sample_state(&mut rng);
+
+                assert_eq!(
+                    a.observation().hidden_guild_slots,
+                    obs.hidden_guild_slots,
+                    "seed {seed} steps {steps}: a sample lost the guild mask"
+                );
+                assert_eq!(
+                    a.observation().hidden_guild_slots,
+                    b.observation().hidden_guild_slots,
+                    "seed {seed} steps {steps}: two samples disagree on the guild mask"
+                );
+                // ...and the mask really is only about the class: each sample
+                // puts a guild exactly where a bit is set, whatever card that
+                // happens to be.
+                for &slot in &hidden {
+                    let want = obs.hidden_guild_slots & (1u32 << slot) != 0;
+                    for s in [&a, &b] {
+                        assert_eq!(
+                            s.slot_card_hidden(slot).def().is_guild(),
+                            want,
+                            "seed {seed} steps {steps}: slot {slot} sampled the wrong class"
+                        );
+                    }
+                    if a.slot_card_hidden(slot) != b.slot_card_hidden(slot) {
+                        differing_layouts += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            differing_layouts > 20,
+            "the samples were too alike ({differing_layouts}) to prove anything"
+        );
+    }
+
+    #[test]
+    fn the_guild_mask_agrees_with_the_guild_count_and_is_a_subset_of_the_backs() {
+        for seed in 0..8u64 {
+            for steps in [0usize, 12, 30, 45, 60, 70] {
+                let st = advanced_game(seed, steps);
+                let obs = st.observation();
+                let backs = (0..SLOTS)
+                    .filter(|&i| obs.slots[i] == SlotView::FaceDown)
+                    .fold(0u32, |m, i| m | (1u32 << i));
+                let ctx = format!("seed {seed} steps {steps}");
+                assert_eq!(
+                    obs.hidden_guild_slots & !backs,
+                    0,
+                    "{ctx}: the mask names a slot that is not face down"
+                );
+                assert_eq!(
+                    obs.hidden_guild_slots.count_ones() as u8,
+                    obs.hidden_guild_count,
+                    "{ctx}: the mask and the aggregate count disagree"
+                );
+                if obs.age < 3 {
+                    assert_eq!(obs.hidden_guild_slots, 0, "{ctx}: a guild before Age III");
+                }
+            }
+        }
     }
 
     #[test]
