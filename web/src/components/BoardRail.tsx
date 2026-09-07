@@ -56,7 +56,7 @@ export default function BoardRail({
     const loot = catalog.military.loot.findIndex(([dist]) => dist === Math.abs(d));
     // A loot token at distance `dist` on the side towards the bottom player
     // is collected by the top player pushing there.
-    const pusher = d > 0 ? bottomIdx : topIdx;
+    const pusher = d > 0 ? topIdx : bottomIdx;
     const taken = loot >= 0 && d !== 0 ? observation.loot_taken[pusher][loot] : false;
     cells.push(
       <div
