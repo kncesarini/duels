@@ -1834,31 +1834,32 @@ impl Config {
     /// that matters is a different one — that a **search agent pinning this
     /// generation keeps getting the same numbers**.
     ///
-    /// `duels-agent-mcts-uct` pins `Config::v6()` as its leaf-evaluation
-    /// generation rather than `Config::default()`, precisely so a seventh
-    /// `phased` round cannot silently move a measured `mcts-uct` strength.
-    /// Its `leaf::tests::the_pinned_generation_reproduces_its_golden_values`
-    /// compares ~50 fixed positions against constants captured when the pin
-    /// was made, so a change to this generation's arithmetic fails a test
-    /// there and forces a conscious re-baseline-and-re-measure.
+    /// This generation was `duels-agent-mcts-uct`'s pinned leaf-evaluation
+    /// config while that agent's leaf value existed; that machinery has since
+    /// moved to `duels-agent-mcts-eval`, which deliberately does **not** pin —
+    /// it reads [`Config::default`] live at every tree construction, precisely
+    /// so it keeps getting stronger as later `phased` rounds land, rather than
+    /// needing a version bump to benefit from one (see that crate's docs for
+    /// why). **No agent currently pins a generation of this crate**, so there
+    /// is presently no downstream golden-values test that would catch a
+    /// silent arithmetic change here — the closest thing on record was
+    /// `mcts-uct`'s, and it no longer exists.
     ///
-    /// # The contract for the next round
+    /// # The contract for the next round, if a future consumer ever pins again
     ///
     /// The moment [`Config::default`] moves, this stops being a snapshot of
     /// anything. So a round that changes the default must, in the same PR:
-    /// add `v7()`, re-point this function's `..` at it and spell out round
+    /// add `v7()` and re-point this function's `..` at it, spelling out round
     /// seven's *off* values here (exactly as [`Config::v2`]'s comment
-    /// describes), and re-baseline `mcts-uct`'s golden values — or re-point
-    /// its pin at `v7()` and re-measure.
+    /// describes). If some future agent pins a generation the way `mcts-uct`
+    /// once did, that agent's own golden-values test is what re-baselining
+    /// means for it — this crate cannot enforce that on its behalf.
     ///
-    /// **No test in this crate can enforce that**, and it is worth being
-    /// blunt about it rather than leaving a reassuring-looking assertion in
-    /// place. Because the newest link in this chain is defined *as* the
-    /// default (`v1`-`v5` are deltas from it, not literal field values), any
-    /// same-crate check that `v6 == default` is a tautology. The enforcement
-    /// is `mcts-uct`'s golden-values test, which is downstream, in the crate
-    /// whose measured strength is what a silent change would invalidate. See
-    /// the note in
+    /// Because the newest link in this chain is defined *as* the default
+    /// (`v1`-`v5` are deltas from it, not literal field values), any
+    /// same-crate check that `v6 == default` is a tautology — this is not a
+    /// gap introduced by removing the downstream test, it was always true.
+    /// See the note in
     /// `tests::the_generation_snapshots_are_a_chain_of_distinct_configurations`.
     pub fn v6() -> Config {
         Config::default()

@@ -19,7 +19,7 @@ milestone table is too coarse to show.
 | **M2a** UI shell | React client, all screens | ✅ Done (rebuilt to the table design, PR #28) |
 | **M2b** Server + playable | axum rooms, WebSocket, `random` agent, e2e | ✅ Done |
 | **M3** Classical AIs | `greedy`, `alphabeta` | ✅ Done — plus `greedy-ev`, `strategist`, `phased` beyond original scope |
-| **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — current search champion |
+| **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — `mcts-eval` (below) has since surpassed it as the strongest agent measured |
 | **M6a** Arena skeleton | runner, paired seeds, Elo/SPRT | ✅ Done |
 | **M6b** Arena live | real agents, leaderboard, nightly workflow, `ai-candidate` gate | ✅ Done (PR #35) — nightly opens a PR that needs a manual close/reopen to trigger `gate` (deliberate: avoids adding a PAT secret, keeping ADR 0004's CI-stays-secret-free stance) |
 | **M5** RL pipeline | PyO3 bindings, self-play, ONNX, training loop, `mcts-valuenet`/`mcts-nn` | ❌ Not started — deferred; see Current work below for the bridge step happening first |
@@ -42,15 +42,24 @@ yellow-card density (#32), extra-turn wonder premium (#33). `docs/strategy-backl
 tracks the remaining unimplemented items (token-specific valuations, draft-phase menu
 coherence, and others still open).
 
-**Reusing `phased`'s evaluation inside `mcts-uct`** — the current active effort, per
-the original stated plan ("strong hand-crafted eval, then reuse it as a leaf/value
-function in MCTS, then take a stab at ML"). Sequenced as:
+**Reusing `phased`'s evaluation inside search** — per the original stated plan ("strong
+hand-crafted eval, then reuse it as a leaf/value function in MCTS, then take a stab on
+ML"). Done, then promoted further than originally scoped:
 - PR 0 — extract `phased`'s evaluation into a shared `duels-eval` crate (pure refactor). ✅ Done (#36).
 - PR 1 — `LeafValue` config in `mcts-uct` (static/truncated/blend leaf evaluation using
-  `duels-eval`, per-age temperature calibration). 🔄 In progress.
-- PR 2 (optional) — a `duels-eval`-priced rollout policy, only if PR 1 leaves appetite.
+  `duels-eval`, per-age temperature calibration), off by default. ✅ Done (#38) — the largest
+  single Elo gain measured in this project (+89 Elo pooled, 3,600 games), but shipped
+  experimental because the winning config also rescales the search's exploration constant.
+- Promoted to its own standing agent, **`mcts-eval`** (#40), rather than left as an opt-in
+  flag on `mcts-uct` — it's now the strongest agent on the leaderboard. Unlike `mcts-uct`'s
+  old pin, it tracks `duels-eval`'s live default, so it gets stronger automatically as future
+  `phased` rounds land, with no manual version bump. `mcts-uct` itself is back to exactly its
+  pre-leaf-value behavior (bit-identical, proven).
+- PR 2 (optional) — a `duels-eval`-priced rollout policy for `mcts-eval`, only if there's
+  appetite; not started.
 
 **Agent roster** — retiring `strategist` (its research question, whether `duels-strategy`'s
 prior helps `greedy-ev`, was answered: statistically indistinguishable). Approved, not yet
 executed. `random` and `greedy` are staying — `greedy` is the Elo leaderboard's anchor, and
-both serve as the easy end of the web UI's opponent picker.
+both serve as the easy end of the web UI's opponent picker. `mcts-eval` is now on the
+leaderboard's `LADDER` alongside the other seven agents.
