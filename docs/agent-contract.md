@@ -98,6 +98,7 @@ pub struct Observation {
     pub draft_first: Player,
     pub unknown_slot_pool: Vec<CardId>,     // candidates for the face-down slots
     pub hidden_guild_count: u8,             // how many face-down slots hold a guild
+    pub hidden_guild_slots: u32,            // slot bitmask: which of them do (purple backs)
     pub result: Option<GameResult>,
 }
 
@@ -124,6 +125,14 @@ pub enum SlotView {
 face-down slots (three cards of each age go back in the box unseen), so a
 hidden card can never be pinned down by elimination.
 
+`hidden_guild_slots` is public because a guild's card back is a different
+colour (R-110): in the physical game both players can see which face-down
+Age III slots are guilds from the backs alone. It carries exactly one bit per
+slot — bit `i` set iff `slots[i]` is `FaceDown` and holds a guild — and never
+narrows *which* guild, or which ordinary card sits behind a plain back. It is
+a subset of the face-down slots, `count_ones()` equals `hidden_guild_count`,
+and it is zero in Ages I and II.
+
 `set_aside_tokens` is public because it is deducible: it is the complement of
 the five tokens on the board. The only randomness those five carry is which
 three The Great Library draws, and that resolves when the wonder is built.
@@ -136,10 +145,11 @@ fn sample_state(&self, rng: &mut StdRng) -> GameState
 
 Samples the hidden information uniformly from the pools the observation
 exposes, respecting every public constraint (including that exactly three
-guild cards sit in the Age III structure), and returns a valid, playable
-`GameState`. `sample_state(rng).observation() == *self` always holds. This is
-the bridge a determinized (PIMC) or MCTS agent needs; it never reveals what
-the *actual* game is hiding.
+guild cards sit in the Age III structure, and that they sit behind the purple
+backs `hidden_guild_slots` names), and returns a valid, playable `GameState`.
+`sample_state(rng).observation() == *self` always holds. This is the bridge a
+determinized (PIMC) or MCTS agent needs; it never reveals what the *actual*
+game is hiding.
 
 ## `Action` (version 2)
 

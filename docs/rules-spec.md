@@ -140,20 +140,22 @@ the rulebook; see "Open questions" at the bottom and the M1 PR description.
 | R-096 | A tie on total points is broken on blue (civilian) points; if those are equal too the game is a genuine draw. | `scoring::tests::civilian_victory_is_decided_on_totals_then_blue_then_draw`, `a_tie_on_totals_is_broken_on_blue_points_and_otherwise_is_a_draw` |
 | R-097 | Scoring is symmetric under a seat swap: mirroring a position mirrors both breakdowns and the outcome. | `scoring_is_symmetric_under_a_seat_swap`, `a_seat_swapped_playout_mirrors_the_result` |
 
-## Hidden information and the chance API (R-100 … R-109)
+## Hidden information and the chance API (R-100 … R-119)
 
 | id | rule | tested by |
 | --- | --- | --- |
 | R-100 | `Observation` carries no card id for a face-down slot, only the pool of candidates. | `observation::tests::face_down_slots_carry_no_card_id`, `an_observation_json_never_ties_a_card_to_a_face_down_slot` |
-| R-101 | Two `GameState`s that differ only in hidden information produce **equal** `Observation`s — the operational definition of "no leak". Verified for permuting face-down cards, for changing which cards were boxed, and for permuting the not-yet-offered wonders. | `observation::tests::permuting_hidden_cards_does_not_change_the_observation`, `observation::tests::changing_which_cards_were_boxed_does_not_change_the_observation`, `observation::tests::the_undrafted_wonder_pool_hides_the_second_group`, `invariants_hold_throughout_a_game` |
+| R-101 | Two `GameState`s that differ only in hidden information produce **equal** `Observation`s — the operational definition of "no leak". Verified for permuting face-down cards **within a colour class** (a guild back is public — R-110), for changing which cards were boxed for another of the same class, and for permuting the not-yet-offered wonders. | `observation::tests::permuting_hidden_cards_does_not_change_the_observation`, `observation::tests::changing_which_cards_were_boxed_does_not_change_the_observation`, `observation::tests::the_undrafted_wonder_pool_hides_the_second_group`, `invariants_hold_throughout_a_game` |
 | R-102 | The candidate pool for the face-down slots is always strictly larger than the number of face-down slots, because three cards of the age went back in the box unseen. A hidden card can therefore never be pinned down by elimination. | `invariants_hold_throughout_a_game` |
 | R-103 | The five set-aside progress tokens are *public* information: they are the complement of the five on the board. The only randomness they carry is which three The Great Library draws. | `observation::tests::a_pending_choice_is_visible_but_the_pool_behind_it_is_not` |
 | R-104 | `Observation::sample_state` produces a valid, playable `GameState` whose observation is exactly the one it came from. | `observation::tests::sampled_states_reproduce_the_observation`, `observation::tests::sampled_states_are_playable`, `invariants_hold_throughout_a_game` |
-| R-105 | `chance_outcomes` enumerates every possible reveal with probabilities computed from public knowledge only; they sum to 1 and none is zero. | `engine::tests::chance_outcome_probabilities_sum_to_one`, `invariants_hold_throughout_a_game` |
+| R-105 | `chance_outcomes` enumerates every possible reveal with probabilities computed from public knowledge only; they sum to 1 and none is zero. It conditions on the *number* of hidden guilds (R-021) but **not** on R-110's per-slot mask, so it still offers an ordinary card for a purple-backed slot at nonzero probability — a modelling coarseness, not a leak, and deliberately left alone here because sharpening it moves every chance-node agent's measured strength (see Open questions). | `engine::tests::chance_outcome_probabilities_sum_to_one`, `invariants_hold_throughout_a_game` |
 | R-106 | `apply_with_outcome` forces the reveal and keeps the hidden layout valid, including the public constraint that exactly three guilds sit in the Age III structure. | `engine::tests::apply_with_outcome_forces_the_reveal`, `invariants_hold_throughout_a_game` |
 | R-107 | Card conservation: every card is dealt into exactly one age slot or boxed, and once taken lives in exactly one of the two cities, the discard pile, or under a wonder. | `GameState::check_invariants`, `many_full_games_terminate_and_conserve_cards`, `engine::tests::a_played_out_game_conserves_every_card` |
 | R-108 | The engine is deterministic given `(seed, actions)`: no clock, no ambient RNG, no iteration-order dependence. | `games_are_reproducible`, `tests::the_clippy_config_still_bans_nondeterminism` |
 | R-109 | All three endings are reachable. | `results_are_distributed_across_all_three_victory_kinds` |
+| R-110 | Guild cards have a distinguishable (purple) card back, so **which** face-down Age III slots hold a guild is public from the moment the structure is dealt — exposed as `Observation::hidden_guild_slots`, a slot bitmask. This is one bit per slot and no more: which *guild* sits in a purple-backed slot, and which ordinary card sits in a plain-backed one, stay hidden until the slot is revealed. Ages I and II contain no guilds, so the mask is empty there. | `observation::tests::the_guild_backs_are_the_only_thing_a_hidden_swap_shows`, `observation::tests::hidden_guild_slots_is_invariant_across_determinizations`, `observation::tests::the_guild_mask_agrees_with_the_guild_count_and_is_a_subset_of_the_backs`, `invariants_hold_throughout_a_game` |
+| R-111 | Because R-110's mask is public, `sample_state` must respect it: a determinized world puts a guild behind every purple back and an ordinary card behind every plain one, sampling only the identity within that class. | `observation::tests::hidden_guild_slots_is_invariant_across_determinizations`, `observation::tests::sampled_states_reproduce_the_observation`, `invariants_hold_throughout_a_game` |
 
 ---
 
@@ -218,3 +220,13 @@ for AI training.
    reading that "building" means a card. An independent implementation we
    cross-checked applies it to wonder shields too; we believe that is a bug
    in that implementation, but the printed card text should settle it.
+8. **R-105 vs. R-110, sharpening the chance model.** R-110 made the per-slot
+   guild back public, and `sample_state` now honours it (R-111), but
+   `chance_outcomes` and `force_outcome` still reason only from the guild
+   *count*. So a chance node uncovering a purple-backed slot still enumerates
+   ordinary cards for it, and `force_outcome` may move a guild between
+   still-hidden slots when it re-derives a layout. Neither is a leak and
+   neither can produce an illegal state; both are avoidable inaccuracies.
+   Fixing them is a behaviour change to every chance-node agent
+   (`greedy-ev`, `alphabeta`, `mcts-uct`, `mcts-eval`) and so belongs in its
+   own arena-measured PR, not in the one that added the field.

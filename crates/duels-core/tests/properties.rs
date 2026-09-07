@@ -99,7 +99,33 @@ fn check_invariants(state: &GameState, ctx: &str) {
             obs.unknown_slot_pool.len()
         );
     }
-    // Permuting hidden information must not change the observation.
+    // The guild card back (R-110) is public, and it is *all* that is public
+    // about a face-down slot's identity: the mask only ever names face-down
+    // slots, it agrees with the aggregate count, and it is empty before Age
+    // III. Whether it agrees with the actual cards is asserted by the
+    // sample_state round trip below and by the observation-equality checks.
+    let backs = (0..obs.slots.len())
+        .filter(|&i| obs.slots[i] == SlotView::FaceDown)
+        .fold(0u32, |m, i| m | (1u32 << i));
+    assert_eq!(
+        obs.hidden_guild_slots & !backs,
+        0,
+        "{ctx}: hidden_guild_slots names a slot that is not face down"
+    );
+    assert_eq!(
+        obs.hidden_guild_slots.count_ones() as u8,
+        obs.hidden_guild_count,
+        "{ctx}: hidden_guild_slots and hidden_guild_count disagree"
+    );
+    if obs.age < 3 {
+        assert_eq!(
+            obs.hidden_guild_slots, 0,
+            "{ctx}: a guild back before Age III"
+        );
+    }
+
+    // Permuting hidden information must not change the observation. The
+    // helper swaps within a colour class, because a guild back is public.
     let mut permuted = *state;
     if swap_two_hidden_cards(&mut permuted) {
         assert_eq!(

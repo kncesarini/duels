@@ -252,13 +252,32 @@ export default function CardFace({
   );
 }
 
-/** The face-down back: the age glyph and nothing else, because that is all
- * either player is entitled to know. */
-export function CardBack({ age, style, inline }: { age: number; style?: CSSProperties; inline?: boolean }) {
+/** The face-down back: the age glyph, and - for a guild - the fact that this
+ * back is purple. That really is all either player is entitled to know: a
+ * guild card back is visually distinct in the physical game, so which
+ * face-down Age III slots hold a guild is public information (R-110), while
+ * *which* guild stays hidden until the slot is revealed. */
+export function CardBack({
+  age,
+  style,
+  inline,
+  isGuild,
+}: {
+  age: number;
+  style?: CSSProperties;
+  inline?: boolean;
+  /** This slot's back is purple: it holds one of the three guilds. */
+  isGuild?: boolean;
+}) {
   return (
-    <div className={`card back ${inline ? "static" : ""}`} style={style} role="img" aria-label={`Face-down age ${age} card`}>
+    <div
+      className={`card back ${isGuild ? "guild" : ""} ${inline ? "static" : ""}`}
+      style={style}
+      role="img"
+      aria-label={isGuild ? `Face-down age ${age} guild card` : `Face-down age ${age} card`}
+    >
       <div className="age">{["", "I", "II", "III"][age] ?? age}</div>
-      <div className="q">face down</div>
+      <div className="q">{isGuild ? "guild" : "face down"}</div>
     </div>
   );
 }

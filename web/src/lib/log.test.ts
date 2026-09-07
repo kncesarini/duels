@@ -78,6 +78,7 @@ function observation(over: Partial<Observation> = {}): Observation {
     draft_first: "one",
     unknown_slot_pool: [],
     hidden_guild_count: 0,
+    hidden_guild_slots: 0,
     result: null,
     ...over,
   };

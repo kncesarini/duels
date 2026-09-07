@@ -997,6 +997,10 @@ h4.section {
 .chain-hint {
   color: var(--info);
 }
+.guild-hint {
+  color: var(--guild);
+  font-weight: 600;
+}
 
 /* ---------------------------------------------------------- card face --- */
 
@@ -1203,6 +1207,18 @@ h4.section {
   align-items: center;
   justify-content: center;
   color: var(--mute);
+}
+/* A guild's card back is purple in the physical game, so which face-down Age
+   III slots are guilds is public (R-110). Same --guild hue as the guild
+   badges, woven into the same diagonal weave as an ordinary back. */
+.card.back.guild {
+  background: repeating-linear-gradient(135deg, var(--guild) 0 6px, color-mix(in srgb, var(--guild) 78%, #000) 6px 12px);
+  border-color: color-mix(in srgb, var(--guild) 70%, #000);
+  color: #f2ecf7;
+}
+.card.back.guild .age,
+.card.back.guild .q {
+  color: #f7f2fb;
 }
 .card.back .age {
   font-family: Cinzel, serif;

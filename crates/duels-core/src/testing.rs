@@ -261,18 +261,30 @@ pub fn set_current_player(state: &mut GameState, player: Player) {
 /// Swap the cards behind two face-down slots, changing hidden information
 /// without changing anything public.
 ///
-/// Returns `false` if there were fewer than two face-down slots to swap.
+/// The two slots are always of the **same colour class** — guild with guild,
+/// non-guild with non-guild. A guild's purple card back is visible even face
+/// down (R-110), so trading a guild for a non-guild would change public
+/// information, not hidden information, and asserting the observation was
+/// unchanged across such a swap would be asserting the wrong thing.
+///
+/// Returns `false` if there is no same-class pair of face-down slots to swap.
 /// Used to assert that [`crate::Observation`] does not depend on hidden
 /// state: the observation before and after must be equal. This mutates but
 /// never reveals, so it is safe to expose outside the crate.
 pub fn swap_two_hidden_cards(state: &mut GameState) -> bool {
     let hidden: Vec<u8> =
         crate::state::iter_slots(state.occupied_slots() & !state.revealed_slots()).collect();
-    if hidden.len() < 2 {
-        return false;
+    for (n, &a) in hidden.iter().enumerate() {
+        for &b in hidden[n + 1..].iter().rev() {
+            if state.slot_card_hidden(a).def().is_guild()
+                == state.slot_card_hidden(b).def().is_guild()
+            {
+                state.swap_slot_cards(a, b);
+                return true;
+            }
+        }
     }
-    state.swap_slot_cards(hidden[0], hidden[hidden.len() - 1]);
-    true
+    false
 }
 
 /// Move a card that was returned to the box during setup into a face-down
