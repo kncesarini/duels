@@ -2925,6 +2925,87 @@ pub fn evaluate(state: &GameState, me: Player, root: &Root) -> f64 {
     evaluate_at(state, me, root, MAX_PENDING_DEPTH)
 }
 
+/// The maximum-likelihood temperature for an Age I position, in victory
+/// points, fitted by `examples/calibrate.rs` over 28,723 `phased` self-play
+/// positions (see that example for how to reproduce it).
+pub const WIN_PROBABILITY_TEMPERATURE_AGE_I: f64 = 47.57;
+
+/// The same fit restricted to Age II positions.
+pub const WIN_PROBABILITY_TEMPERATURE_AGE_II: f64 = 43.75;
+
+/// The same fit restricted to Age III positions, where the evaluation is
+/// nearly twice as sharp as in Age I.
+pub const WIN_PROBABILITY_TEMPERATURE_AGE_III: f64 = 25.18;
+
+/// The same fit over every position at once, kept for reference: it is what a
+/// single flat constant would have been, and the per-age spread above is why
+/// [`win_probability`] does not use it.
+pub const WIN_PROBABILITY_TEMPERATURE_OVERALL: f64 = 38.61;
+
+/// The calibrated temperature for a position in `age`.
+///
+/// Ages outside `1..=3` cannot occur — [`duels_core::GameState::age`] only
+/// ever reports one of the three — and are read as Age III, the sharpest
+/// setting, so a hypothetical fourth age could not accidentally get the
+/// flattest curve.
+#[inline]
+pub fn win_probability_temperature(age: u8) -> f64 {
+    match age {
+        1 => WIN_PROBABILITY_TEMPERATURE_AGE_I,
+        2 => WIN_PROBABILITY_TEMPERATURE_AGE_II,
+        _ => WIN_PROBABILITY_TEMPERATURE_AGE_III,
+    }
+}
+
+/// [`evaluate`]'s victory-point score for `state`, from `me`'s side, mapped
+/// onto an estimated win probability in `[0, 1]` through the age-calibrated
+/// logistic
+///
+/// ```text
+/// P(me wins) = 1 / (1 + exp(-evaluate(state, me, root) / T(state.age())))
+/// ```
+///
+/// This is the exact mapping `duels-agent-mcts-eval` uses to turn a leaf's
+/// evaluation into a value its search can back up, moved here (not
+/// duplicated) so any other consumer — a diagnostic tool, a server-side
+/// analysis endpoint, a future agent — reads the identical calibration rather
+/// than inventing a second one. `mcts-eval` reads it from here; nothing about
+/// what it computes changed when it moved.
+///
+/// Consumes no randomness and is invariant to which hidden-information sample
+/// produced `state`, exactly like [`evaluate`] itself: `state`'s only two
+/// uses are the score `evaluate` computes and the age `T` is picked from, and
+/// both are pure functions of public information — checked alongside
+/// `evaluate` itself, for every scenario in
+/// `tests/determinization_invariance.rs`, not just once.
+///
+/// # Known limitation, inherited from where this used to live
+///
+/// The temperature was fitted on positions each scored against **their own**
+/// [`Root`] (one fresh `Root` per decision, as `phased` and this function's
+/// direct callers do). A caller that instead prices every position in a
+/// search against one `Root` fixed at the tree's own root (as `mcts-eval`
+/// does, deliberately, since rebuilding one per node is unaffordable) is
+/// scoring a hybrid the fit never saw, and a deep position may be mapped
+/// slightly off. This is a known, measured characteristic of that caller, not
+/// a defect in this function — see `duels-agent-mcts-eval`'s crate docs for
+/// the full account.
+pub fn win_probability(state: &GameState, me: Player, root: &Root) -> f64 {
+    win_probability_from_value(evaluate(state, me, root), state.age())
+}
+
+/// The pure calibrated logistic underneath [`win_probability`], for a caller
+/// that already has a victory-point-scale number and an age from somewhere
+/// other than a single [`evaluate`] call — [`expected_value`]'s
+/// chance-averaged result being the motivating case (there is no single
+/// post-action `GameState` to hand [`win_probability`] when an action resolves
+/// a chance node). Split out so its fixed points, monotonicity and range are
+/// also unit-testable without a [`GameState`]/[`Root`] to drive `evaluate`
+/// through.
+pub fn win_probability_from_value(value: f64, age: u8) -> f64 {
+    1.0 / (1.0 + (-value / win_probability_temperature(age)).exp())
+}
+
 /// [`evaluate`] with the remaining pending-resolution budget explicit.
 fn evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 {
     if let Some(result) = state.result() {
@@ -4635,5 +4716,61 @@ mod tests {
             terms::wonder_power(gl).to_bits(),
             terms::wonder_power(gl).to_bits()
         );
+    }
+
+    // `win_probability`'s calibration: moved here from `duels-agent-mcts-eval`
+    // (which was the only caller until this function existed), not
+    // duplicated — these two tests used to live there.
+
+    #[test]
+    fn the_temperature_lookup_is_the_calibrated_table() {
+        assert_eq!(
+            win_probability_temperature(1).to_bits(),
+            WIN_PROBABILITY_TEMPERATURE_AGE_I.to_bits()
+        );
+        assert_eq!(
+            win_probability_temperature(2).to_bits(),
+            WIN_PROBABILITY_TEMPERATURE_AGE_II.to_bits()
+        );
+        assert_eq!(
+            win_probability_temperature(3).to_bits(),
+            WIN_PROBABILITY_TEMPERATURE_AGE_III.to_bits()
+        );
+        // Age III is the sharpest of the three, which is the finding the
+        // per-age lookup exists for.
+        assert!(win_probability_temperature(3) < win_probability_temperature(2));
+        assert!(win_probability_temperature(2) < win_probability_temperature(1));
+        // A flat constant would have been the overall fit, and it is bracketed
+        // by the per-age ones.
+        assert!(win_probability_temperature(3) < WIN_PROBABILITY_TEMPERATURE_OVERALL);
+        assert!(WIN_PROBABILITY_TEMPERATURE_OVERALL < win_probability_temperature(1));
+    }
+
+    /// The mapping's three fixed points, plus its monotonicity and its range.
+    #[test]
+    fn the_sigmoid_maps_victory_points_onto_a_probability() {
+        for age in 1..=3u8 {
+            assert_eq!(win_probability_from_value(0.0, age), 0.5, "age {age}");
+            let t = win_probability_temperature(age);
+            // One temperature of advantage is the 73% point, by construction.
+            let at_t = win_probability_from_value(t, age);
+            assert!((at_t - 0.731_058_6).abs() < 1e-6, "age {age}: {at_t}");
+            // Symmetric about a half, and monotone.
+            assert!(
+                (win_probability_from_value(t, age) + win_probability_from_value(-t, age) - 1.0)
+                    .abs()
+                    < 1e-12
+            );
+            let mut last = 0.0;
+            for v in [-200.0, -50.0, -5.0, 0.0, 5.0, 50.0, 200.0] {
+                let p = win_probability_from_value(v, age);
+                assert!(p > last, "age {age}: not monotone at {v}");
+                assert!((0.0..=1.0).contains(&p));
+                last = p;
+            }
+        }
+        // The same score is worth more in Age III, where the evaluation is
+        // sharper.
+        assert!(win_probability_from_value(10.0, 3) > win_probability_from_value(10.0, 1));
     }
 }
