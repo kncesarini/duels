@@ -634,6 +634,100 @@ pub fn second_copy_obtainable(state: &GameState, symbol: data::Science) -> bool 
         .any(|c| gone & (1u128 << c.index()) == 0 && c.def().age >= age)
 }
 
+/// Distinct scientific symbols that end the game outright.
+///
+/// `duels-core` checks `distinct_science() >= 6` inline in
+/// `GameState::check_instant_wins` and exports no constant for it, so this is
+/// the one place the number is written down on this side of the boundary.
+/// `v6_identity::six_distinct_symbols_is_still_what_wins_the_game` builds a
+/// city holding exactly `SYMBOLS_TO_WIN - 1` of them and asserts the engine
+/// has *not* ended the game, so the copy is pinned against the rules rather
+/// than trusted.
+pub const SYMBOLS_TO_WIN: u8 = 6;
+
+/// How many distinct scientific symbols `p` could still end the game holding:
+/// the ones they already have, plus the ones they do not have and can still
+/// get.
+///
+/// A symbol is still gettable if some card printing it is neither in a city,
+/// nor under a wonder, nor in the discard pile, and belongs to the current age
+/// or a later one — the same public-information test
+/// [`second_copy_obtainable`] applies to the *second* copy, with the same
+/// deliberate optimism about the three cards each age returns to the box
+/// unseen. Balance is the exception: no card carries it, so it is gettable
+/// exactly while the Law token is still unclaimed on the board.
+///
+/// # Why the evaluation needs this
+///
+/// [`science_ladder`]'s rung is steeply convex — 6, 12, 18 victory points at
+/// three, four and five distinct symbols — and the convexity exists for one
+/// reason: six symbols win the game. Until round seven the rung was collected
+/// whether or not a sixth symbol was still *in* the game, so a player sitting
+/// on four symbols whose two missing ones were both buried in the opponent's
+/// city was credited twelve points for a race that could not be run. That is
+/// most of why the whole ladder measured over-priced; see
+/// [`crate::ScienceWeights::dead_race_scale`].
+pub fn supremacy_reachable(state: &GameState, p: Player) -> u8 {
+    let mut n = 0u8;
+    walk_symbols(state, p, |reachable| {
+        if reachable {
+            n += 1;
+        }
+        true
+    });
+    n
+}
+
+/// Whether `p` can still assemble [`SYMBOLS_TO_WIN`] distinct symbols — the
+/// predicate [`science_ladder`]'s gate actually needs.
+///
+/// The same walk as [`supremacy_reachable`] and a strict subset of its work:
+/// there are seven symbols and six win the game, so the walk can stop at the
+/// *second* unreachable one. Worth having separately because `evaluate` is a
+/// leaf value that a search calls tens of thousands of times a decision (see
+/// `examples/eval_bench.rs`), and the honest count is only wanted by the tests
+/// and the diagnostics.
+pub fn supremacy_live(state: &GameState, p: Player) -> bool {
+    let budget = duels_strategy::masks::ALL_SCIENCE.len() as u8 - SYMBOLS_TO_WIN;
+    let mut missing = 0u8;
+    walk_symbols(state, p, |reachable| {
+        if !reachable {
+            missing += 1;
+        }
+        missing <= budget
+    });
+    missing <= budget
+}
+
+/// The shared walk behind [`supremacy_reachable`] and [`supremacy_live`]:
+/// call `f` with whether each symbol is still gettable by `p`, stopping early
+/// when `f` returns false.
+fn walk_symbols(state: &GameState, p: Player, mut f: impl FnMut(bool) -> bool) {
+    let m = masks();
+    let held = state.player(p).science();
+    let gone = state.player(Player::One).built_mask()
+        | state.player(Player::Two).built_mask()
+        | state.wonder_fodder_mask()
+        | state.discard_mask();
+    let age = state.age().max(1);
+    for sym in duels_strategy::masks::ALL_SCIENCE {
+        let reachable = if held[sym.index()] > 0 {
+            true
+        } else if Some(sym) == m.law_symbol() {
+            // Balance is printed on no card at all: the Law token is the only
+            // source, so it is reachable exactly while the token is unclaimed.
+            m.law_token()
+                .is_some_and(|law| state.board_tokens().any(|t| t == law))
+        } else {
+            iter_cards(m.symbol_mask(sym))
+                .any(|c| gone & (1u128 << c.index()) == 0 && c.def().age >= age)
+        };
+        if !f(reachable) {
+            return;
+        }
+    }
+}
+
 /// How many of the three progress tokens that a science player most wants —
 /// Law (a seventh symbol), Theology (an extra turn per wonder) and Strategy
 /// (a shield per red card) — are still on the board to be claimed.
@@ -699,10 +793,30 @@ fn pair_threat(state: &GameState, p: Player, w: &ScienceWeights) -> f64 {
 ///
 /// Six distinct symbols wins outright and is handled by the terminal check,
 /// so the ladder's last entry is five.
+///
+/// # The rung is gated on the race being reachable
+///
+/// The rung — and only the rung — is multiplied by
+/// [`ScienceWeights::dead_race_scale`] once [`supremacy_live`] says `p`
+/// can no longer assemble [`SYMBOLS_TO_WIN`] distinct symbols. `pair_threat`
+/// is deliberately outside the gate: a half-pair is a progress token whether
+/// or not supremacy is live, and that value does not go away with the race.
 pub fn science_ladder(state: &GameState, p: Player, w: &ScienceWeights) -> f64 {
     let distinct = usize::from(state.player(p).distinct_science()).min(w.ladder.len() - 1);
     let token_mult = 1.0 + w.strong_token_mult * strong_board_tokens(state);
-    w.ladder[distinct] * token_mult + w.pair_threat_weight * pair_threat(state, p, w)
+    // Guarded rather than multiplied by a `1.0` the caller may have set, so
+    // `dead_race_scale = 1.0` is an exact no-op and `Config::v6` reproduces the
+    // round-six arithmetic bit for bit.
+    let mut rung = w.ladder[distinct] * token_mult;
+    // `rung == 0.0` short-circuits the reachability walk, which is the whole
+    // of this term's added cost: a player holding no symbols at all sits on
+    // the ladder's zero rung, so whether the race is alive cannot change their
+    // score. `evaluate` is a search's leaf value, so a branch that skips a
+    // seven-symbol walk on a common case is worth taking (`eval_bench.rs`).
+    if rung != 0.0 && w.dead_race_scale != 1.0 && !supremacy_live(state, p) {
+        rung *= w.dead_race_scale;
+    }
+    rung + w.pair_threat_weight * pair_threat(state, p, w)
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,6 +1515,21 @@ pub fn count_target_index(target: CountTarget) -> usize {
     }
 }
 
+/// What `p`'s own city currently counts for every [`CountTarget`], in
+/// [`count_target_index`] order.
+///
+/// The per-player companion to [`GuildTable`]'s two-sided `max`: a guild pays
+/// its owner on the *higher* of the two cities, but the five count-scaled
+/// commercial cards ([`crate::CountPricing`]) pay their builder on their own
+/// city alone, so they need this rather than that.
+///
+/// Straight off [`duels_core::state::PlayerState::count`], which is the rules
+/// authority for what each target means, so nothing here re-implements a count.
+pub fn own_count_table(state: &GameState, p: Player) -> [f64; NUM_COUNT_TARGETS] {
+    let me = state.player(p);
+    all_count_targets().map(|t| f64::from(me.count(t)))
+}
+
 /// Every [`CountTarget`], in index order — the inverse of
 /// [`count_target_index`].
 fn all_count_targets() -> [CountTarget; NUM_COUNT_TARGETS] {
@@ -1620,6 +1749,226 @@ pub fn yellow_equity(state: &GameState, p: Player, coin_marginal: f64, rate: f64
         return 0.0;
     }
     coin_marginal * yellows * rate * decisions_left(state, p)
+}
+
+// ---------------------------------------------------------------------------
+// Tempo
+// ---------------------------------------------------------------------------
+
+/// Whether `p` is the player **to move** in this position.
+///
+/// # Why a value function needs this, and how it is also the extra-turn credit
+///
+/// Two facts about this game make "whose turn is it" a real component of a
+/// position's value rather than bookkeeping. First, `CLAUDE.md`'s own learned
+/// priors record a first-player advantage of about 67/33 between equally
+/// strong `mcts-uct` configurations — the right to move is worth a great deal.
+/// Second, an extra turn is the one thing that re-assigns every remaining slot
+/// (`docs/strategy-backlog.md` §0.3), and round six measured about +47 Elo for
+/// a single constant that priced play-again wonders while they were still
+/// unbuilt.
+///
+/// Nothing in this evaluation priced either. The score of a position was
+/// symmetric in whose move it was, except for the menu term's sign and the
+/// one-decision parity inside [`decisions_left`].
+///
+/// The same term is the **extra-turn credit round six did not have**, for a
+/// reason worth writing down because it is easy to get wrong. A banked extra
+/// turn is *not* observable from a decision position:
+/// `duels_core::engine::finish_turn` consumes the flag the instant it would
+/// matter — it clears `GameState::extra_turn` and leaves `current_player`
+/// alone — so a term reading `state.extra_turn()` is exactly zero at every
+/// position any agent or search ever scores (measured, not assumed: an
+/// `examples/leaf_probe.rs` sweep of such a term over fifty thousand real
+/// positions moved the likelihood by not one bit). What the extra turn leaves
+/// behind is precisely `current_player == the player who just moved`, which is
+/// what this reads. So on a post-action state the term fires for the mover
+/// **exactly when their move earned them another turn**, and a candidate that
+/// takes an extra turn is credited for it as a fact instead of a projection.
+///
+/// The [`duels_core::state::Phase::Turn`] guard keeps the term out of the
+/// wonder draft and the start-of-age first-player choice, where
+/// `current_player` is answering a different question.
+pub fn to_move(state: &GameState, p: Player) -> f64 {
+    if state.phase() == Phase::Turn && state.current_player() == p {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Owned progress tokens
+// ---------------------------------------------------------------------------
+
+/// The chance that a chain a player has *started* is one they will actually
+/// close, for [`TokenTable`]'s Urbanism channel. A flat constant, exactly like
+/// [`crate::menu::ChainTable`]'s `CHAIN_MINE_SHARE` and
+/// [`crate::DESTROY_REPLACE_SHARE`], and flagged as one for the same reason:
+/// the honest version reads whether the successor is still in the game, which
+/// [`crate::menu::ChainTable`] already knows and this channel does not consult.
+pub const CHAIN_CLOSE_SHARE: f64 = 0.5;
+
+/// What each progress token is worth to each player **for the rest of the
+/// game**, beyond the printed victory points
+/// [`duels_core::scoring::breakdown`] already scores.
+///
+/// # The gap this closes
+///
+/// Of the ten progress tokens, four are pure scoring — Agriculture,
+/// Philosophy, Mathematics and (through the science ladder) Law — and this
+/// evaluation prices all four correctly: their points arrive in
+/// `breakdown.progress_tokens`, their coins arrive in the coin pile, and Law's
+/// symbol arrives in [`science_ladder`]. The other six are *rules changes* that
+/// pay out over the remaining game, and this evaluation priced **none** of
+/// them:
+///
+/// ```text
+/// Theology      an extra turn per wonder built from now on
+/// Economy       the opponent's trade payments become this player's income
+/// Strategy      one extra shield per red card built from now on
+/// Architecture  two resource units off every wonder built from now on
+/// Masonry       two resource units off every blue card built from now on
+/// Urbanism      four coins per chain build from now on
+/// ```
+///
+/// The consequence is not only a mis-scored position. Under
+/// [`crate::PendingModel::Completed`] the evaluation is what *chooses* the
+/// token when a science pair completes, taking whichever option scores best —
+/// so a Theology that reads as worth exactly zero was a token this agent would
+/// never pick unless nothing else was on the board.
+///
+/// # Every channel is a quantity the evaluation already computes
+///
+/// Nothing here is a fresh constant. Each channel multiplies an existing price
+/// by an existing forward count:
+///
+/// ```text
+/// theology     = wonder_extra_turn_premium · U_q · p_build(q)
+/// strategy     = Δ(1 shield) · ρ_red · take_rate · decisions_left(q)
+/// economy      = B(opp) · coin_marginal_q
+/// architecture = 2 · pricē_q · p_build(q) · U_q
+/// masonry      = 2 · pricē_q · ρ_blue · take_rate · decisions_left(q)
+/// urbanism     = chain_build_coins · coin_marginal_q · starters_held(q) · share
+/// ```
+///
+/// `Δ(1 shield)` is [`crate::menu::TakeValue::shield_delta`], the same finite
+/// difference the menu prices a red card's shields with. `B(opp)` is
+/// [`resource_bill`] — literally the coins the opponent expects to hand over
+/// in trade, which under Economy is what this player expects to receive, so
+/// the token's value and the term that already penalises the opponent for
+/// their bill are the *same* number read from the two ends. `ρ` is
+/// [`DevSupply::kind_fraction`], `p_build` is [`wonder_p_build`], `pricē_q` is
+/// the mean trade price this player faces, and `U_q` is
+/// [`unbuilt_wonders`].
+///
+/// **Root-fixed**, like every other price in this crate: the forward counts
+/// come from the root position and do not move with a candidate action. What
+/// *does* move with the action is which tokens a player owns, which
+/// [`token_equity`] reads on the post-action state — and which is the whole
+/// point, since the pending resolution is where a token is chosen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TokenTable {
+    /// `price[player index][token index]`, in victory points.
+    price: [[f64; data::NUM_TOKENS]; 2],
+}
+
+impl TokenTable {
+    /// An all-zero table, for when the term is switched off. Never read.
+    pub fn empty() -> TokenTable {
+        TokenTable {
+            price: [[0.0; data::NUM_TOKENS]; 2],
+        }
+    }
+
+    /// Price every token for both players off the root position.
+    ///
+    /// `shield_delta_1` is each player's value for one more shield and
+    /// `coin_marginal` each player's value for one more coin, both taken from
+    /// the [`crate::menu::TakeValue`] the root has already built rather than
+    /// recomputed, so the menu and this table cannot disagree.
+    pub fn of(
+        state: &GameState,
+        supply: &DevSupply,
+        chain_starters: u128,
+        shield_delta_1: [f64; 2],
+        coin_marginal: [f64; 2],
+        e: &EvalWeights,
+    ) -> TokenTable {
+        let mut price = [[0.0f64; data::NUM_TOKENS]; 2];
+        for q in Player::ALL {
+            let i = q.index();
+            let decisions = decisions_left(state, q);
+            let takes = e.development_take_rate * decisions;
+            let p_build = wonder_p_build(state, q, e);
+            let unbuilt = unbuilt_wonders(state, q);
+            let wonder_builds = unbuilt * p_build;
+            let red_builds = supply.kind_fraction(CardType::Military) * takes;
+            let blue_builds = supply.kind_fraction(CardType::Civilian) * takes;
+            // What a resource unit the rebate covers is worth: the mean price
+            // this city faces, which is what it would otherwise have paid.
+            let mean_price = average_trade_price(state, q);
+            let opp_bill = resource_bill(state, q.other(), supply, e.development_take_rate);
+            let starters_held =
+                f64::from((chain_starters & state.player(q).built_mask()).count_ones());
+            for t in TokenId::all() {
+                let def = t.def();
+                let mut v = 0.0;
+                if def.wonder_play_again {
+                    v += e.wonder_extra_turn_premium * wonder_builds;
+                }
+                if def.shield_bonus {
+                    v += shield_delta_1[i] * red_builds;
+                }
+                if def.gain_trade_costs {
+                    v += opp_bill * coin_marginal[i];
+                }
+                match def.discount {
+                    Some(data::DiscountTarget::Wonders) => {
+                        v += REBATE_UNITS * mean_price * coin_marginal[i] * wonder_builds;
+                    }
+                    Some(data::DiscountTarget::CivilianBuildings) => {
+                        v += REBATE_UNITS * mean_price * coin_marginal[i] * blue_builds;
+                    }
+                    None => {}
+                }
+                if def.chain_build_coins > 0 {
+                    v += f64::from(def.chain_build_coins)
+                        * coin_marginal[i]
+                        * starters_held
+                        * CHAIN_CLOSE_SHARE;
+                }
+                price[i][t.index()] = v;
+            }
+        }
+        TokenTable { price }
+    }
+
+    /// What `token` is worth to `p` for the rest of the game.
+    #[inline]
+    pub fn value(&self, p: Player, token: TokenId) -> f64 {
+        self.price[p.index()][token.index()]
+    }
+}
+
+/// How many resource units an Architecture / Masonry rebate covers, from
+/// `data/tokens.json` via [`duels_core::data::ProgressToken::discount`] — the
+/// rule is "two units, owner's choice", and
+/// `v6_identity::the_rebate_is_still_two_units_wide` pins the number against
+/// the cost engine rather than against this comment.
+pub const REBATE_UNITS: f64 = 2.0;
+
+/// `token_equity(p)`: the forward value of the progress tokens `p` owns.
+///
+/// The per-token prices are root-fixed ([`TokenTable`]); which tokens are owned
+/// is read here, on the post-action state, because that is the part a candidate
+/// action changes.
+pub fn token_equity(state: &GameState, p: Player, table: &TokenTable) -> f64 {
+    state
+        .player(p)
+        .tokens()
+        .map(|t| table.value(p, t))
+        .sum::<f64>()
 }
 
 /// Cash on hand, capped: what it takes to actually *pay* for the race card
@@ -2137,6 +2486,40 @@ mod tests {
                 def.id
             );
         }
+    }
+
+    /// The five cards [`crate::CountPricing`] exists for, asserted off the card
+    /// data rather than from memory: they print **no coins at all** and pay
+    /// through `coins_per_own` instead, which is exactly why
+    /// [`crate::menu::TakeValue::free_value`] — which starts a card's value
+    /// from `def.coins` — could not see them.
+    #[test]
+    fn the_count_scaled_commercial_cards_print_no_coins() {
+        let mut found = 0;
+        for card in data::CardId::all() {
+            let def = card.def();
+            let Some((_, per)) = def.coins_per_own else {
+                continue;
+            };
+            found += 1;
+            assert_eq!(
+                def.kind,
+                CardType::Commercial,
+                "{} is not a commercial card",
+                def.id
+            );
+            assert_eq!(def.age, 3, "{} is not an Age III card", def.id);
+            assert_eq!(
+                def.coins, 0,
+                "{} prints coins, so the menu was not blind to it",
+                def.id
+            );
+            assert!(per > 0, "{} pays nothing per unit", def.id);
+        }
+        assert_eq!(
+            found, 5,
+            "the base game prints five count-scaled commercial cards"
+        );
     }
 
     /// The category each of the seven keys off, and what its printed cost

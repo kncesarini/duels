@@ -33,9 +33,9 @@ use duels_core::observation::Observation;
 use duels_core::testing::{swap_a_boxed_card_into_play, swap_two_hidden_cards, StateBuilder};
 use duels_core::{engine, Action, GameState, Player};
 use duels_eval::{
-    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, EconomyModel, EvalWeights,
-    GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel, RailModel, Root,
-    SupplyModel, WonderModel,
+    evaluate, expected_value, rail_owner, Blend, CoinModel, Config, CountPricing, EconomyModel,
+    EvalWeights, GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel, PendingModel,
+    RailModel, Root, ScienceWeights, SupplyModel, WonderModel,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -387,6 +387,34 @@ fn the_property_holds_under_every_model_combination() {
             });
         }
     }
+    // Round seven's options. The dead-race gate walks every symbol's cards
+    // against the discard pile, both cities and the wonder-fodder pile; the
+    // owned-token table reads the discard pile through `resource_bill`, both
+    // players' wonder holdings and the chain-starter mask; the count-priced
+    // menu reads the taker's own city counts; and `to_move` reads the phase and
+    // `current_player`, which on an age-ending action is exactly the thing the
+    // throwaway sample decides. All four are switched on together and at
+    // magnitudes well past their swept peaks, because "no configuration leaks"
+    // is the property.
+    for count_pricing in [CountPricing::Unpriced, CountPricing::Counted] {
+        for dead_race_scale in [0.0, 0.25, 1.0] {
+            configs.push(Config {
+                count_pricing,
+                eval: EvalWeights {
+                    token_equity: 2.0,
+                    to_move: 12.0,
+                    value_scale: 2.5,
+                    science: ScienceWeights {
+                        dead_race_scale,
+                        ..Config::default().eval.science
+                    },
+                    ..Config::default().eval
+                },
+                ..Config::default()
+            });
+        }
+    }
+    configs.push(Config::v6());
     for (i, config) in configs.iter().enumerate() {
         for seed in 0..6u64 {
             for &steps in &[7usize, 17, 29, 43] {
@@ -684,6 +712,23 @@ fn round_four_configs() -> Vec<Config> {
             },
             ..Config::default()
         },
+        // Round seven, everything on at once, through the pending-effect path:
+        // that is where a progress token is actually *chosen*, and so where the
+        // owned-token table has to be provably blind to which world the sample
+        // invented. `to_move` is here for the age-ending case, where
+        // `current_player` is decided by the deal the sample makes up.
+        Config {
+            pending_model: PendingModel::Completed,
+            count_pricing: CountPricing::Counted,
+            eval: EvalWeights {
+                token_equity: 2.0,
+                to_move: 12.0,
+                value_scale: 2.5,
+                ..Config::default().eval
+            },
+            ..Config::default()
+        },
+        Config::v6(),
     ]
 }
 

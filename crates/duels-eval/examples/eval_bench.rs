@@ -173,6 +173,24 @@ fn main() {
         Row::new("v3 (the round-three evaluation)", Config::v3()),
         Row::new("v4 (the round-four evaluation)", Config::v4()),
         Row::new("v5 (the round-five evaluation)", Config::v5()),
+        Row::new("v6 (the round-six evaluation)", Config::v6()),
+        Row::new(
+            "default + owned-token equity",
+            Config {
+                eval: duels_eval::EvalWeights {
+                    token_equity: 1.0,
+                    ..Config::default().eval
+                },
+                ..Config::default()
+            },
+        ),
+        Row::new(
+            "default + count-priced menu",
+            Config {
+                count_pricing: duels_eval::CountPricing::Counted,
+                ..Config::default()
+            },
+        ),
     ];
 
     for seed in 0..games {
