@@ -1461,7 +1461,7 @@ pub struct EvalWeights {
     /// the pre-existing uniform treatment, bit for bit
     /// (`tests/v5_identity.rs`).
     ///
-    /// Kristian's read is that an extra turn is the most valuable thing a
+    /// The project owner's read is that an extra turn is the most valuable thing a
     /// wonder can print, and the flat model prices it exactly like a destroy
     /// or a free discard build. This is the one knob that tests that read,
     /// isolated from [`WonderModel::Budget`]'s other channels — which were
@@ -1816,10 +1816,52 @@ impl Config {
         Config {
             eval: EvalWeights {
                 wonder_extra_turn_premium: 0.0,
-                ..Config::default().eval
+                ..Config::v6().eval
             },
-            ..Config::default()
+            ..Config::v6()
         }
+    }
+
+    /// The configuration the *sixth* round of work shipped with, which is also
+    /// today's [`Config::default`].
+    ///
+    /// # Why a snapshot with no `#[cfg(test)]` copy behind it
+    ///
+    /// `v1()`-`v5()` each exist so a *later* round can be measured against an
+    /// *earlier* one in a single binary, and each has a `tests/vN_identity.rs`
+    /// holding a verbatim copy of the code it snapshots. There is nothing to
+    /// copy here: this generation *is* the current arithmetic, so the identity
+    /// that matters is a different one — that a **search agent pinning this
+    /// generation keeps getting the same numbers**.
+    ///
+    /// `duels-agent-mcts-uct` pins `Config::v6()` as its leaf-evaluation
+    /// generation rather than `Config::default()`, precisely so a seventh
+    /// `phased` round cannot silently move a measured `mcts-uct` strength.
+    /// Its `leaf::tests::the_pinned_generation_reproduces_its_golden_values`
+    /// compares ~50 fixed positions against constants captured when the pin
+    /// was made, so a change to this generation's arithmetic fails a test
+    /// there and forces a conscious re-baseline-and-re-measure.
+    ///
+    /// # The contract for the next round
+    ///
+    /// The moment [`Config::default`] moves, this stops being a snapshot of
+    /// anything. So a round that changes the default must, in the same PR:
+    /// add `v7()`, re-point this function's `..` at it and spell out round
+    /// seven's *off* values here (exactly as [`Config::v2`]'s comment
+    /// describes), and re-baseline `mcts-uct`'s golden values — or re-point
+    /// its pin at `v7()` and re-measure.
+    ///
+    /// **No test in this crate can enforce that**, and it is worth being
+    /// blunt about it rather than leaving a reassuring-looking assertion in
+    /// place. Because the newest link in this chain is defined *as* the
+    /// default (`v1`-`v5` are deltas from it, not literal field values), any
+    /// same-crate check that `v6 == default` is a tautology. The enforcement
+    /// is `mcts-uct`'s golden-values test, which is downstream, in the crate
+    /// whose measured strength is what a silent change would invalidate. See
+    /// the note in
+    /// `tests::the_generation_snapshots_are_a_chain_of_distinct_configurations`.
+    pub fn v6() -> Config {
+        Config::default()
     }
 }
 
@@ -3454,6 +3496,45 @@ mod tests {
             "Age I lock-in is {}",
             early.production_lock_in
         );
+    }
+
+    /// The version snapshots are a chain, and every link has to be a distinct
+    /// configuration: a snapshot that equals its successor names a round that
+    /// changed nothing, and one that equals [`Config::default`] while *not*
+    /// being the newest link is a snapshot that has silently drifted.
+    ///
+    /// [`Config::v6`] is the newest link and is deliberately today's default;
+    /// see its documentation for what the next round owes this chain.
+    #[test]
+    fn the_generation_snapshots_are_a_chain_of_distinct_configurations() {
+        let chain = [
+            ("v1", Config::v1()),
+            ("v2", Config::v2()),
+            ("v3", Config::v3()),
+            ("v4", Config::v4()),
+            ("v5", Config::v5()),
+            ("v6", Config::v6()),
+        ];
+        for (i, (name, cfg)) in chain.iter().enumerate() {
+            for (later, other) in chain.iter().skip(i + 1) {
+                assert_ne!(cfg, other, "{name} and {later} are the same configuration");
+            }
+        }
+        // Deliberately *not* `assert_eq!(Config::v6(), Config::default())`.
+        // `v6` is defined as `Config::default()`, so that assertion is a
+        // tautology: it cannot fail, and reading it as a guard against a
+        // seventh round silently redefining this generation would be a
+        // mistake. Nothing in this crate can catch that, because the newest
+        // snapshot in this chain is *by construction* whatever the default
+        // is (`v1`-`v5` are deltas from it, not literals).
+        //
+        // The guard that does work lives with the consumer that has something
+        // to lose: `duels-agent-mcts-uct`'s
+        // `leaf::tests::the_pinned_generation_reproduces_its_golden_values`
+        // holds ~50 evaluations captured from `v6()` at the moment its search
+        // was measured against it. Move the default and those constants stop
+        // reproducing, which is a failing test and a forced re-measure. See
+        // [`Config::v6`]'s "contract for the next round".
     }
 
     // `spec_reports_the_expected_name_and_encoded_params`,

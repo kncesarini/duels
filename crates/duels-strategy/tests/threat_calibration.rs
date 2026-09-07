@@ -156,7 +156,7 @@ fn the_law_token_on_the_board_plus_a_live_half_pair_lifts_the_same_race() {
 
 #[test]
 fn age_one_and_age_two_are_equally_threatening_at_the_same_symbol_count() {
-    // Kristian's call, pinned as a regression: holding four symbols earlier is
+    // The project owner's call, pinned as a regression: holding four symbols earlier is
     // *not* a bigger threat at the same count. Age I's extra practical value
     // is progress-token leverage — more turns in which to use the tokens a
     // pair claims — and that lives in the pair / token term, not in `M`.

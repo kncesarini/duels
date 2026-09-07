@@ -10,6 +10,10 @@ description = "Monte Carlo Tree Search (UCT) with explicit chance nodes over the
 duels-core = { path = "../../duels-core" }
 duels-agents-api = { path = "../../duels-agents-api" }
 duels-strategy = { path = "../../duels-strategy" }
+# The shared hand-crafted evaluation, used as an optional leaf value (see
+# `Config::leaf`). A library below the agents, not another agent crate — see
+# "the layering" in CLAUDE.md.
+duels-eval = { path = "../../duels-eval" }
 rand = { workspace = true }
 
 [dev-dependencies]

@@ -57,6 +57,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 
 use crate::chance;
+use crate::leaf::{self, LeafValue};
 use crate::rollout::{self, RaceWeights, RolloutWeights};
 
 /// Index into [`Tree::nodes`].
@@ -173,6 +174,23 @@ pub struct Config {
     /// [`PriorMode::None`] is bit-for-bit the behaviour this crate had before
     /// the option existed.
     pub prior: PriorMode,
+    /// What a freshly added leaf is worth. [`LeafValue::Rollout`] is
+    /// bit-for-bit the behaviour this crate had before the option existed,
+    /// and is the only setting that builds no [`duels_eval::Root`] at all.
+    pub leaf: LeafValue,
+    /// **Which generation of [`duels_eval`]'s evaluation** a non-`Rollout`
+    /// [`Config::leaf`] scores against.
+    ///
+    /// Deliberately pinned to the frozen snapshot [`duels_eval::Config::v6`]
+    /// rather than tracking `duels_eval::Config::default()`: `duels-eval` is a
+    /// shared library that another agent (`phased`) actively tunes, and an
+    /// evaluation round landing there must not silently move a measured
+    /// `mcts-uct` strength. `leaf::tests::the_pinned_generation_reproduces_its_golden_values`
+    /// is the guard that turns such a change into a failing test here instead
+    /// of a quiet drift.
+    ///
+    /// Unread when [`Config::leaf`] is [`LeafValue::Rollout`].
+    pub eval_generation: duels_eval::Config,
 }
 
 impl Default for Config {
@@ -187,6 +205,10 @@ impl Default for Config {
             time_check_interval: 64,
             root_determinizations: 1,
             prior: PriorMode::None,
+            leaf: LeafValue::Rollout,
+            // A frozen snapshot, never `duels_eval::Config::default()`; see
+            // the field's documentation.
+            eval_generation: duels_eval::Config::v6(),
         }
     }
 }
@@ -196,7 +218,7 @@ impl Config {
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});race={};chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={}",
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});race={};chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={};leaf={};evalgen={}",
             self.exploration,
             w.build,
             w.wonder,
@@ -209,6 +231,8 @@ impl Config {
             self.chance_widen_alpha,
             self.root_determinizations.max(1),
             self.prior.describe(),
+            self.leaf.describe(),
+            leaf::generation_name(&self.eval_generation),
         )
     }
 }
@@ -321,12 +345,32 @@ pub(crate) struct Tree {
     /// stay far below [`Tree::simulations`]. See
     /// `tests::the_prior_is_computed_once_per_expanded_node_not_per_simulation`.
     pub rankings: u64,
+    /// The root-fixed pricing [`LeafValue`] scores a leaf against — built
+    /// **once per tree**, from the tree's own root position, and **only** when
+    /// [`Config::leaf`] is not [`LeafValue::Rollout`].
+    ///
+    /// One `duels_eval::Root::new` is about 3.5 µs against a ~8.6 µs
+    /// simulation, so paying it per *tree* is free and paying it per node
+    /// would not be (`crate::leaf` has the numbers). `None` on the default
+    /// path is what makes that path allocate nothing new;
+    /// `tests::the_rollout_leaf_builds_no_evaluation_root` pins it.
+    pub eval_root: Option<duels_eval::Root>,
 }
 
 impl Tree {
     /// A tree rooted at `state`, whose root actions are restricted to
     /// `actions` (the actions the arena actually offered).
     pub fn new(state: GameState, actions: Vec<Action>, cfg: Config, rng: &mut StdRng) -> Self {
+        // Built for the player to move at the root, exactly as `phased` builds
+        // it for a decision: the `Root`'s asymmetric parts (the stance it
+        // carries and the denial scale) are read only by
+        // `duels_eval::Root::denial_term`, which a leaf evaluation never
+        // calls, and `duels_eval::evaluate` is exactly antisymmetric in its
+        // `me` argument.
+        let eval_root = cfg
+            .leaf
+            .needs_eval_root()
+            .then(|| duels_eval::Root::new(&state, state.current_player(), cfg.eval_generation));
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,
@@ -335,6 +379,7 @@ impl Tree {
             wbuf: Vec::with_capacity(32),
             simulations: 0,
             rankings: 0,
+            eval_root,
         };
         let root = decision_node(state, actions, rng);
         tree.nodes.push(root);
@@ -646,6 +691,90 @@ impl Tree {
         children[children.len() - 1].node
     }
 
+    /// What a leaf the simulation has just added to the tree is worth, on the
+    /// `[0, 1]` Player-One scale every node accumulates.
+    ///
+    /// The one dispatch point for [`Config::leaf`]. [`LeafValue::Rollout`]
+    /// reaches `rollout_from` and nothing else, so the default path is the
+    /// pre-existing code with one `match` in front of it.
+    fn leaf_value(&mut self, node: NodeId, rng: &mut StdRng) -> f64 {
+        match self.cfg.leaf {
+            LeafValue::Rollout => self.rollout_from(node, rng),
+            // `static_from` returns `None` only if the tree was built without
+            // an evaluation root, which `Tree::new` cannot do for this
+            // variant; falling back to the playout keeps a hypothetical
+            // mis-construction searching properly rather than backing up a
+            // constant.
+            LeafValue::Static => self
+                .static_from(node)
+                .unwrap_or_else(|| self.rollout_from(node, rng)),
+            LeafValue::Truncated { plies } => {
+                let mut state = self.nodes[node as usize].state;
+                let cap = plies.min(self.cfg.max_rollout_plies);
+                let finished = rollout::play_out_capped(
+                    &mut state,
+                    &self.cfg.rollout,
+                    &self.cfg.race,
+                    &mut self.buf,
+                    &mut self.wbuf,
+                    rng,
+                    cap,
+                );
+                match finished {
+                    // The game ended inside the window, so there is a real
+                    // result and no judgement to make.
+                    Some(result) => value_of(result),
+                    None => match self.eval_root.as_ref() {
+                        Some(root) => leaf::static_value(&state, root),
+                        None => value_of(rollout::play_out(
+                            &mut state,
+                            &self.cfg.rollout,
+                            &self.cfg.race,
+                            &mut self.buf,
+                            &mut self.wbuf,
+                            rng,
+                            self.cfg.max_rollout_plies,
+                        )),
+                    },
+                }
+            }
+            LeafValue::Blend { weight } => {
+                // The static half first, though it consumes no randomness, so
+                // that the playout's draws land in the same order as they
+                // would for `Rollout`.
+                let statically = self.static_from(node);
+                let played = self.rollout_from(node, rng);
+                match statically {
+                    Some(s) => weight * s + (1.0 - weight) * played,
+                    None => played,
+                }
+            }
+        }
+    }
+
+    /// A full playout from `node`, valued as a real [`GameResult`]: the leaf
+    /// value this crate has always used.
+    fn rollout_from(&mut self, node: NodeId, rng: &mut StdRng) -> f64 {
+        let mut state = self.nodes[node as usize].state;
+        let result = rollout::play_out(
+            &mut state,
+            &self.cfg.rollout,
+            &self.cfg.race,
+            &mut self.buf,
+            &mut self.wbuf,
+            rng,
+            self.cfg.max_rollout_plies,
+        );
+        value_of(result)
+    }
+
+    /// [`leaf::static_value`] of `node`, or `None` if this tree has no
+    /// evaluation root.
+    fn static_from(&self, node: NodeId) -> Option<f64> {
+        let root = self.eval_root.as_ref()?;
+        Some(leaf::static_value(&self.nodes[node as usize].state, root))
+    }
+
     /// One selection / expansion / playout / backpropagation cycle.
     pub fn simulate(&mut self, rng: &mut StdRng) {
         self.path.clear();
@@ -676,17 +805,7 @@ impl Tree {
                     self.path.push(node);
                 }
                 Step::Decision if fresh => {
-                    let mut state = self.nodes[node as usize].state;
-                    let result = rollout::play_out(
-                        &mut state,
-                        &self.cfg.rollout,
-                        &self.cfg.race,
-                        &mut self.buf,
-                        &mut self.wbuf,
-                        rng,
-                        self.cfg.max_rollout_plies,
-                    );
-                    value = value_of(result);
+                    value = self.leaf_value(node, rng);
                     break;
                 }
                 Step::Decision => match self.expand(node, rng) {
@@ -1306,6 +1425,232 @@ mod tests {
             }
 
             assert_same_arena(&new, &old, seed);
+        }
+    }
+
+    /// The twin of the two tests above for [`LeafValue`]: with
+    /// [`LeafValue::Rollout`] the search grows the *same arena*, node for
+    /// node, as the verbatim pre-leaf `simulate` (which reaches the playout
+    /// directly rather than through `leaf_value`).
+    ///
+    /// The leaf is where every simulation ends, so this is the strongest place
+    /// a refactor could go wrong: a single extra RNG draw, or a playout
+    /// started from a different state, would show up here as a different tree.
+    #[test]
+    fn leaf_rollout_grows_the_same_tree_as_the_pre_leaf_search() {
+        for seed in 0..10u64 {
+            let state = engine::new_game(seed);
+            let actions = engine::legal_actions(&state);
+            let cfg = Config {
+                leaf: LeafValue::Rollout,
+                ..Config::default()
+            };
+
+            let mut rng_new = StdRng::seed_from_u64(seed ^ 0x1EAF);
+            let mut new = Tree::new(state, actions.clone(), cfg, &mut rng_new);
+            let mut rng_old = StdRng::seed_from_u64(seed ^ 0x1EAF);
+            let mut old = Tree::new(state, actions.clone(), cfg, &mut rng_old);
+
+            for _ in 0..500 {
+                new.simulate(&mut rng_new);
+                old.legacy_simulate(&mut rng_old);
+            }
+
+            assert_same_arena(&new, &old, seed);
+        }
+    }
+
+    /// The default path must not pay for the option: [`LeafValue::Rollout`]
+    /// builds no [`duels_eval::Root`] at all, and every other variant builds
+    /// exactly one, for the tree's own root position.
+    #[test]
+    fn the_rollout_leaf_builds_no_evaluation_root() {
+        let (state, actions) = mid_game(2);
+        for (leaf, wants_root) in [
+            (LeafValue::Rollout, false),
+            (LeafValue::Static, true),
+            (LeafValue::Truncated { plies: 8 }, true),
+            (LeafValue::Blend { weight: 0.5 }, true),
+        ] {
+            let mut rng = StdRng::seed_from_u64(9);
+            let tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    leaf,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            assert_eq!(
+                tree.eval_root.is_some(),
+                wants_root,
+                "{leaf:?} built the wrong number of evaluation roots"
+            );
+        }
+    }
+
+    /// A static leaf must actually *change* the search — otherwise the
+    /// equivalence test above would be passing for the trivial reason.
+    #[test]
+    fn a_static_leaf_grows_a_different_tree() {
+        let mut differed = 0u32;
+        for seed in 0..8u64 {
+            let (state, actions) = mid_game(seed);
+            let grow = |leaf| {
+                let mut rng = StdRng::seed_from_u64(seed ^ 0x7777);
+                let mut tree = Tree::new(
+                    state,
+                    actions.clone(),
+                    Config {
+                        leaf,
+                        ..Config::default()
+                    },
+                    &mut rng,
+                );
+                for _ in 0..400 {
+                    tree.simulate(&mut rng);
+                }
+                (
+                    tree.nodes.len(),
+                    tree.nodes.iter().map(|n| n.value_sum).sum::<f64>(),
+                )
+            };
+            if grow(LeafValue::Static) != grow(LeafValue::Rollout) {
+                differed += 1;
+            }
+        }
+        assert_eq!(
+            differed, 8,
+            "a static leaf changed nothing at some position"
+        );
+    }
+
+    /// The two edges of the family: a zero-ply truncation is exactly a static
+    /// evaluation, and a blend at weight zero is exactly the playout value.
+    ///
+    /// Both are asserted on the *leaf value itself* rather than on a whole
+    /// search, because that is where the claim lives — and for the blend, on
+    /// the same RNG stream, since `Blend` runs the same playout `Rollout`
+    /// does.
+    #[test]
+    fn the_degenerate_leaf_settings_reduce_to_their_edges() {
+        for seed in 0..6u64 {
+            let (state, actions) = mid_game(seed);
+            let leaf_value = |leaf, stream: u64| {
+                let mut rng = StdRng::seed_from_u64(stream);
+                let mut tree = Tree::new(
+                    state,
+                    actions.clone(),
+                    Config {
+                        leaf,
+                        ..Config::default()
+                    },
+                    &mut rng,
+                );
+                // Expand one child so the leaf being valued is a real, fresh
+                // decision node rather than the root itself.
+                let child = tree.expand(0, &mut rng).expect("the root has children");
+                tree.leaf_value(child, &mut rng)
+            };
+            assert_eq!(
+                leaf_value(LeafValue::Truncated { plies: 0 }, seed).to_bits(),
+                leaf_value(LeafValue::Static, seed).to_bits(),
+                "seed {seed}: a zero-ply truncation is not a static evaluation"
+            );
+            assert_eq!(
+                leaf_value(LeafValue::Blend { weight: 0.0 }, seed).to_bits(),
+                leaf_value(LeafValue::Rollout, seed).to_bits(),
+                "seed {seed}: a blend at weight zero is not the playout value"
+            );
+            // ...and a blend at weight one is the static value.
+            assert_eq!(
+                leaf_value(LeafValue::Blend { weight: 1.0 }, seed).to_bits(),
+                leaf_value(LeafValue::Static, seed).to_bits(),
+                "seed {seed}: a blend at weight one is not the static value"
+            );
+        }
+    }
+
+    /// A static leaf value is a `[0, 1]` probability, which is what makes it
+    /// commensurable with the playout values the same tree backs up.
+    #[test]
+    fn every_static_leaf_value_is_a_probability() {
+        for seed in 0..6u64 {
+            let (state, actions) = mid_game(seed);
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut tree = Tree::new(
+                state,
+                actions,
+                Config {
+                    leaf: LeafValue::Static,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            for _ in 0..300 {
+                tree.simulate(&mut rng);
+            }
+            for (i, n) in tree.nodes.iter().enumerate() {
+                let mean = n.mean();
+                assert!(
+                    (0.0..=1.0).contains(&mean),
+                    "seed {seed}, node {i}: mean {mean} is not a probability"
+                );
+            }
+        }
+    }
+
+    /// The mandatory property for anything in this repository that touches
+    /// game state: **the value may not depend on which hidden world produced
+    /// the state it is looking at.**
+    ///
+    /// `duels-eval` asserts this of the evaluation itself
+    /// (`duels-eval/tests/determinization_invariance.rs`); this asserts it of
+    /// the way *this* crate calls it — two unrelated
+    /// [`duels_core::Observation::sample_state`] draws from the same real
+    /// observation, one tree each, and the static leaf value compared bit for
+    /// bit. A discrepancy of any size would mean the leaf was scoring the
+    /// sampler's luck.
+    ///
+    /// Only [`LeafValue::Static`] is checked, and deliberately so:
+    /// [`LeafValue::Truncated`]'s playout walks the determinized layout
+    /// exactly as [`LeafValue::Rollout`]'s does — that is perfect-information
+    /// Monte Carlo, documented in the crate docs, and not a property this
+    /// test could hold.
+    #[test]
+    fn a_static_leaf_value_is_determinization_invariant() {
+        for seed in 0..10u64 {
+            let (real, _) = mid_game(seed);
+            let obs = real.observation();
+            let cfg = Config {
+                leaf: LeafValue::Static,
+                ..Config::default()
+            };
+
+            let sampled = |mix: u64| {
+                let mut rng = StdRng::seed_from_u64(seed ^ mix);
+                let state = obs.sample_state(&mut rng);
+                let actions = engine::legal_actions(&state);
+                let mut tree_rng = StdRng::seed_from_u64(7);
+                let tree = Tree::new(state, actions, cfg, &mut tree_rng);
+                (
+                    state,
+                    tree.static_from(0).expect("a static leaf has a root"),
+                )
+            };
+            let (a, va) = sampled(0xAAAA_AAAA);
+            let (b, vb) = sampled(0x5555_5555);
+            assert_eq!(
+                a.observation(),
+                b.observation(),
+                "seed {seed}: the two draws are not publicly identical, so the test is vacuous"
+            );
+            assert_eq!(
+                va.to_bits(),
+                vb.to_bits(),
+                "seed {seed}: the static leaf value moved with the hidden world: {va} vs {vb}"
+            );
         }
     }
 
