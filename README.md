@@ -143,7 +143,7 @@ docs/
   adr/                      architecture decision records
 .github/workflows/ci.yml    fmt + clippy + test + web + e2e, gated behind `gate`
 docker-compose.yml          `docker compose up` runs the server and the web client
-CODEOWNERS                  mandatory review on docs/, .github/, data/
+CODEOWNERS                  mandatory review on docs/, .github/, data/, crates/duels-eval/
 ```
 
 ## Getting started

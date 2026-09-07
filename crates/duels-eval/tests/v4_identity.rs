@@ -31,14 +31,14 @@
 //! — without which this file would be asserting that six pieces of dead code
 //! are dead.
 
-use duels_agent_phased::{
+use duels_core::scoring::{self, GameResult};
+use duels_core::state::Phase;
+use duels_core::{cost, engine, Action, GameState, Player};
+use duels_eval::{
     expected_value, menu, terms, CoinModel, Config, EconomyModel, EvalWeights, GuildPricing,
     MenuFloor, MenuTables, MenuWeights, MilitaryModel, Root, SupplyModel, WonderModel,
     DESTROY_REPLACE_SHARE, MAX_PENDING_DEPTH,
 };
-use duels_core::scoring::{self, GameResult};
-use duels_core::state::Phase;
-use duels_core::{cost, engine, Action, GameState, Player};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -108,7 +108,7 @@ fn v4_evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 
             GameResult::Draw => 0.0,
         };
     }
-    if root.config().pending_model == duels_agent_phased::PendingModel::Completed
+    if root.config().pending_model == duels_eval::PendingModel::Completed
         && depth > 0
         && state.pending().is_some()
     {
@@ -116,7 +116,7 @@ fn v4_evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 
             return v;
         }
     }
-    if let Some(v) = duels_agent_phased::rail_value(
+    if let Some(v) = duels_eval::rail_value(
         state,
         me,
         root.age(),

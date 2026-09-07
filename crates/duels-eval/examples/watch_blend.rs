@@ -8,34 +8,89 @@
 //! value on the resources you would actually want?
 //!
 //! ```text
-//! cargo run --release -p duels-agent-phased --example watch_blend
-//! cargo run --release -p duels-agent-phased --example watch_blend -- 7 phased greedy-ev
-//! cargo run --release -p duels-agent-phased --example watch_blend -- 7 --quiet
+//! cargo run --release -p duels-eval --example watch_blend
+//! cargo run --release -p duels-eval --example watch_blend -- 7 phased random
+//! cargo run --release -p duels-eval --example watch_blend -- 7 --quiet
 //! ```
 //!
-//! Arguments, all optional: `seed`, then the two agents (`phased`,
-//! `greedy-ev` or `random`), and `--quiet` to print only the turns where some
-//! weight has moved by more than a percentage point since the last printed
-//! one.
+//! Arguments, all optional: `seed`, then the two policies (`phased` or
+//! `random`), and `--quiet` to print only the turns where some weight has
+//! moved by more than a percentage point since the last printed one.
+//!
+//! # Why the policies are local
+//!
+//! This crate sits *below* every agent crate — that is the reason it exists —
+//! so it cannot reach for `PhasedAgent`, and the `greedy-ev` option this
+//! diagnostic used to offer has gone with it. `Policy::Phased` is
+//! `PhasedAgent::choose` line for line (one `Root`, `expected_value` per
+//! candidate, ties inside `TIE_EPSILON` broken from a seeded stream), so what
+//! you are watching is still a real `phased` game.
 
-use duels_agent_greedy_ev::GreedyEvAgent;
-use duels_agent_phased::{terms, Config, PhasedAgent, Root};
-use duels_agent_random::RandomAgent;
-use duels_agents_api::{Agent, Budget};
 use duels_core::data::Resource;
-use duels_core::{engine, GameState, Player};
+use duels_core::{engine, Action, GameState, Observation, Player};
+use duels_eval::{terms, Config, Root};
 use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 
-fn make_agent(name: &str, seed: u64) -> Box<dyn Agent> {
-    match name {
-        "random" => Box::new(RandomAgent::new(seed)),
-        "greedy-ev" => Box::new(GreedyEvAgent::new(seed)),
-        "phased" => Box::new(PhasedAgent::new(seed)),
-        other => {
-            eprintln!("unknown agent {other:?}; using phased");
-            Box::new(PhasedAgent::new(seed))
+/// `PhasedAgent`'s tie window, copied because the tie set feeds the RNG draw
+/// and so decides which move comes out.
+const TIE_EPSILON: f64 = 1e-6;
+
+/// One side's move policy.
+struct Policy {
+    rng: StdRng,
+    config: Config,
+    phased: bool,
+}
+
+impl Policy {
+    fn new(name: &str, seed: u64, config: Config) -> Policy {
+        let phased = match name {
+            "random" => false,
+            "phased" => true,
+            other => {
+                eprintln!("unknown policy {other:?}; using phased");
+                true
+            }
+        };
+        Policy {
+            rng: StdRng::seed_from_u64(seed),
+            config,
+            phased,
         }
+    }
+
+    /// A verbatim copy of `PhasedAgent::choose`, RNG usage included.
+    fn choose(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        if !self.phased {
+            return legal[self.rng.gen_range(0..legal.len())];
+        }
+        if legal.len() == 1 {
+            return legal[0];
+        }
+        let me = obs.current_player;
+        let base_state = obs.sample_state(&mut self.rng);
+        let root = Root::new(&base_state, me, self.config);
+
+        let mut scored: Vec<(Action, f64)> = Vec::with_capacity(legal.len());
+        for &action in legal {
+            scored.push((
+                action,
+                duels_eval::expected_value(&base_state, action, me, &root),
+            ));
+        }
+        let Some(best_score) = scored.iter().map(|&(_, s)| s).fold(None, |m, s| match m {
+            Some(b) if b >= s => Some(b),
+            _ => Some(s),
+        }) else {
+            return legal[self.rng.gen_range(0..legal.len())];
+        };
+        let best: Vec<Action> = scored
+            .iter()
+            .filter(|&&(_, s)| (best_score - s).abs() <= TIE_EPSILON)
+            .map(|&(a, _)| a)
+            .collect();
+        best[self.rng.gen_range(0..best.len())]
     }
 }
 
@@ -118,7 +173,7 @@ fn report(state: &GameState, root: &Root, config: &Config) {
             bill[Resource::Stone.index()],
             bill[Resource::Glass.index()],
             bill[Resource::Papyrus.index()],
-            duels_agent_phased::menu::chain_equity(state, p, root.menu().chain()),
+            duels_eval::menu::chain_equity(state, p, root.menu().chain()),
             duels_core::cost::trade_prices(state, p),
         );
     }
@@ -170,8 +225,8 @@ fn main() {
 
     let config = Config::default();
     let mut agents = [
-        make_agent(names[0], seed * 2),
-        make_agent(names[1], seed * 2 + 1),
+        Policy::new(names[0], seed * 2, config),
+        Policy::new(names[1], seed * 2 + 1, config),
     ];
     let mut state = engine::new_game(seed);
     let mut rng = StdRng::seed_from_u64(seed ^ 0xB1E4D);
@@ -212,7 +267,7 @@ fn main() {
         }
 
         let obs = state.observation();
-        let action = agents[me.index()].choose(&obs, &legal, Budget::Nodes(1));
+        let action = agents[me.index()].choose(&obs, &legal);
         if !quiet || interesting {
             println!("  -> {action:?}\n");
         }

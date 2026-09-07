@@ -24,6 +24,9 @@ on:
     paths:
       - 'crates/agents/**'
       - 'crates/duels-agents-api/**'
+      # `duels-eval` is not an agent, but every agent built on it moves when it
+      # does - which is exactly the kind of change this check exists to notice.
+      - 'crates/duels-eval/**'
       - '.github/workflows/ai-candidate.yml'
 
 permissions:

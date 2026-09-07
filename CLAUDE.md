@@ -10,6 +10,10 @@ crates/
   duels-agents-api/     the Agent trait every AI implements: choose(&Observation, legal, Budget) -> Action
   duels-strategy/       pure, public-information-only "win condition" reads (military/science/VP race
                         magnitudes) — a policy/prior signal for search, NOT a value estimator
+  duels-eval/           the hand-crafted position evaluation: Config, Root, evaluate, expected_value,
+                        and the commitment blend / terms / menu / rails behind them. A library BELOW
+                        the agents (see "the layering" in the invariants), shared so more than one
+                        agent can use it. Mandatory code-owner review — see CODEOWNERS.
   duels-arena/          tournament runner: paired-seed matches, Bayesian Elo, SPRT, spec-string agent configs
   duels-server/         axum WebSocket/REST game server, server-authoritative
   agents/
@@ -17,6 +21,9 @@ crates/
     greedy/             1-ply heuristic, samples one hidden-info guess and commits to it
     greedy-ev/          same evaluation as greedy, but properly averages over chance_outcomes
                         instead of guessing — see "AI agent conventions" below
+    strategist/         greedy-ev plus a duels-strategy move-level prior
+    phased/             a thin 1-ply Agent over duels-eval: sample a state, build one Root, score
+                        every legal action, play the best. Holds no evaluation logic of its own.
     alphabeta/          expectimax + alpha-beta + Star1 pruning; simulation-based leaves (NOT static
                         eval — see "what we learned" below)
     mcts-uct/           chance-node MCTS — the current champion
@@ -34,8 +41,8 @@ arena/                  arena/results/ (gitignored) holds tournament output JSON
   ci.yml                the required `gate` check (fmt, clippy, test, web, e2e)
   nightly-arena.yml     nightly full round robin: 21 pairings as a job matrix,
                         joint Elo refit, leaderboard update proposed as a PR
-  ai-candidate.yml      informational (NOT gating) candidate-vs-champion match on
-                        any PR touching crates/agents/** or duels-agents-api/**
+  ai-candidate.yml      informational (NOT gating) candidate-vs-champion match on any PR
+                        touching crates/agents/**, duels-agents-api/** or duels-eval/**
 ```
 
 ## Non-negotiable invariants
@@ -46,6 +53,7 @@ These are load-bearing. Breaking them silently is the single most likely way to 
 - **`GameState` vs `Observation` is enforced by the type system, not convention.** `GameState` holds hidden information (deck order, face-down identities); `Observation` never does. Every `Agent` implementation — and every function in `duels-strategy` — must be provably invariant to *which* hidden-info sample produced the concrete state it's handed. This project writes a **determinization-invariance property test** for any new logic that touches game state, comparing two different `Observation::sample_state` draws bit-for-bit (`to_bits()` on floats). If you can't write that test, the logic is leaking hidden information somewhere.
 - **Determinism is enforced by lint, not discipline.** `clippy.toml` bans `Instant::now`, `SystemTime::now`, `rand::thread_rng`, `rand::random` inside `duels-core` and every agent crate. Randomness only ever enters through an explicitly-passed, seeded `StdRng`.
 - **Agent crates are self-contained.** No agent crate depends on another agent crate, even when it would save duplicating an evaluation function. This is deliberate — it lets multiple agents be built in parallel by independent agents without cross-crate coordination, and it means benchmarking one never risks silently coupling to another's internals. Some duplication (e.g. `greedy-ev` reimplementing `greedy`'s evaluation terms) is an accepted, intentional cost.
+- **The layering is `duels-core` → `duels-strategy` → `duels-eval` → agents**, each layer depending only on the ones above it. So when two agents genuinely should share code, it moves *down* into a library rather than sideways between agents: `duels-eval` exists because `phased`'s evaluation is about to be wanted by `mcts-uct` too, and the rule above forbids `mcts-uct` depending on `phased`. A shared library at this level carries obligations the agent above it does not: `duels-eval` depends on `duels-core` and `duels-strategy` and on **nothing else** (no `rand`, no `duels-agents-api` — `Root::new`, `evaluate` and `expected_value` are pure functions), it holds the determinization-invariance and version-snapshot identity tests for everything it owns, and it is a **mandatory-review path in `CODEOWNERS`** — its behaviour is not to be changed in passing inside a PR about something else, because more than one agent's measured strength moves when it does.
 
 ## AI agent development: the established pattern
 
