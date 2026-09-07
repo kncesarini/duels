@@ -187,6 +187,18 @@ pub struct Config {
     /// [`LeafValue::Truncated`] are kept as measured, documented
     /// alternatives.
     pub leaf: LeafValue,
+    /// Pin this search to a specific frozen `duels-eval` generation instead of
+    /// tracking [`duels_eval::Config::default`] live. `None` — the default —
+    /// changes nothing about the crate's live-tracking design (see the crate
+    /// docs' "Tracking `duels-eval` live" section); this exists so a `duels-eval`
+    /// change can be A/B tested directly, in one binary, one process, one
+    /// `duels-arena match`: freeze today's `duels-eval` default as the next
+    /// `Config::vN()` snapshot, make the change, then run
+    /// `mcts-eval` (live, new) against `mcts-eval:eval=vN` (pinned, old) —
+    /// a real paired-seed, seat-swapped head-to-head between the two
+    /// versions, with no unrelated anchor agent needed. Not meant to be set in
+    /// anything this project would call a *production* configuration.
+    pub eval_override: Option<duels_eval::Config>,
 }
 
 impl Default for Config {
@@ -215,6 +227,7 @@ impl Default for Config {
             // `+89.2` Elo over 3,600 games against a pure playout leaf; see
             // the crate docs.
             leaf: LeafValue::Blend { weight: 0.5 },
+            eval_override: None,
         }
     }
 }
@@ -235,14 +248,23 @@ impl Config {
         }
     }
 
+    /// The `duels_eval::Config` this search will actually score its leaves
+    /// against: [`Config::eval_override`] if one is pinned, otherwise
+    /// [`duels_eval::Config::default`], read live.
+    pub fn eval_config(&self) -> duels_eval::Config {
+        self.eval_override.unwrap_or_default()
+    }
+
     /// A compact, stable description for [`duels_agents_api::AgentSpec`].
     ///
     /// The `eval=` tail is the whole [`duels_eval::Config`] this search will
     /// actually score its leaves against, not a generation label. That is the
     /// deliberate consequence of tracking `duels-eval` live (see the crate
-    /// docs): a results file records the evaluation it was measured with
-    /// exactly, so a later `duels-eval` round makes two results files
-    /// *distinguishable* rather than making the older one uninterpretable.
+    /// docs) whenever [`Config::eval_override`] is `None`: a results file
+    /// records the evaluation it was measured with exactly, so a later
+    /// `duels-eval` round makes two results files *distinguishable* rather
+    /// than making the older one uninterpretable. A pinned override records
+    /// that same string, just frozen instead of live.
     pub fn describe(&self) -> String {
         let w = &self.rollout;
         format!(
@@ -261,9 +283,9 @@ impl Config {
             self.prior.describe(),
             self.leaf.describe(),
             if self.leaf.needs_eval_root() {
-                // Live, not pinned: whatever this build of `duels-eval`
-                // defaults to, which is exactly what `Tree::new` will use.
-                duels_eval::Config::default().params_string()
+                // Whatever `Tree::new` will actually build a `Root` with:
+                // live, unless `eval_override` pins a frozen generation.
+                self.eval_config().params_string()
             } else {
                 "unused".to_string()
             },
@@ -418,13 +440,10 @@ impl Tree {
         // `duels_eval::Root::denial_term`, which a leaf evaluation never
         // calls, and `duels_eval::evaluate` is exactly antisymmetric in its
         // `me` argument.
-        let eval_root = cfg.leaf.needs_eval_root().then(|| {
-            duels_eval::Root::new(
-                &state,
-                state.current_player(),
-                duels_eval::Config::default(),
-            )
-        });
+        let eval_root = cfg
+            .leaf
+            .needs_eval_root()
+            .then(|| duels_eval::Root::new(&state, state.current_player(), cfg.eval_config()));
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,
@@ -1539,6 +1558,95 @@ mod tests {
                 "{leaf:?} built the wrong number of evaluation roots"
             );
         }
+    }
+
+    /// [`Config::eval_override`]'s off value (`None`) must be bit-identical
+    /// to not having the field at all: the same tree, move for move, as an
+    /// explicit `Some(duels_eval::Config::default())` — proving the plumbing
+    /// through `Tree::new`/`eval_config` doesn't quietly change anything for
+    /// the default, live-tracking case this crate exists to be.
+    #[test]
+    fn eval_override_none_is_bit_identical_to_pinning_todays_live_default() {
+        let (state, actions) = mid_game(3);
+        let grow = |eval_override| {
+            let mut rng = StdRng::seed_from_u64(0xE7A1);
+            let mut tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    eval_override,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            for _ in 0..300 {
+                tree.simulate(&mut rng);
+            }
+            tree
+        };
+        let a = grow(None);
+        let b = grow(Some(duels_eval::Config::default()));
+        assert_eq!(a.nodes.len(), b.nodes.len());
+        for (na, nb) in a.nodes.iter().zip(b.nodes.iter()) {
+            assert_eq!(na.visits, nb.visits);
+            assert_eq!(na.value_sum.to_bits(), nb.value_sum.to_bits());
+        }
+    }
+
+    /// A pinned generation must actually change what the tree scores against
+    /// — otherwise the identity test above would be passing for the trivial
+    /// reason that nothing reads `eval_override` at all.
+    #[test]
+    fn an_eval_override_grows_a_different_tree_from_the_live_default() {
+        assert_ne!(
+            duels_eval::Config::v1(),
+            duels_eval::Config::default(),
+            "v1 and today's default must differ or this test is vacuous"
+        );
+        let (state, actions) = mid_game(3);
+        let grow = |eval_override| {
+            let mut rng = StdRng::seed_from_u64(0xE7A1);
+            let mut tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    eval_override,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            for _ in 0..300 {
+                tree.simulate(&mut rng);
+            }
+            tree
+        };
+        let live = grow(None);
+        let pinned = grow(Some(duels_eval::Config::v1()));
+        let differed = live
+            .nodes
+            .iter()
+            .zip(pinned.nodes.iter())
+            .filter(|(a, b)| a.value_sum.to_bits() != b.value_sum.to_bits())
+            .count();
+        assert!(
+            differed > 0,
+            "pinning v1 scored every node identically to live"
+        );
+    }
+
+    /// [`Config::describe`]'s `eval=` tail must name the pinned generation,
+    /// not silently keep reporting the live default underneath it — a
+    /// results file has to record which evaluation an override actually used.
+    #[test]
+    fn describe_reports_the_pinned_generation_not_the_live_one() {
+        let live = Config::default().describe();
+        let pinned = Config {
+            eval_override: Some(duels_eval::Config::v1()),
+            ..Config::default()
+        }
+        .describe();
+        assert_ne!(live, pinned);
+        assert!(pinned.contains(&duels_eval::Config::v1().params_string()));
     }
 
     /// A static leaf must actually *change* the search — otherwise the
