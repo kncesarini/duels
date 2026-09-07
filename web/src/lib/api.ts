@@ -3,7 +3,9 @@
 // `src/generated/`. Nothing in this module (or anywhere else in this app)
 // computes a rule, a legal move, or a score - it only shapes fetch/WS calls.
 
+import type { AnalysisPayload } from "../generated/AnalysisPayload";
 import type { Catalog } from "../generated/Catalog";
+import type { ExportPayload } from "../generated/ExportPayload";
 import type { CreateRoomRequest } from "../generated/CreateRoomRequest";
 import type { CreateRoomResponse } from "../generated/CreateRoomResponse";
 import type { RoomInfo } from "../generated/RoomInfo";
@@ -54,6 +56,20 @@ export function createRoom(req: CreateRoomRequest): Promise<CreateRoomResponse> 
 
 export function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
   return fetch(`${API_BASE}/rooms/${roomId}`).then((r) => asJson<RoomInfo>(r));
+}
+
+/** `GET /rooms/:id/analysis`: what `duels-eval` makes of the room's current
+ * position and of every action legal in it. Advanced mode only — an ordinary
+ * game never asks for this, which is why it is a separate fetch rather than
+ * part of every `StatePayload` broadcast. */
+export function fetchAnalysis(roomId: string): Promise<AnalysisPayload> {
+  return fetch(`${API_BASE}/rooms/${roomId}/analysis`).then((r) => asJson<AnalysisPayload>(r));
+}
+
+/** `GET /rooms/:id/export`: the seed and move list that reconstruct the room's
+ * exact position, for the flag-a-position bundle. */
+export function fetchExport(roomId: string): Promise<ExportPayload> {
+  return fetch(`${API_BASE}/rooms/${roomId}/export`).then((r) => asJson<ExportPayload>(r));
 }
 
 export interface RoomSocketHandlers {

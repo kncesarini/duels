@@ -4,11 +4,13 @@
 // only - that really is all anybody knows, except that a guild's back is
 // purple, which the server tells us in `hidden_guild_slots`).
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
+import type { AnalysisPayload } from "../generated/AnalysisPayload";
 import type { Catalog } from "../generated/Catalog";
 import type { Observation } from "../generated/Observation";
 import type { PlayerView } from "../generated/PlayerView";
 import CardFace, { CardBack } from "./CardFace";
+import { bestForSlot, tone, winPct } from "../lib/analysis";
 import { cardById } from "../lib/catalogHelpers";
 import { slotPlan } from "../lib/cost";
 import { useHover } from "../lib/hover";
@@ -33,6 +35,10 @@ interface Props {
   takenSlot: number | null;
   dimmed: boolean;
   lensName: string;
+  /** Advanced mode only, and only while the live position is on screen: the
+   * server's read of every legal action, so each takeable slot can carry the
+   * best win probability reachable from it. Null in ordinary play. */
+  analysis: AnalysisPayload | null;
 }
 
 interface Metrics {
@@ -57,6 +63,7 @@ export default function Structure({
   takenSlot,
   dimmed,
   lensName,
+  analysis,
 }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const [metrics, setMetrics] = useState<Metrics>({ w: 92, h: 122, gap: 10, rowStep: 68, offsetX: 0, offsetY: 0 });
@@ -122,6 +129,15 @@ export default function Structure({
 
   let revealIndex = 0;
 
+  // The slot the evaluation likes most, so the badge on it can be marked as
+  // the pick rather than leaving the reader to compare a dozen percentages.
+  const bestSlot = analysis
+    ? (analysis.actions.reduce<{ slot: number; p: number } | null>((acc, a) => {
+        if (!("slot" in a.action)) return acc;
+        return !acc || a.win_probability > acc.p ? { slot: a.action.slot, p: a.win_probability } : acc;
+      }, null)?.slot ?? null)
+    : null;
+
   return (
     <div className={`structure ${dimmed ? "dim" : ""}`}>
       <div className="shead">
@@ -177,21 +193,36 @@ export default function Structure({
           const plan = slotPlan(lensView, slot);
           const isRevealing = revealed.has(slot);
           const delay = isRevealing ? revealIndex++ * 0.15 : 0;
+          const best = analysis ? bestForSlot(analysis, slot) : null;
           return (
-            <CardFace
-              key={slot}
-              card={card}
-              plan={plan}
-              oppLens={oppLens}
-              accessible={isAccessible}
-              covered={!isAccessible}
-              unaffordable={isAccessible && plan ? !plan.affordable && !plan.via_chain : false}
-              selected={selectedSlot === slot}
-              revealing={isRevealing}
-              style={{ ...style, animationDelay: delay ? `calc(${delay}s * var(--speed))` : undefined }}
-              onClick={canAct ? () => onSelect(slot) : undefined}
-              onHover={(el) => showHover("card", card.id, el, countUncovers(observation, catalog, slot))}
-            />
+            <Fragment key={slot}>
+              <CardFace
+                card={card}
+                plan={plan}
+                oppLens={oppLens}
+                accessible={isAccessible}
+                covered={!isAccessible}
+                unaffordable={isAccessible && plan ? !plan.affordable && !plan.via_chain : false}
+                selected={selectedSlot === slot}
+                revealing={isRevealing}
+                style={{ ...style, animationDelay: delay ? `calc(${delay}s * var(--speed))` : undefined }}
+                onClick={canAct ? () => onSelect(slot) : undefined}
+                onHover={(el) => showHover("card", card.id, el, countUncovers(observation, catalog, slot))}
+              />
+              {best && (
+                // Always drawn, never on hover: the point of advanced mode is
+                // scanning every option at once.
+                <span
+                  className={`evalbadge ${tone(best.win_probability)} ${
+                    bestSlot === slot ? "top" : ""
+                  }`}
+                  style={{ left: style.left + metrics.w - 4, top: style.top - 6, zIndex: row + 40 }}
+                  title={`best from this slot: ${best.action.type} · ${best.value.toFixed(2)} VP`}
+                >
+                  {winPct(best.win_probability)}
+                </span>
+              )}
+            </Fragment>
           );
         })}
       </div>

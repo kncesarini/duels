@@ -2461,3 +2461,249 @@ h4.section {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Advanced (analysis) mode.
+
+   Deliberately an overlay rather than a fourth grid column: this is a
+   developer tool that is off for every ordinary game, and it must not change
+   the table's layout when it is off - or, ideally, when it is on either.
+   --------------------------------------------------------------------------- */
+
+.analysis {
+  position: fixed;
+  left: 8px;
+  top: 52px;
+  width: 296px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  z-index: 300;
+  background: var(--surf);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px var(--shadow);
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.analysis.collapsed {
+  width: auto;
+  padding: 4px;
+  max-height: none;
+  overflow: visible;
+}
+.analysis .hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.analysis .hd .ttl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--mute);
+}
+.analysis .now {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--surf2);
+  border-left: 3px solid var(--mute);
+}
+.analysis .now.good {
+  border-left-color: var(--ok);
+}
+.analysis .now.bad {
+  border-left-color: var(--bad);
+}
+.analysis .now .v {
+  font-variant-numeric: tabular-nums;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg);
+}
+.analysis .now .lbl {
+  font-size: 10.5px;
+  color: var(--fg2);
+  line-height: 1.35;
+}
+.analysis .rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.analysis .arow {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surf2);
+}
+.analysis .arow .bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--mute) 22%, transparent);
+  pointer-events: none;
+}
+.analysis .arow.good .bar {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+}
+.analysis .arow.bad .bar {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+}
+.analysis .arow .lb {
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
+.analysis .arow .pc {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.analysis .arow .dl {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--mute);
+  min-width: 34px;
+  text-align: right;
+}
+.analysis .gen {
+  font-size: 9.5px;
+  color: var(--mute);
+  word-break: break-all;
+  max-height: 3.6em;
+  overflow: hidden;
+}
+.analysis .note {
+  color: var(--fg2);
+  font-size: 10.5px;
+}
+.analysis .note.warn {
+  color: var(--bad);
+}
+.analysis .flag {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analysis .flag label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--mute);
+}
+.analysis .flag .row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.analysis textarea {
+  width: 100%;
+  background: var(--surf2);
+  color: var(--fg);
+  border: 1px solid var(--line2);
+  border-radius: 4px;
+  padding: 5px 6px;
+  font: inherit;
+  font-size: 11px;
+  resize: vertical;
+}
+.analysis textarea.out {
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+/* The per-slot badge on the structure, and the per-action chip in the tray.
+   Both are always drawn, never hover-revealed: scanning every option at once
+   is the whole point. */
+.evalbadge {
+  position: absolute;
+  transform: translateX(-100%);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 999px;
+  background: var(--surf);
+  color: var(--fg);
+  border: 1px solid var(--line2);
+  box-shadow: 0 2px 6px var(--shadow);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.evalbadge.good {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.evalbadge.bad {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.evalbadge.top {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: #fff;
+}
+
+.evalchip {
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line2);
+  /* Opaque, not transparent: this chip sits on the gold `.btn.primary` as
+     well as on the plain surface ones, and inheriting either background
+     leaves the number unreadable on the other. */
+  background: var(--surf);
+  color: var(--fg2);
+  white-space: nowrap;
+}
+.evalchip.good {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.evalchip.bad {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.evalnum.good {
+  color: var(--ok);
+}
+.evalnum.bad {
+  color: var(--bad);
+}
+
+/* On a narrow screen the panel takes the bottom of the viewport instead of
+   the left edge, where it would cover the structure entirely. */
+@media (max-width: 900px) {
+  .analysis {
+    left: 8px;
+    right: 8px;
+    top: auto;
+    bottom: 8px;
+    width: auto;
+    max-height: 52vh;
+  }
+  .analysis.collapsed {
+    right: auto;
+    width: auto;
+  }
+}

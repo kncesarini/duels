@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import type { Action } from "../generated/Action";
 import type { ActionCost } from "../generated/ActionCost";
+import type { AnalysisPayload } from "../generated/AnalysisPayload";
 import type { Catalog } from "../generated/Catalog";
 import type { CostPlan } from "../generated/CostPlan";
 import type { Observation } from "../generated/Observation";
@@ -13,6 +14,7 @@ import type { PlayerView } from "../generated/PlayerView";
 import CardFace from "./CardFace";
 import { cardById, CARD_TYPE_LABEL, wonderById } from "../lib/catalogHelpers";
 import { describeCardEffects } from "../lib/effectText";
+import { actionKey, byAction, tone, winPct } from "../lib/analysis";
 import { coins, planLines, seatIndex, slotPlan, wonderPlan } from "../lib/cost";
 import { Ico } from "../lib/icons";
 import { romanAge } from "../lib/log";
@@ -37,6 +39,19 @@ interface Props {
   /** Shown instead of the actions while a move is playing back. */
   busyNote: string | null;
   reviewing: boolean;
+  /** Advanced mode only: the server's per-action read, so each button can
+   * carry the win probability that action leads to. Null in ordinary play. */
+  analysis: AnalysisPayload | null;
+}
+
+/** The win-probability chip a single action button carries in advanced mode. */
+function EvalChip({ p, testid }: { p: number | undefined; testid?: string }) {
+  if (p === undefined) return null;
+  return (
+    <span className={`evalchip ${tone(p)}`} data-testid={testid}>
+      {winPct(p)}
+    </span>
+  );
 }
 
 function CostBox({
@@ -112,6 +127,7 @@ export default function ActionTray({
   onSubmit,
   busyNote,
   reviewing,
+  analysis,
 }: Props) {
   const [wonderMenu, setWonderMenu] = useState(false);
   const [armed, setArmed] = useState<string | null>(null);
@@ -156,6 +172,17 @@ export default function ActionTray({
           </div>
         </div>
         <div style={{ display: "flex", gap: 18, fontSize: 11.5, color: "var(--fg2)" }}>
+          {analysis && (
+            <div data-testid="tray-winprob">
+              <div style={{ color: "var(--mute)", textTransform: "uppercase", letterSpacing: ".1em", fontSize: 9.5 }}>
+                AI win % · {seatNames[seatIndex(analysis.current_player)]}
+              </div>
+              <div className={`mono evalnum ${tone(analysis.win_probability)}`} style={{ fontSize: 16 }}>
+                {winPct(analysis.win_probability)}
+              </div>
+              <div style={{ color: "var(--mute)" }}>{analysis.value.toFixed(2)} VP eval</div>
+            </div>
+          )}
           {[0, 1].map((i) => (
             <div key={i}>
               <div style={{ color: "var(--mute)", textTransform: "uppercase", letterSpacing: ".1em", fontSize: 9.5 }}>
@@ -184,6 +211,10 @@ export default function ActionTray({
   }>;
   const buildCost = actionCosts.find((c) => c.type === "Build" && c.slot === selectedSlot);
   const discardCost = actionCosts.find((c) => c.type === "Discard" && c.slot === selectedSlot);
+
+  const scored = byAction(analysis);
+  const scoreOf = (a: Action | undefined) =>
+    a ? scored.get(actionKey(a))?.win_probability : undefined;
 
   const myPlan = slotPlan(views[moverIdx], selectedSlot);
   const lensPlan = slotPlan(views[lensIdx], selectedSlot);
@@ -268,6 +299,7 @@ export default function ActionTray({
                     ? `need ${coins(myPlan.coins)}, have ${coins(observation.players[moverIdx].coins)}`
                     : "not legal"}
               </small>
+              <EvalChip p={scoreOf(buildAction)} testid="eval-build" />
               <span className="kbd">B</span>
             </button>
             <button
@@ -281,6 +313,7 @@ export default function ActionTray({
               <small style={{ color: "var(--ok)" }}>
                 {discardCost && discardCost.type === "Discard" ? `+${coins(discardCost.reward)}` : ""}
               </small>
+              <EvalChip p={scoreOf(discardAction)} testid="eval-discard" />
               <span className="kbd">D</span>
             </button>
             <button
@@ -310,6 +343,7 @@ export default function ActionTray({
                         <br />
                         {plan ? `${coins(plan.coins)} · ${plan.affordable ? "affordable" : "too expensive"}` : ""}
                       </span>
+                      <EvalChip p={scoreOf(a)} />
                     </button>
                   );
                 })}

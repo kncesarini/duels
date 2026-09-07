@@ -24,6 +24,7 @@ import SettingsMenu from "./SettingsMenu";
 import CardFace from "./CardFace";
 import CardHover from "./CardHover";
 import SummaryBar from "./SummaryBar";
+import AnalysisPanel from "./AnalysisPanel";
 
 type SheetTab = "actions" | "you" | "opponent" | "board" | "log";
 
@@ -47,6 +48,8 @@ export default function Game() {
     pendingSince,
     status,
     errorMessage,
+    analysis,
+    analysisError,
   } = s;
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -301,6 +304,12 @@ export default function Game() {
 
   const showDraft = observation.phase === "wonder_draft" && !reviewing;
 
+  // The analysis describes the *live* position, so it only overlays the board
+  // when the board is showing that position: during playback or review the
+  // slots on screen are not the ones these numbers were computed for. The
+  // panel itself stays up either way, labelled.
+  const showAnalysisOnBoard = settings.advanced && live && analysis !== null && !analysis.game_over;
+
   return (
     <div className="app">
       <div className="table">
@@ -387,6 +396,7 @@ export default function Game() {
               takenSlot={takenSlot}
               dimmed={pendingChoice && !showDraft}
               lensName={seatNames[lensIdx]}
+              analysis={showAnalysisOnBoard ? analysis : null}
             />
           )}
 
@@ -430,6 +440,7 @@ export default function Game() {
               onSubmit={submit}
               busyNote={busyNote}
               reviewing={reviewing}
+              analysis={showAnalysisOnBoard ? analysis : null}
             />
           )}
 
@@ -466,6 +477,18 @@ export default function Game() {
           open={logOpen}
         />
       </div>
+
+      {settings.advanced && (
+        <AnalysisPanel
+          analysis={analysis}
+          analysisError={analysisError}
+          catalog={catalog}
+          observation={latest.observation}
+          seatNames={seatNames}
+          reviewing={reviewing || !live}
+          buildBundle={s.buildFlagBundle}
+        />
+      )}
 
       {menuOpen && (
         <SettingsMenu
