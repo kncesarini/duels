@@ -44,16 +44,20 @@
 //! * `mcts-eval` -- the same search, keyed identically (`exploration`/`c`,
 //!   `rollout`, `race`, `chance_widen_c`, `chance_widen_alpha`,
 //!   `max_rollout_plies`, `time_check_interval`,
-//!   `root_determinizations`/`dets`, `prior`), plus the two keys that are its
+//!   `root_determinizations`/`dets`, `prior`), plus the keys that are its
 //!   own: `leaf` (`rollout`, `static`, `truncated:<plies>` or
 //!   `blend:<weight>` — `blend:0.5` by default) and `base`
 //!   (`default`, or `rollout` for [`duels_agent_mcts_eval::Config::rollout_base`],
 //!   the pure-playout `c = 1.0` control that is `mcts-uct` move for move).
-//!   There is deliberately **no** `evalgen` key: this agent tracks
-//!   `duels_eval::Config::default()` live rather than pinning a generation,
-//!   and its own spec string records the whole evaluation configuration it
-//!   used. See its crate docs for why that is the opposite choice from
-//!   `mcts-uct`'s and must not be "fixed".
+//!   By default this agent tracks `duels_eval::Config::default()` live
+//!   rather than pinning a generation, and its own spec string records the
+//!   whole evaluation configuration it used — see its crate docs for why
+//!   that is the opposite choice from `mcts-uct`'s and must not be "fixed"
+//!   into a permanent pin. `eval=vN` (e.g. `eval=v6`) is the one deliberate,
+//!   A/B-testing-only exception: it pins this one agent instance to a frozen
+//!   `duels_eval::Config::vN()` snapshot so it can be matched directly, in one
+//!   binary, against a live (unpinned) `mcts-eval` — see
+//!   [`duels_agent_mcts_eval::Config::eval_override`].
 //! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
 //!   name (`military_position`, `military_endgame_urgency`,
 //!   `science_distinct_symbol`, `science_near_supremacy`,
@@ -355,10 +359,16 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
 /// control that agent proves is `mcts-uct` move for move, and is the arm every
 /// strength claim about the leaf value is measured against.
 ///
-/// There is deliberately no `evalgen` key: `mcts-eval` scores against
-/// `duels_eval::Config::default()` live and pins nothing. Its own spec string
-/// records the whole evaluation configuration in force, which is what makes a
-/// results file interpretable after a later `duels-eval` round.
+/// By default `mcts-eval` scores against `duels_eval::Config::default()`
+/// live and pins nothing — its own spec string records the whole evaluation
+/// configuration in force, which is what makes a results file interpretable
+/// after a later `duels-eval` round. `eval=vN` is the one deliberate
+/// exception: it pins `duels_agent_mcts_eval::Config::eval_override` to a
+/// frozen `duels_eval::Config::vN()` snapshot, purely so a `duels-eval`
+/// change can be A/B tested directly in one binary — `mcts-eval` (live, new)
+/// against `mcts-eval:eval=vN` (pinned, old) — rather than only indirectly,
+/// through an unrelated anchor agent. Not a second production default; see
+/// [`duels_agent_mcts_eval::Config::eval_override`]'s own docs.
 pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
     let mut cfg = MctsEvalConfig::default();
     for (k, v) in parse_params(params)? {
@@ -375,6 +385,33 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                     ))
                 }
             },
+            // A/B-testing override only -- see this function's doc comment
+            // and `duels_agent_mcts_eval::Config::eval_override`. Add a new
+            // arm here the same way `phased`'s `base=` key gains one, each
+            // time `duels-eval` freezes a new version.
+            "eval" => {
+                cfg.eval_override = Some(match v {
+                    "default" | "live" => {
+                        return Err(
+                            "mcts-eval: eval=default/live is the same as omitting the key -- \
+                             pass no eval key at all to track duels-eval live"
+                                .to_string(),
+                        )
+                    }
+                    "v1" => duels_eval::Config::v1(),
+                    "v2" => duels_eval::Config::v2(),
+                    "v3" => duels_eval::Config::v3(),
+                    "v4" => duels_eval::Config::v4(),
+                    "v5" => duels_eval::Config::v5(),
+                    "v6" => duels_eval::Config::v6(),
+                    "v7" => duels_eval::Config::v7(),
+                    other => {
+                        return Err(format!(
+                            "mcts-eval: unknown eval generation \"{other}\" (expected v1-v7)"
+                        ))
+                    }
+                });
+            }
             "exploration" | "c" => cfg.exploration = parse_field(k, v)?,
             "chance_widen_c" => cfg.chance_widen_c = parse_field(k, v)?,
             "chance_widen_alpha" => cfg.chance_widen_alpha = parse_field(k, v)?,
@@ -485,13 +522,12 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                 };
             }
             "evalgen" | "eval_generation" => {
-                return Err(
-                    "mcts-eval: there is no evaluation-generation key — this agent tracks \
-                     duels_eval::Config::default() live, on purpose, and records the whole \
-                     configuration it used in its spec string. See its crate docs before \
-                     adding a pin here."
-                        .to_string(),
-                )
+                return Err("mcts-eval: no key by that name. The agent still tracks \
+                     duels_eval::Config::default() live by default, on purpose, and records the \
+                     whole configuration it used in its spec string — see its crate docs before \
+                     changing that. For an A/B test against a frozen generation specifically, \
+                     use \"eval=vN\" (e.g. \"eval=v6\"), not this key."
+                    .to_string())
             }
             other => return Err(format!("mcts-eval: unknown key \"{other}\"")),
         }
@@ -993,19 +1029,23 @@ mod tests {
         assert!(make_agent_from_spec("mcts-eval:nonsense=1", 1).is_err());
     }
 
-    /// **`mcts-eval` pins no evaluation generation, on purpose**, so there is
-    /// no key to set one with — and asking for one is an error that explains
-    /// itself rather than being quietly ignored. See that crate's docs; this
-    /// is the opposite choice from `mcts-uct`'s old pin and must not be
+    /// **`mcts-eval` tracks `duels-eval` live by default, on purpose**, so
+    /// the old `evalgen`/`eval_generation` key names are rejected with an
+    /// error that explains itself and points at the real mechanism
+    /// (`eval=vN`, tested separately below) rather than being silently
+    /// ignored or mistaken for a permanent pin. See that crate's docs; this
+    /// is the opposite default from `mcts-uct`'s old pin and must not be
     /// "fixed" back.
     #[test]
-    fn there_is_no_evaluation_generation_key_to_pin() {
+    fn the_old_evalgen_key_names_point_at_the_real_mechanism() {
         let err = parse_mcts_eval_config("evalgen=v6").unwrap_err();
         assert!(err.contains("tracks"), "{err}");
+        assert!(err.contains("eval=vN"), "{err}");
         assert!(parse_mcts_eval_config("eval_generation=v6").is_err());
 
-        // ...and the spec string carries the whole live configuration in its
-        // place, which is what makes a results file interpretable later.
+        // ...and by default the spec string carries the whole live
+        // configuration in its place, which is what makes a results file
+        // interpretable later.
         let params = make_agent_from_spec("mcts-eval", 1).unwrap().spec().params;
         assert!(
             params.ends_with(&format!(
@@ -1015,6 +1055,48 @@ mod tests {
             "{params}"
         );
         assert!(!params.contains("evalgen="), "{params}");
+    }
+
+    /// `eval=vN` pins this one agent instance to a frozen `duels-eval`
+    /// generation, for A/B testing a change directly against a live (default)
+    /// `mcts-eval` in one binary — see
+    /// `duels_agent_mcts_eval::Config::eval_override`. Not a second
+    /// production default: `eval=default`/`eval=live` is rejected rather than
+    /// silently accepted as a no-op spelling of the same thing.
+    #[test]
+    fn eval_v_n_pins_a_frozen_generation_for_ab_testing() {
+        for (v, want) in [
+            ("v1", duels_eval::Config::v1()),
+            ("v2", duels_eval::Config::v2()),
+            ("v3", duels_eval::Config::v3()),
+            ("v4", duels_eval::Config::v4()),
+            ("v5", duels_eval::Config::v5()),
+            ("v6", duels_eval::Config::v6()),
+            ("v7", duels_eval::Config::v7()),
+        ] {
+            let cfg = parse_mcts_eval_config(&format!("eval={v}")).unwrap();
+            assert_eq!(cfg.eval_override, Some(want), "eval={v}");
+        }
+        assert!(parse_mcts_eval_config("eval=v0").is_err());
+        assert!(parse_mcts_eval_config("eval=v8").is_err());
+        assert!(parse_mcts_eval_config("eval=default").is_err());
+        assert!(parse_mcts_eval_config("eval=live").is_err());
+
+        // The pin reaches the recorded spec, not just the parsed `Config` --
+        // a results file has to say which generation an override actually
+        // used, the same discipline the live default already gets.
+        let agent = make_agent_from_spec("mcts-eval:eval=v1", 1).unwrap();
+        assert!(
+            agent.spec().params.ends_with(&format!(
+                "eval={}",
+                duels_eval::Config::v1().params_string()
+            )),
+            "{}",
+            agent.spec().params
+        );
+
+        // And a plain `mcts-eval` is untouched: still live, still no override.
+        assert_eq!(parse_mcts_eval_config("").unwrap().eval_override, None);
     }
 
     /// The two keys the leaf-value work introduced on `mcts-uct` are gone from
