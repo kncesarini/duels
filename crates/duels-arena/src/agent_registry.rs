@@ -17,6 +17,7 @@ pub const KNOWN_AGENTS: &[&str] = &[
     "phased",
     "alphabeta",
     "mcts-uct",
+    "mcts-eval",
 ];
 
 /// Construct the named `Agent`, seeded from `seed`.
@@ -32,6 +33,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
+        "mcts-eval" => Ok(Box::new(duels_agent_mcts_eval::MctsEvalAgent::new(seed))),
         other => Err(format!(
             "unknown agent \"{other}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")
@@ -65,6 +67,16 @@ mod tests {
     fn phased_is_registered() {
         let agent = make_agent("phased", 1).expect("phased should be a known agent");
         assert_eq!(agent.spec().name, "phased");
+    }
+
+    #[test]
+    fn mcts_eval_is_registered() {
+        let agent = make_agent("mcts-eval", 1).expect("mcts-eval should be a known agent");
+        assert_eq!(agent.spec().name, "mcts-eval");
+        // The bare name has to build the *measured* configuration, since that
+        // is what the leaderboard and `duels-server` construct.
+        assert!(agent.spec().params.contains("leaf=blend(0.500)"));
+        assert!(agent.spec().params.contains("c=0.500"));
     }
 
     #[test]

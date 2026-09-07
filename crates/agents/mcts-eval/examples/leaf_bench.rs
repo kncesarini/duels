@@ -17,11 +17,11 @@
 //! not depend on the candidate under test.
 //!
 //! ```text
-//! cargo run --release -p duels-agent-mcts-uct --example leaf_bench
-//! cargo run --release -p duels-agent-mcts-uct --example leaf_bench -- 60 2000
+//! cargo run --release -p duels-agent-mcts-eval --example leaf_bench
+//! cargo run --release -p duels-agent-mcts-eval --example leaf_bench -- 60 2000
 //! ```
 
-use duels_agent_mcts_uct::{Config, LeafValue, MctsAgent};
+use duels_agent_mcts_eval::{Config, LeafValue, MctsEvalAgent};
 use duels_agents_api::{Agent, Budget};
 use duels_core::engine;
 use rand::rngs::StdRng;
@@ -30,13 +30,16 @@ use rand::{Rng, SeedableRng};
 /// The candidates, in the order the table prints them.
 fn candidates() -> Vec<(&'static str, LeafValue)> {
     vec![
-        ("rollout (default)", LeafValue::Rollout),
+        // The baseline is the pure playout — `mcts-uct`'s leaf — so every
+        // ratio in the table reads as "against the search this crate's
+        // default is measured against".
+        ("rollout (the baseline)", LeafValue::Rollout),
         ("static", LeafValue::Static),
         ("truncated:4", LeafValue::Truncated { plies: 4 }),
         ("truncated:8", LeafValue::Truncated { plies: 8 }),
         ("truncated:16", LeafValue::Truncated { plies: 16 }),
         ("blend:0.3", LeafValue::Blend { weight: 0.3 }),
-        ("blend:0.5", LeafValue::Blend { weight: 0.5 }),
+        ("blend:0.5 (default)", LeafValue::Blend { weight: 0.5 }),
     ]
 }
 
@@ -72,7 +75,7 @@ fn throughput(leaf: LeafValue, positions: u32, nodes: u64) -> (f64, u64) {
         let Some((state, legal)) = position(p) else {
             continue;
         };
-        let mut agent = MctsAgent::with_config(u64::from(p) ^ 0xA6E17, cfg);
+        let mut agent = MctsEvalAgent::with_config(u64::from(p) ^ 0xA6E17, cfg);
         agent.choose(&state.observation(), &legal, Budget::Nodes(nodes));
         total += agent.total_simulations();
     }
@@ -87,8 +90,8 @@ fn main() {
 
     println!("leaf-value throughput: {positions} positions, Budget::Nodes({nodes}) per decision\n");
     println!(
-        "  {:<20}  {:>12}  {:>10}  {:>9}  {:>10}",
-        "leaf", "sims/s", "us/sim", "vs default", "sims"
+        "  {:<22}  {:>12}  {:>10}  {:>9}  {:>10}",
+        "leaf", "sims/s", "us/sim", "vs rollout", "sims"
     );
 
     let mut baseline = None::<f64>;
@@ -96,7 +99,7 @@ fn main() {
         let (rate, sims) = throughput(leaf, positions, nodes);
         let base = *baseline.get_or_insert(rate);
         println!(
-            "  {:<20}  {:>12.0}  {:>10.3}  {:>8.2}x  {:>10}",
+            "  {:<22}  {:>12.0}  {:>10.3}  {:>8.2}x  {:>10}",
             name,
             rate,
             1e6 / rate,
