@@ -16,6 +16,7 @@ duels-agent-strategist = { path = "../agents/strategist" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
+duels-agent-mcts-eval = { path = "../agents/mcts-eval" }
 axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 serde = { workspace = true }

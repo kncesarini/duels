@@ -13,6 +13,7 @@ members = [
     "crates/agents/strategist",
     "crates/agents/phased",
     "crates/agents/mcts-uct",
+    "crates/agents/mcts-eval",
     "crates/agents/alphabeta",
 ]
 

@@ -1,18 +1,19 @@
-//! What a leaf is worth: the playout this crate has always used, or
-//! [`duels_eval`]'s hand-crafted evaluation mapped through a calibrated
-//! sigmoid, or a mixture of the two.
+//! What a leaf is worth: [`duels_eval`]'s hand-crafted evaluation mapped
+//! through a calibrated sigmoid, a playout, or — the default, and this crate's
+//! whole reason to exist — an even mixture of the two.
 //!
-//! # Why this is even a question
+//! # Why a mixture
 //!
 //! `CLAUDE.md` records a hard-won prior: *simulation beats hand-crafted
-//! judgement for position value in this game* — `alphabeta` with a static
-//! leaf won 2.5% of its games against this agent, and swapping the static
-//! leaf for a real playout raised that to 19.5%. That prior was measured
-//! against `alphabeta`'s own small evaluation, before `duels-eval` existed.
-//! `duels-eval` is a much larger instrument: a commitment blend over every
-//! weight, an opponent-menu term, terminal rails, forward-looking supply and
-//! chain equity. Whether *it* can stand in for a playout is a different
-//! question, and this module is the apparatus for asking it.
+//! judgement for position value in this game*. That prior is correct as far as
+//! it goes, and [`LeafValue::Static`] is the measurement that confirms it — a
+//! pure `duels-eval` leaf is about `-171` Elo against the playout it replaces
+//! at a fixed node count. What the same investigation found is that the two
+//! signals are *complementary* rather than competing: the evaluation supplies
+//! civilian-score judgement, where its terms live, and the playout supplies
+//! sight of military races, which are a tempo fact only a simulation walking
+//! the next few moves discovers. Half of each beats either alone by a wide
+//! margin. See the crate docs for the full measurement.
 //!
 //! # The cost structure this design is built on
 //!
@@ -26,17 +27,19 @@
 //! [`duels_eval::evaluate`] against a **cached** [`duels_eval::Root`] brings
 //! that to about **1.55 µs**: a **12x** speed-up per simulation. The playout is
 //! therefore nearly the whole cost of a simulation, and the evaluation is
-//! nearly free by comparison.
+//! nearly free by comparison — which is why the default
+//! [`LeafValue::Blend`], which does *both*, measures at throughput parity with
+//! a plain playout.
 //!
 //! The `Root` is the part that is *not* free. `duels-eval`'s
 //! `examples/eval_bench.rs` reports one `evaluate` at **15.1% of one
-//! [`duels_eval::Root::new`]** under the pinned configuration — so a `Root`
-//! costs about six and a half evaluations, which is affordable once per tree
-//! and ruinous once per node — precisely `CLAUDE.md`'s standing note that `duels-strategy`'s
-//! reads are cheap per node and unaffordable per simulation, and `Root::new`
-//! is a slate of exactly those reads. [`crate::tree::Tree`] therefore builds
-//! **one** `Root`, in `Tree::new`, from the tree's own root position, and only
-//! when [`LeafValue`] actually needs one: the default [`LeafValue::Rollout`]
+//! [`duels_eval::Root::new`]** — so a `Root` costs about six and a half
+//! evaluations, which is affordable once per tree and ruinous once per node,
+//! precisely `CLAUDE.md`'s standing note that `duels-strategy`'s reads are
+//! cheap per node and unaffordable per simulation (`Root::new` is a slate of
+//! exactly those reads). [`crate::tree::Tree`] therefore builds **one**
+//! `Root`, in `Tree::new`, from the tree's own root position, and only when
+//! [`LeafValue`] actually needs one: the non-default [`LeafValue::Rollout`]
 //! allocates nothing and calls nothing here.
 //!
 //! # Victory points to win probability
@@ -64,15 +67,32 @@
 //! | all positions | 38.61 | 0.655 | 28,723 |
 //!
 //! (Reproduce with `cargo run --release -p duels-eval --example calibrate --
-//! 200`; the table above is that command's output, re-run against this pin.)
+//! 200`.)
 //!
 //! So [`temperature`] is a per-age lookup. It reads the **leaf's** age, not
 //! the root's, because that is what the fit is conditioned on.
 //!
-//! # The calibration is stale at depth, and neither age choice fixes that
+//! ## The temperature is a calibration constant, and it is not re-fitted here
 //!
-//! Worth stating plainly, because it is the most likely explanation for why
-//! [`LeafValue::Static`] is so much weaker than the playout it replaces.
+//! Worth saying out loud, because it is the one place this crate's
+//! live-tracking design (see the crate docs) has a seam. The constants below
+//! were fitted against the `duels-eval` generation that was current when the
+//! leaf value was measured. A later `duels-eval` round that changes the
+//! *scale* of `evaluate`'s output — as opposed to its ranking of positions —
+//! would leave them mildly mis-calibrated until somebody re-runs
+//! `calibrate.rs` and updates them.
+//!
+//! That is a deliberately accepted, bounded cost rather than a reason to pin
+//! the evaluation. A sigmoid temperature is a *monotone* reparameterisation of
+//! the same ordering: getting it somewhat wrong flattens or sharpens how
+//! confidently a leaf is scored, it does not make the leaf score the wrong
+//! position better. The fitted spread across the three ages is only about
+//! 1.9x, and the search was measured to be strong across the whole
+//! `blend`/`c` plateau, so it is not a knife edge. Re-running `calibrate.rs`
+//! after a `duels-eval` round is a worthwhile tune-up; it is not a
+//! correctness gate, and nothing here should be turned into one.
+//!
+//! # The calibration is stale at depth, and neither age choice fixes that
 //!
 //! `calibrate.rs` fits `T` over positions each scored against **its own**
 //! `duels_eval::Root` — that is how `phased` uses the evaluation, one fresh
@@ -86,11 +106,11 @@
 //!
 //! Reading the root's age instead would not repair this — it would only make
 //! the staleness uniform. The real fix is a `Root` rebuilt deeper in the tree,
-//! which the cost numbers above rule out at these budgets (3.5 µs against a
-//! ~0.5 µs evaluation: affordable per tree, not per node). So this is a known,
+//! which the cost numbers above rule out at these budgets. So this is a known,
 //! measured limitation of the cheap integration rather than a defect, and it
 //! is consistent with what the measurements show — a static leaf alone loses
-//! badly, while a *blend* that keeps a real playout alongside it wins clearly.
+//! badly, while the default blend, which keeps a real playout alongside it,
+//! wins clearly.
 //!
 //! # Where the perspective flip is (and is not)
 //!
@@ -163,19 +183,28 @@ pub(crate) fn static_value(state: &GameState, root: &duels_eval::Root) -> f64 {
 
 /// What the search backs up from a leaf it has just added to the tree.
 ///
-/// [`LeafValue::Rollout`] is the default and is bit-for-bit the agent this
-/// crate shipped before the option existed — same RNG stream, same tree, same
-/// move, and no [`duels_eval::Root`] built at all (see
-/// `crate::tests::leaf_rollout_is_the_pre_leaf_agent_move_for_move` and
-/// `crate::tree::tests::leaf_rollout_grows_the_same_tree_as_the_pre_leaf_search`).
+/// [`LeafValue::Blend`] at `weight = 0.5` is [`crate::Config::default`] and is
+/// what this crate exists to be; the other three variants are kept as
+/// measured, documented alternatives (see the crate docs for what each one
+/// scores).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LeafValue {
     /// Play the position out to a real [`duels_core::GameResult`] under
     /// [`crate::RolloutWeights`] and [`crate::RaceWeights`], and back up
-    /// `1.0` / `0.5` / `0.0`. The default.
+    /// `1.0` / `0.5` / `0.0`.
+    ///
+    /// This is what `mcts-uct` does, and setting it here (together with
+    /// `exploration: 1.0`) turns this agent back into that one. It is not the
+    /// default here — the whole point of this crate is that it is not.
     Rollout,
     /// Score the leaf with [`duels_eval::evaluate`] and map it through
     /// [`win_probability`]. No playout, and no randomness consumed.
+    ///
+    /// Kept available, and measurably *weaker* than the playout it replaces
+    /// (`-171` Elo at `Nodes(2000)`): a static evaluation cannot see a
+    /// military race developing three moves out. See the crate docs' victory-
+    /// kind breakdown, which is the sharpest diagnostic in this whole line of
+    /// work.
     Static,
     /// Play `plies` steps of the ordinary playout policy and then score what
     /// is left with [`Static`](LeafValue::Static) — unless the game ends
@@ -184,27 +213,31 @@ pub enum LeafValue {
     ///
     /// The classic truncated-playout compromise: some of the simulation's
     /// ability to discover a tactic the evaluation cannot see, for a fraction
-    /// of its cost and variance.
+    /// of its cost and variance. Measured as a monotone family — the more
+    /// playout is left in, the stronger — which is what pointed at the blend.
     Truncated {
         /// How many plies to play before evaluating. Capped by
         /// [`crate::Config::max_rollout_plies`].
         plies: u32,
     },
-    /// `weight * Static + (1 - weight) * Rollout`, both computed.
+    /// `weight * Static + (1 - weight) * Rollout`, both computed. **The
+    /// default, at `weight = 0.5`.**
     ///
     /// Strictly *more* work than [`Rollout`](LeafValue::Rollout) — the
-    /// playout still happens — so this is an accuracy experiment, never a
-    /// throughput one.
+    /// playout still happens — so this is an accuracy win, never a throughput
+    /// one. It measures at throughput parity all the same, because the
+    /// evaluation is about 8% of a simulation.
     ///
     /// # It changes the *scale* of the reward, so it changes what `c` means
     ///
-    /// Worth stating as algebra rather than discovering as a tuning curiosity.
-    /// A playout's value is a Bernoulli `0`/`1`; blending it with a static
-    /// value at `weight = w` shrinks its spread by `1 - w` and offsets it by
-    /// the static term. If the static term were *constant*, the blended reward
-    /// would be an exact affine map `a + (1-w)·v` of the old one, and UCB1's
-    /// argmax would be unchanged — but only if the exploration constant were
-    /// scaled to match, since the bonus is *not* multiplied by `1 - w`:
+    /// Worth stating as algebra rather than discovering as a tuning curiosity,
+    /// because it is why [`crate::Config::default`] moves *two* fields and not
+    /// one. A playout's value is a Bernoulli `0`/`1`; blending it with a
+    /// static value at `weight = w` shrinks its spread by `1 - w` and offsets
+    /// it by the static term. If the static term were *constant*, the blended
+    /// reward would be an exact affine map `a + (1-w)·v` of the old one, and
+    /// UCB1's argmax would be unchanged — but only if the exploration constant
+    /// were scaled to match, since the bonus is *not* multiplied by `1 - w`:
     ///
     /// ```text
     /// a + (1-w)·exploit + c'·bonus   ranks the same as   exploit + (c'/(1-w))·bonus
@@ -213,18 +246,19 @@ pub enum LeafValue {
     /// So `c' = c·(1 - w)` is the setting that leaves the exploration /
     /// exploitation balance where [`crate::Config::exploration`] was tuned,
     /// and any *other* `c'` is a second, confounded change. At `w = 0.5` that
-    /// is `c = 0.5`.
+    /// is `c = 0.5`, which is exactly what this crate defaults to.
     ///
     /// # What the sweep says about that prediction
     ///
     /// It confirms the *direction* and not the exact line. Rescaling `c`
     /// downwards with `w` is worth a lot — `c = 0.5` beat the unchanged
-    /// `c = 1.0` at `w = 0.5` by about 50 Elo — and the whole high-scoring
-    /// region of the sweep lies near `c = 1 - w`. But the region is a broad
+    /// `c = 1.0` at `w = 0.5` by about 25 Elo over 3,600 games — and the whole
+    /// high-scoring region lies near `c = 1 - w`. But that region is a broad
     /// plateau, not a ridgeline: at `w = 0.3` the matching `c = 0.7` scored
     /// *below* the unmatched `c = 0.5`, and everything from `w = 0.5, c = 0.5`
-    /// to `w = 0.7, c = 0.3` is one statistical tie. Treat `c = c₀(1 - w)` as
-    /// the right *starting point* for a new weight, not as a tuned optimum.
+    /// to `w = 0.7, c = 0.3` was one statistical tie in the sweep. Treat
+    /// `c = c₀(1 - w)` as the right *starting point* for a new weight, not as
+    /// a tuned optimum.
     ///
     /// # The corollary that actually matters
     ///
@@ -248,8 +282,8 @@ pub enum LeafValue {
 impl LeafValue {
     /// Whether this variant needs a [`duels_eval::Root`] built for the tree.
     ///
-    /// The default answers `false`, which is what keeps the pre-existing code
-    /// path free of any new allocation or call.
+    /// Only [`LeafValue::Rollout`] answers `false`, and it is not the default
+    /// here: this crate normally builds exactly one `Root` per search.
     #[inline]
     pub fn needs_eval_root(&self) -> bool {
         !matches!(self, LeafValue::Rollout)
@@ -266,30 +300,6 @@ impl LeafValue {
     }
 }
 
-/// The name of the [`duels_eval::Config`] generation `cfg` is, or `"custom"`.
-///
-/// A results file has to record *which* evaluation generation a leaf value was
-/// measured against, or a later `duels-eval` round makes the number
-/// uninterpretable. See [`crate::Config::eval_generation`].
-pub fn generation_name(cfg: &duels_eval::Config) -> &'static str {
-    // Newest first, so today's default reports as `v6` rather than matching
-    // some older snapshot that happens to be equal (none is — see
-    // `duels_eval::tests::the_generation_snapshots_are_a_chain_of_distinct_configurations`).
-    for (name, snapshot) in [
-        ("v6", duels_eval::Config::v6()),
-        ("v5", duels_eval::Config::v5()),
-        ("v4", duels_eval::Config::v4()),
-        ("v3", duels_eval::Config::v3()),
-        ("v2", duels_eval::Config::v2()),
-        ("v1", duels_eval::Config::v1()),
-    ] {
-        if *cfg == snapshot {
-            return name;
-        }
-    }
-    "custom"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,9 +308,14 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    /// The pinned generation, spelled the way the agent spells it.
-    fn pinned() -> duels_eval::Config {
-        crate::Config::default().eval_generation
+    /// The evaluation configuration this crate scores against: whatever
+    /// `duels-eval` currently defaults to, spelled the way
+    /// [`crate::tree::Tree::new`] spells it. **Not** a frozen generation — see
+    /// the crate docs' "Tracking `duels-eval` live" section for why that is
+    /// deliberate, and why a golden-values test belongs in `duels-eval` rather
+    /// than here.
+    fn tracked() -> duels_eval::Config {
+        duels_eval::Config::default()
     }
 
     #[test]
@@ -363,7 +378,7 @@ mod tests {
             "the fixture must be a rails-owned position or the test is vacuous"
         );
 
-        let root = duels_eval::Root::new(&state, state.current_player(), pinned());
+        let root = duels_eval::Root::new(&state, state.current_player(), tracked());
         let p = static_value(&state, &root);
         assert!(
             p < 1e-8,
@@ -381,7 +396,7 @@ mod tests {
     #[test]
     fn the_two_perspectives_are_complementary() {
         for (i, state) in fixed_positions().into_iter().enumerate() {
-            let root = duels_eval::Root::new(&state, state.current_player(), pinned());
+            let root = duels_eval::Root::new(&state, state.current_player(), tracked());
             let one = static_value(&state, &root);
             let two = win_probability(
                 duels_eval::evaluate(&state, Player::Two, &root),
@@ -394,14 +409,30 @@ mod tests {
         }
     }
 
+    /// Every static leaf value must land inside `[0, 1]`, whatever
+    /// `duels-eval` currently says about a position — that is what makes it
+    /// commensurable with the playout values the same tree backs up, and it
+    /// has to keep holding as the evaluation is re-tuned underneath.
+    ///
+    /// This is the *shape* invariant that replaces `mcts-uct`'s golden-values
+    /// test: it constrains the integration rather than freezing the numbers.
+    #[test]
+    fn every_static_leaf_value_is_a_probability_under_the_tracked_config() {
+        for (i, state) in fixed_positions().into_iter().enumerate() {
+            let root = duels_eval::Root::new(&state, state.current_player(), tracked());
+            let p = static_value(&state, &root);
+            assert!(
+                p.is_finite() && (0.0..=1.0).contains(&p),
+                "position {i} (age {}): static leaf value {p}",
+                state.age()
+            );
+        }
+    }
+
     /// Fifty reproducible mid-game positions, named by seed rather than
     /// checked in as states: `engine::new_game(seed)` driven `8 + seed % 24`
     /// plies by a uniform policy from a seeded stream, which reaches all three
     /// ages and both movers.
-    ///
-    /// The generator is deliberately dull and self-contained — a golden-value
-    /// test whose positions came from an agent would re-baseline itself every
-    /// time that agent changed.
     fn fixed_positions() -> Vec<GameState> {
         let mut out = Vec::with_capacity(50);
         for seed in 0..50u64 {
@@ -422,121 +453,4 @@ mod tests {
         assert!(out.len() >= 45, "only {} usable positions", out.len());
         out
     }
-
-    /// The pin's whole purpose, asserted rather than trusted: the numbers
-    /// [`crate::Config::eval_generation`] produces are the numbers this work
-    /// was measured against.
-    ///
-    /// The constants below were captured from `duels_eval::Config::v6()` —
-    /// today's `duels_eval::Config::default()` — when the pin was made, by the
-    /// `#[ignore]`d `print_the_golden_values` below (which shares this file's
-    /// position generator, so the two can never drift apart). If this test
-    /// fails, the pinned generation's
-    /// arithmetic has moved, and every strength number in this crate's
-    /// `LeafValue` documentation was measured against a different evaluator.
-    /// The fix is not to update the constants quietly: it is to re-baseline
-    /// *and re-measure*, or to pin the generation this crate was measured
-    /// against (see `duels_eval::Config::v6`'s contract for the next round).
-    ///
-    /// # Why a tolerance rather than `to_bits`
-    ///
-    /// Everywhere else in this repository a golden comparison on `f64` is
-    /// exact. It cannot be here: `duels_eval`'s terms call `exp` and `powf`,
-    /// and those do not agree bit for bit across platforms — which is exactly
-    /// why `duels-eval`'s own `tests/vN_identity.rs` files are same-process
-    /// copies rather than recorded digests. The tolerance is `1e-9` relative,
-    /// some nine orders of magnitude tighter than any change to a weight or a
-    /// model could hide in.
-    #[test]
-    fn the_pinned_generation_reproduces_its_golden_values() {
-        let positions = fixed_positions();
-        assert_eq!(
-            positions.len(),
-            GOLDEN_VALUES.len(),
-            "the position generator changed; re-capture with print_the_golden_values"
-        );
-        for (i, (state, &want)) in positions.iter().zip(GOLDEN_VALUES.iter()).enumerate() {
-            let root = duels_eval::Root::new(state, state.current_player(), pinned());
-            let got = duels_eval::evaluate(state, Player::One, &root);
-            let tol = 1e-9 * want.abs().max(1.0);
-            assert!(
-                (got - want).abs() <= tol,
-                "position {i} (age {}): evaluate = {got}, golden {want}",
-                state.age()
-            );
-        }
-    }
-
-    /// Re-capture [`GOLDEN_VALUES`] after a deliberate, measured re-baseline:
-    ///
-    /// ```text
-    /// cargo test -p duels-agent-mcts-uct --release \
-    ///     leaf::tests::print_the_golden_values -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "a capture tool, not a check; prints the constants the golden test asserts"]
-    fn print_the_golden_values() {
-        println!("    const GOLDEN_VALUES: &[f64] = &[");
-        for state in fixed_positions() {
-            let root = duels_eval::Root::new(&state, state.current_player(), pinned());
-            let v = duels_eval::evaluate(&state, Player::One, &root);
-            println!("        {v:?},");
-        }
-        println!("    ];");
-    }
-
-    /// `evaluate`'s golden values over [`fixed_positions`], in order, under
-    /// the pinned `duels_eval::Config::v6()`.
-    const GOLDEN_VALUES: &[f64] = &[
-        -8.770570092256175,
-        10.499330850326587,
-        -36.646297264103985,
-        0.6136215253130448,
-        -57.14781893387184,
-        -6.649101258951161,
-        29.621452662351835,
-        17.894577730322624,
-        -50.14222011004918,
-        30.191616852130366,
-        10.509440332134165,
-        48.754871571498384,
-        -44.15345179339767,
-        1.2772073235824397,
-        13.558590879480082,
-        30.663912263351662,
-        19.09711399964494,
-        15.70903338351609,
-        -57.54406720695947,
-        -23.952103967784968,
-        -9.47086305923548,
-        -77.0495149344806,
-        64.55104041293096,
-        6.815531420174832,
-        29.278599571145627,
-        -1.881176741914036,
-        3.3854981235944432,
-        -22.451298494175614,
-        -12.867793479774619,
-        41.630025886263354,
-        -2.6087073493535264,
-        20.516623195241714,
-        1.8485750695290957,
-        -9.921729659293213,
-        4.682569243365474,
-        46.09190584530731,
-        -55.41015770742843,
-        -9.979526531202236,
-        80.40053371565254,
-        -23.041443077124963,
-        6.357883627259987,
-        -34.276214101261544,
-        -19.312805246526896,
-        -20.928052810000466,
-        -82.06730587538483,
-        73.8678176292537,
-        43.4420916800415,
-        -5.277513730163665,
-        12.838223120699444,
-        3.9732885315116437,
-    ];
 }

@@ -11,7 +11,7 @@
 //! # The ladder, and why one budget runs all of it
 //!
 //! [`LADDER`] names the agents tracked and the budget each is *understood* to
-//! play at: `Nodes(1)` for the five 1-ply agents, `Nodes(2000)` for the two
+//! play at: `Nodes(1)` for the five 1-ply agents, `Nodes(2000)` for the three
 //! search agents, matching how every ladder comparison in this project's
 //! history has been run.
 //!
@@ -89,6 +89,13 @@ pub const LADDER: &[LadderEntry] = &[
         agent: "mcts-uct",
         budget: "nodes:2000",
     },
+    // A search agent, so it belongs in the `Nodes(2000)` tier alongside the
+    // other two rather than with the 1-ply agents — its budget is read, and
+    // the whole round robin is played at `ROUND_ROBIN_BUDGET` anyway.
+    LadderEntry {
+        agent: "mcts-eval",
+        budget: "nodes:2000",
+    },
 ];
 
 /// The budget every round-robin pairing is actually played at. Equivalent to
@@ -115,7 +122,7 @@ pub const CHAMPION: LadderEntry = LadderEntry {
 };
 
 /// Every unordered pairing of [`LADDER`] agents, in a stable order — the
-/// `C(n, 2)` = 21 matches one nightly round robin consists of.
+/// `C(n, 2)` = 28 matches one nightly round robin consists of.
 pub fn pairings() -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
     for (i, a) in LADDER.iter().enumerate() {
@@ -602,6 +609,7 @@ mod tests {
             "phased",
             "alphabeta",
             "mcts-uct",
+            "mcts-eval",
         ];
         let mut out = Vec::new();
         for (i, a) in order.iter().enumerate() {
@@ -659,7 +667,7 @@ mod tests {
         let p = pairings();
         let n = LADDER.len();
         assert_eq!(p.len(), n * (n - 1) / 2);
-        assert_eq!(p.len(), 21);
+        assert_eq!(p.len(), 28);
         let unique: BTreeSet<(&str, &str)> = p.iter().map(|&(a, b)| unordered(a, b)).collect();
         assert_eq!(unique.len(), p.len(), "no pairing should repeat");
         assert!(p.iter().all(|&(a, b)| a != b), "no self-play pairings");
@@ -731,14 +739,15 @@ mod tests {
         let board = build(&synthetic_round_robin(), "2026-09-06T00:00:00Z", "abc1234").unwrap();
         assert_eq!(board.schema, SCHEMA_VERSION);
         assert_eq!(board.rows.len(), LADDER.len());
-        assert_eq!(board.pairings.len(), 21);
-        assert_eq!(board.total_games, 21 * 100);
+        assert_eq!(board.pairings.len(), 28);
+        assert_eq!(board.total_games, 28 * 100);
         assert!(board.converged);
 
         let order: Vec<&str> = board.rows.iter().map(|r| r.agent.as_str()).collect();
         assert_eq!(
             order,
             vec![
+                "mcts-eval",
                 "mcts-uct",
                 "alphabeta",
                 "phased",
@@ -750,16 +759,28 @@ mod tests {
             "the synthetic ladder's order should come straight back out"
         );
         assert_eq!(board.rows[0].rank, 1);
-        assert!(board.rows[0].champion, "mcts-uct is the champion");
+        // The champion is a hand-maintained constant, not "whoever is top of
+        // this table" — see the module docs. In this synthetic fixture the
+        // strongest row is `mcts-eval` and the champion is still `mcts-uct`,
+        // which is exactly the separation being asserted.
+        assert!(!board.rows[0].champion, "the top row is not the champion");
+        assert!(
+            board
+                .rows
+                .iter()
+                .find(|r| r.agent == CHAMPION.agent)
+                .unwrap()
+                .champion
+        );
         assert!(board.rows.iter().filter(|r| r.champion).count() == 1);
 
         // The anchor is pinned exactly where `ANCHOR_ELO` says.
         let anchor = board.rows.iter().find(|r| r.agent == ANCHOR_AGENT).unwrap();
         assert_eq!(anchor.elo, ANCHOR_ELO);
 
-        // Each agent plays 6 opponents x 100 games.
+        // Each agent plays 7 opponents x 100 games.
         for row in &board.rows {
-            assert_eq!(row.games, 600, "{} played the wrong number", row.agent);
+            assert_eq!(row.games, 700, "{} played the wrong number", row.agent);
             assert_eq!(row.wins + row.losses + row.draws, row.games);
         }
         // The budget label follows the ladder, not the run.
@@ -789,7 +810,7 @@ mod tests {
         records.pop();
         let err = build(&records, "t", "c").unwrap_err();
         assert!(err.contains("incomplete"), "unexpected: {err}");
-        assert!(err.contains("1 of 21"), "should say what is missing: {err}");
+        assert!(err.contains("1 of 28"), "should say what is missing: {err}");
     }
 
     #[test]

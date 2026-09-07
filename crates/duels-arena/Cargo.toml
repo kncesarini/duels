@@ -17,6 +17,7 @@ duels-agent-phased = { path = "../agents/phased" }
 duels-eval = { path = "../duels-eval" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
+duels-agent-mcts-eval = { path = "../agents/mcts-eval" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }

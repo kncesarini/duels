@@ -40,6 +40,7 @@ pub const KNOWN_AGENTS: &[&str] = &[
     "phased",
     "alphabeta",
     "mcts-uct",
+    "mcts-eval",
 ];
 
 /// Construct the `Agent` for an agent seat. Unknown names are rejected when
@@ -56,6 +57,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
+        "mcts-eval" => Ok(Box::new(duels_agent_mcts_eval::MctsEvalAgent::new(seed))),
         other => Err(format!(
             "unknown agent \"{other}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")
@@ -67,16 +69,22 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
 ///
 /// `random` and `greedy` ignore whatever `Budget` they are handed (random
 /// picks uniformly, greedy is a fixed 1-ply heuristic), so `Nodes(1)` is a
-/// fine, instant default for both. `alphabeta` and `mcts-uct` are real
-/// anytime searches that get meaningfully stronger with more time (see their
-/// crate-level docs: e.g. alphabeta measures 82%/96%/96% win rate against
-/// `random` at `Nodes(2_000)`/`Nodes(20_000)`/`TimeMs(200)` respectively) -
-/// `TimeMs(1_000)` is chosen here as a "feels responsive but plays well"
-/// budget for an interactive game against a human, not the (often larger)
-/// budgets `duels-arena` uses to benchmark agents against each other.
+/// fine, instant default for both. `alphabeta`, `mcts-uct` and `mcts-eval`
+/// are real anytime searches that get meaningfully stronger with more time
+/// (see their crate-level docs: e.g. alphabeta measures 82%/96%/96% win rate
+/// against `random` at `Nodes(2_000)`/`Nodes(20_000)`/`TimeMs(200)`
+/// respectively) - `TimeMs(1_000)` is chosen here as a "feels responsive but
+/// plays well" budget for an interactive game against a human, not the (often
+/// larger) budgets `duels-arena` uses to benchmark agents against each other.
+///
+/// `mcts-eval` is the one to hand a wall-clock budget to with most
+/// confidence: its leaf value has no measurable throughput cost and its
+/// advantage over a plain playout is *larger* at `TimeMs(20)` and
+/// `TimeMs(100)` than at `Nodes(2000)`, because a better leaf value is worth
+/// more when there are fewer leaves to average over.
 fn interactive_budget(name: &str) -> Budget {
     match name {
-        "alphabeta" | "mcts-uct" => Budget::TimeMs(1_000),
+        "alphabeta" | "mcts-uct" | "mcts-eval" => Budget::TimeMs(1_000),
         _ => Budget::Nodes(1),
     }
 }

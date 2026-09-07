@@ -405,10 +405,13 @@ mod tests {
                 })
             })
             .collect();
-        assert_eq!(entries.len(), 21);
+        assert_eq!(
+            entries.len(),
+            leaderboard::LADDER.len() * (leaderboard::LADDER.len() - 1) / 2
+        );
         let json = serde_json::to_string(&entries).unwrap();
         let back: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.len(), 21);
+        assert_eq!(back.len(), entries.len());
         for e in &back {
             let a = e["agent_a"].as_str().unwrap();
             let b = e["agent_b"].as_str().unwrap();
