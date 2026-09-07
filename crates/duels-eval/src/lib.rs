@@ -1461,7 +1461,7 @@ pub struct EvalWeights {
     /// the pre-existing uniform treatment, bit for bit
     /// (`tests/v5_identity.rs`).
     ///
-    /// Kristian's read is that an extra turn is the most valuable thing a
+    /// The project owner's read is that an extra turn is the most valuable thing a
     /// wonder can print, and the flat model prices it exactly like a destroy
     /// or a free discard build. This is the one knob that tests that read,
     /// isolated from [`WonderModel::Budget`]'s other channels — which were

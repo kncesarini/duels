@@ -122,6 +122,9 @@ The web client never implements rules/legality/cost logic — it only renders wh
 - **`ai-candidate` is informational and must stay that way for now** (an explicit decision). It is a separate workflow file precisely so it cannot drift into `ci.yml`'s `gate` job. Promoting it to blocking means two deliberate edits: add it to `gate`'s `needs:` *and* to the ruleset's required-status-check list.
 - **The champion is a plain constant** (`leaderboard::CHAMPION`, currently `mcts-uct` at `Nodes(2000)`), not something read back out of the leaderboard. Automated promotion is M7 and does not exist yet; until it does, a human changing one line is the honest mechanism.
 
-## Current state (living reference — verify against `duels-arena` for ground truth, this will drift)
+## Current state
 
-Milestones complete: rules engine, playable web UI + server, seven AI agents (`random`/`greedy`/`greedy-ev`/`strategist`/`phased`/`alphabeta`/`mcts-uct`), tournament infrastructure, `duels-strategy` (a win-condition-aware policy layer), and M6b "Arena live" (leaderboard, nightly round-robin workflow, informational `ai-candidate` check). `mcts-uct` is the strongest agent. Not started: self-play RL, champion-promotion automation (M7), hosting/polish (see `docs/adr/` for the original architecture decisions and their rationale).
+See `docs/milestones.md` for the milestone table, the four human checkpoints, and what's
+actively being worked on. Update that file, not this section, as things change — this
+avoids keeping two summaries in sync. `docs/adr/` has the original architecture decisions
+and their rationale.
