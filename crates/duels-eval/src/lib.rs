@@ -887,6 +887,405 @@
 //! nothing positional to fix: `play_again` is a property of the wonder, not of
 //! the position, so there is no per-decision table for it to live in.
 //!
+//! # Round seven: the forward-looking terms were collectively over-priced
+//!
+//! Round seven is **one new gate, five re-weightings, four honest negatives
+//! and two new measurement instruments**. All of it is reproduced bit for bit
+//! by [`Config::v6`] (`tests/v6_identity.rs`).
+//!
+//! ## The brief, and the honest answer to it
+//!
+//! The brief was to improve the leaf evaluation, touching nothing outside this
+//! crate, and to raise `duels-agent-mcts-eval`'s Elo by **at least +200**
+//! against a fixed `mcts-uct` anchor. **The achieved figure is +1.2 Elo, 95%
+//! interval [-7.6, +10.0], over 12,800 games a side on four disjoint seed
+//! ranges** — which is to say no measurable change at all, and nowhere near
+//! the target.
+//!
+//! That is the round's most useful output, because it is not a statement about
+//! this change set. The same change set is worth **+149 / +166 Elo to
+//! `phased`**, **+122 / +126 against `alphabeta`** and **+87 / +101 against
+//! `mcts-uct`** — the largest movement any round of this crate has produced
+//! against an unrelated opponent, and the first time `phased` has beaten
+//! `alphabeta` at `Nodes(2000)`. **None of it reaches `mcts-eval`.** A leaf
+//! that is half playout, blended at `weight = 0.5` with an exploration
+//! constant tuned for that blend, extracts what it is going to extract from a
+//! hand-crafted evaluation, and this crate is no longer the binding
+//! constraint on it. The levers that could change that — the blend weight, the
+//! exploration constant, a `Root` rebuilt deeper in the tree — all live in
+//! `mcts-eval`, which this round was not allowed to touch and which is
+//! where a +200 would have to come from.
+//!
+//! ## Two instruments this crate did not have
+//!
+//! Every previous round could only sweep a knob that
+//! `duels_arena::agent_spec::parse_phased_config` had a key for, which put the
+//! instrument for measuring a `duels-eval` change in a crate a `duels-eval`
+//! round is not supposed to touch. Round seven added two `examples/` binaries
+//! instead, and they are why it could sweep as widely as it did.
+//!
+//! **`examples/head_to_head.rs`** is the arena's `phased`-versus-`phased`
+//! match reproduced inside this crate over two `Config` values given on the
+//! command line: same paired seat-swap, same salts, same `PhasedAgent::choose`,
+//! same Bradley-Terry fit. It agrees with the arena **to the game**:
+//! `phased:science_ladder=0.2` against `phased` over 3200 games at seed 1
+//! reads `+60.2 [+48.0, +72.4]` through `duels-arena` and `+60.2 [+48.0,
+//! +72.4]` through this example, 1874-1325-1. It also runs a 3200-game match
+//! in about three seconds, which is what made a five-round coordinate descent
+//! affordable.
+//!
+//! **`examples/leaf_probe.rs`** scores a *fixed* corpus of labelled positions
+//! under many configurations at once — mean negative log-likelihood at each
+//! configuration's own maximum-likelihood temperature, plus the
+//! temperature-free sign accuracy. `examples/calibrate.rs` cannot do this: it
+//! fits one configuration over that configuration's own self-play, so changing
+//! the weights changes the questions. See "a better predictor is a worse leaf"
+//! below for what the probe then measured, which is not what it was built to
+//! find.
+//!
+//! ## 1. The science ladder was being paid for a race that was already over
+//!
+//! [`terms::science_ladder`]'s rung is steeply convex — 6, 12 and 18 victory
+//! points at three, four and five distinct symbols — and the convexity has
+//! exactly one justification: six symbols win the game outright. The rung was
+//! collected whether or not a sixth symbol was still *in* the game. A player
+//! sitting on four symbols whose two missing ones were both buried in the
+//! opponent's city collected twelve victory points for a race that could not
+//! be run.
+//!
+//! [`ScienceWeights::dead_race_scale`] (**`0.0` by default**) multiplies the
+//! rung — and only the rung, never `pair_threat`, since a half-pair is still a
+//! progress token — once [`terms::supremacy_reachable`] says the player can no
+//! longer assemble [`terms::SYMBOLS_TO_WIN`] distinct symbols, counted off the
+//! card data through the same public-information test
+//! [`terms::second_copy_obtainable`] already applies to a second copy.
+//!
+//! It is worth **+32.0 / +24.8** Elo on its own against `phased:base=v6` over
+//! 3200 games on each of two disjoint seed ranges, and — the reason it is a
+//! gate and not a smaller number — **it keeps the scientific-supremacy route
+//! intact**, 44 and 51 science wins in 3200 games against round six's 39 and
+//! 45. That is the whole argument for it, because the cheap alternative is
+//! better on the aggregate and much worse on the route: driving
+//! [`EvalWeights::science_ladder`] to `0.2` with nothing else changed is worth
+//! **+61.6 / +58.3** and takes the science wins to **3**.
+//!
+//! The shipped default is both: the gate, plus the ladder at `0.5` and
+//! [`ScienceWeights::pair_threat_weight`] at `0.5`. Each field's own comment
+//! carries its sweep.
+//!
+//! ## 2. Chain equity, and the fitted weight that was covering for it
+//!
+//! With the ladder corrected, two weights that had been measured as
+//! "indistinguishable from zero, kept on the pooled result" and "fitted, not
+//! derived, and flagged as such" both turned out to be badly wrong, in the
+//! same direction, for what is probably the same reason.
+//!
+//! * [`EvalWeights::chain_equity`] `1.0` → **`0.25`**: the largest single
+//!   re-weighting of the round, +71 / +82 Elo.
+//! * [`EvalWeights::resource_bill`] `3.0` → **`1.0`**: +53 / +60 Elo, and a
+//!   *reversal* — round two fitted `3.0` over the derived `1.0` and wrote down
+//!   that it was "a measurement, not an argument". The derived rate now wins
+//!   by a wide margin on a monotone curve. **The fitted weight was
+//!   compensating for two other over-priced terms.**
+//! * [`EvalWeights::development`] `1/3` → **`0.2`**: +4 / +14 Elo.
+//!
+//! The pattern is the round's one-line summary and is worth keeping as a prior:
+//! **this evaluation's forward-looking terms were collectively over-priced**,
+//! each of them fitted against a baseline that contained the others, and
+//! correcting the largest one moved the honest value of the rest a long way.
+//!
+//! ## Elo, measured one change at a time
+//!
+//! Against `phased:base=v6` at `Nodes(1)`, **3200 games per seed range**, as a
+//! leave-one-out against the round-seven default — so each row is a paired
+//! head-to-head of exactly that one change. Every interval is ±12.2.
+//!
+//! ```text
+//!                                     seed 1   seed 5001   the change is worth
+//! the round-seven default             +149.2     +165.6
+//! chain_equity back to 1.0             +77.8      +83.6      +71 / +82
+//! resource_bill back to 3.0            +96.0     +106.0      +53 / +60
+//! science_ladder back to 1.0          +124.0     +133.5      +25 / +32
+//! pair_threat_weight back to 1.0      +138.6     +143.7      +11 / +22
+//! the dead-race gate switched off     +142.5     +153.3       +7 / +12
+//! development back to 1/3             +145.5     +151.8       +4 / +14
+//!
+//! owned-token equity switched on      +147.0     +160.7       -2 /  -5
+//! the count-priced menu switched on   +153.1     +165.8       +4 /  +0
+//! to_move = 2                         +128.5     +149.3      -21 / -16
+//! to_move = 6                         +106.7     +135.5      -43 / -30
+//! to_move = 12                        +104.5     +130.0      -45 / -36
+//! ```
+//!
+//! The six accepted rows sum to +171 and +217 while the whole default is worth
+//! +149 and +166, and that is the point rather than an inconsistency: every one
+//! of them was fitted, in an earlier round, against a baseline that contained
+//! the others.
+//!
+//! The default is then confirmed on **four further disjoint ranges it was not
+//! tuned on** — **+150.4**, **+161.2**, **+157.6** and **+145.7** at seeds
+//! 9001, 13001, 17001 and 21001, 3200 games each — so the five rounds of
+//! coordinate descent behind it are not two seed ranges' worth of noise.
+//!
+//! ## Against the ladder, including two unrelated searchers
+//!
+//! 800 games per seed range; the 1-ply opponents at `Nodes(1)` and the
+//! searchers at `Nodes(2000)`.
+//!
+//! ```text
+//!                                 the new default        phased:base=v6
+//! vs random        seed 1          798-2                  800-0
+//! vs greedy        seed 1          800-0                  796-4
+//! vs greedy-ev     seed 1          800-0                  797-3
+//! vs strategist    seed 1          800-0                  794-6
+//! vs alphabeta     seed 1        +54.2 [+29.9, +78.6]   -67.6 [-92.2, -43.1]
+//!                  seed 5001     +35.7 [+11.5, +59.9]   -90.5 [-115.4, -65.6]
+//! vs mcts-uct      seed 1       -134.3 [-160.1, -108.4] -221.4 [-250.5, -192.3]
+//!                  seed 5001    -120.9 [-146.4, -95.4]  -222.1 [-251.2, -192.9]
+//! ```
+//!
+//! **+122 / +126 Elo against `alphabeta` and +87 / +101 against `mcts-uct`**,
+//! agreeing on both ranges against two unrelated searchers, so the gain is not
+//! self-play overfitting. `phased` now **beats `alphabeta` at `Nodes(2000)`**,
+//! which no generation of this crate has done before.
+//!
+//! ## The behaviour actually changed
+//!
+//! `duels-arena/examples/matchup_profile.rs`, 400 games against `mcts-uct` at
+//! `Nodes(2000)` and seed 1, is the check that a win rate cannot make: did the
+//! agent start playing differently, or did it get luckier?
+//!
+//! ```text
+//!                                   phased:base=v6    the new default
+//! wins                                 91 / 400          128 / 400
+//!   by military supremacy                 2                  2
+//!   by scientific supremacy              30                  8
+//!   civilian                             58                118
+//! green cards per game                  3.9                1.6
+//! yellow cards per game                 4.2                5.7
+//! blue cards per game                   3.8                4.3
+//! distinct symbols reached             3.54               1.25
+//! guilds built (of 400 games)           321                393
+//! guild victory points per game        4.82               6.71
+//! victory-point margin in its losses   -7.22              -2.58
+//! ```
+//!
+//! Two readings, and the second is the one that matters. The obvious one is
+//! that the round traded the science lottery for civilian points: thirty
+//! supremacy wins become eight, fifty-eight civilian wins become a hundred and
+//! eighteen, and the city goes from four green cards to one and a half. The
+//! useful one is the bottom row — **the losses got much closer, −2.58 points
+//! against −7.22**. An agent that was entering a race it usually lost and then
+//! losing the rest of the game by seven points is now losing by two and a half,
+//! which is what a re-priced evaluation looks like from the inside and is not
+//! something a win rate would have shown.
+//!
+//! The military column is unchanged at 2 wins in 400, which is the one
+//! dimension of the profile round seven neither improved nor damaged, and the
+//! one `mcts-uct` still uses against it (72 military-supremacy wins before, 65
+//! after).
+//!
+//! ## The finding that matters most: a better *predictor* is a worse *leaf*
+//!
+//! `examples/leaf_probe.rs` was built on the reasoning that `phased` consumes
+//! this crate as a *policy* (an argmax, scale-free) while `mcts-eval` consumes
+//! it as a *value* (a fitted logistic averaged into a win rate), so the
+//! objective that matters for a leaf is how well the number predicts the
+//! winner. That reasoning is sound and the conclusion it leads to is **wrong**,
+//! which is the most useful thing this round found.
+//!
+//! A four-weight variant — `military_band = 3.0`, `vp_projection = 1.6`,
+//! `development = 0.16`, `yellow_equity = 2.0` — is a *substantially* better
+//! predictor than either round six or the round-seven default, reproduced on a
+//! disjoint corpus:
+//!
+//! ```text
+//!                    train (43k positions)      validate (disjoint, 46k)
+//!                  T     NLL    sign  sgn-III     T     NLL    sign  sgn-III
+//! round six      34.5  0.5982  0.6721  0.7247   25.1  0.5508  0.7036  0.7474
+//! round seven    23.1  0.6136  0.6730  0.7408   16.6  0.5741  0.6985  0.7619
+//! the predictor  14.0  0.5649  0.6981  0.7847   10.8  0.5210  0.7256  0.8197
+//! ```
+//!
+//! The predictor is better on every column on both corpora — two to three
+//! points of sign accuracy overall and four to seven in Age III — and as an
+//! `mcts-eval` leaf value it is worth **+64.9** against the anchor, against
+//! **+94.8** for the intermediate round-seven bundle it was built on top of
+//! (the science gate and the ladder, without the chain-equity, bill and
+//! development corrections) and **+89.3** for round six, all at 3200 games and
+//! seed 1. The victory kinds say why: military wins go
+//! 236 → 494 and civilian collapses 1703 → 1368. Military standing predicts
+//! the winner very well *and* steers a search into races it then loses, which
+//! is this project's oldest finding — "win-condition awareness belongs in the
+//! search policy, not the evaluation function" — arriving from a new direction.
+//!
+//! The middle row makes the point sharper still, and it is the shipped
+//! default: **round seven is a *worse* predictor than round six** — a tenth of
+//! a nat of likelihood worse on both corpora, with sign accuracy flat — while
+//! being +150 Elo stronger as a policy and, as a leaf, no worse. On this
+//! corpus, over these two objectives, the correlation is not merely weak;
+//! across the three rows it points the wrong way.
+//!
+//! **So the probe is a screen for a hypothesis, not a proxy for leaf quality.**
+//! The instrument that did predict `mcts-eval`'s direction was the boring one:
+//! `phased` Elo, attenuated. Later rounds should treat it that way.
+//!
+//! ## `mcts-eval` against the fixed `mcts-uct` anchor
+//!
+//! `mcts-eval` reads [`Config::default`] live and pins no generation (that is
+//! deliberate; see its crate docs), so "old against new" is not a single-binary
+//! match. The measurement is therefore indirect, against an anchor that does
+//! not move: `mcts-uct` no longer depends on this crate at all, so the same
+//! `mcts-uct` is on the other side of every row below and the **difference of
+//! the two Elo-vs-anchor columns is the achieved gain**. Both columns were
+//! measured with a binary built from the same tree, differing only in what
+//! `Config::default()` returns.
+//!
+//! ```text
+//! Nodes(2000), 3200 games per seed range, paired and seat-swapped
+//!                   round six        round seven        the round is worth
+//! seed 1          +89.3 +-12.4      +93.9 +-12.5              +4.7
+//! seed 5001       +89.4 +-12.4     +104.4 +-12.6             +15.0
+//! seed 9001       +94.6 +-12.5      +83.1 +-12.4             -11.6
+//! seed 13001      +84.9 +-12.4      +82.0 +-12.4              -2.9
+//! pooled (12800)  +89.6 +- 6.2      +90.8 +- 6.2       +1.2 [-7.6, +10.0]
+//!
+//! TimeMs(20), 400 games per seed range, RAYON_NUM_THREADS=1, one at a time
+//! seed 1          +54.2 +-34.4      +97.8 +-35.4             +43.6
+//! seed 5001       +88.5 +-35.1      +55.9 +-34.4             -32.6
+//! pooled (800)    +71.3 +-24.6      +76.7 +-24.6      +5.4 [-29.4, +40.2]
+//! ```
+//!
+//! **+1.2 Elo, on an interval that comfortably contains zero, over twelve
+//! thousand eight hundred games a side.** Two ranges up, two down, and the two
+//! wall-clock ranges disagree with each other as well. The honest reading is
+//! not "a small gain" but **"no measurable change"**: round seven is worth
+//! about +150 Elo to `phased`, +122 against `alphabeta` and +95 against
+//! `mcts-uct`, and none of it reaches `mcts-eval`.
+//!
+//! Two things stop that being a statement about measurement noise. The
+//! four-range protocol is what caught it — at the two ranges this round was
+//! tuned on it reads +4.7 and +15.0, and a round that stopped there would have
+//! reported a gain that the next two ranges erase. And `mcts-eval` is
+//! demonstrably *not* insensitive to this crate in general: the predictor
+//! variant above, a change of comparable size in the other direction, costs it
+//! **−29.0 [±17.5]** at seed 1. The leaf can be broken from here. It cannot,
+//! at `Nodes(2000)` and `weight = 0.5`, be much improved from here.
+//!
+//! The win-condition breakdown says the same thing from the other side. Round
+//! seven moves `mcts-eval`'s own profile a long way — military wins 236 → 324
+//! and 259 → 314 on the first two ranges, scientific 43 → 25 and 46 → 28 —
+//! while the totals stay put. It is playing differently and winning as often.
+//!
+//! ## Four honest negatives
+//!
+//! **1. [`EvalWeights::token_equity`] (default `0.0`).** Six of the ten
+//! progress tokens are rules changes that pay out over the remaining game —
+//! Theology, Economy, Strategy, Architecture, Masonry, Urbanism — and this
+//! evaluation priced **none** of them, which also meant that
+//! [`PendingModel::Completed`], the code that *chooses* a token when a science
+//! pair completes, was choosing between them on printed victory points alone.
+//! [`terms::TokenTable`] prices all six, each channel a quantity the evaluation
+//! already computes (Economy's is literally [`terms::resource_bill`] read from
+//! the other end). It measures at **+7.1 / +8.0** Elo at `0.5` and **+3.5 /
+//! +15.0** at `1.0` against `phased:base=v6`, and then at **−2 / −5** as a
+//! leave-one-out against the finished round-seven default, which is the
+//! comparison that decides it. A real gap, correctly filled, worth nothing
+//! once the terms it competes with are priced properly.
+//!
+//! **2. [`CountPricing::Counted`] (default off).** Five Age III commercial
+//! cards print no coins and instead pay a count of the builder's own city, so
+//! [`menu::TakeValue::free_value`] — which starts from `def.coins` — could not
+//! see nine coins on a Chamber of Commerce. Exactly the shape of the guild bug
+//! round five fixed, and unlike that one it is a count already on the table
+//! rather than a projection. **+5.9 / −2.3** Elo against `phased:base=v6`, and
+//! **+3.9 / +0.2** as a leave-one-out against the round-seven default. Neutral
+//! on both readings and with the signs disagreeing on one of them, so it stays
+//! off, per this project's rule about not moving a default on a neutral
+//! result. It is the more correct model and it is available as an option with
+//! the measurement written down.
+//!
+//! **3. [`EvalWeights::to_move`] (default `0.0`).** The right to move is worth
+//! a great deal in this game (`CLAUDE.md` records ~67/33 between equal
+//! `mcts-uct` configurations) and an extra turn is the only thing that
+//! re-assigns the remaining slots. Nothing priced either. Two things came out
+//! of trying: first, a term reading `GameState::extra_turn` is **exactly zero
+//! at every position anything ever scores** — `engine::finish_turn` consumes
+//! the flag the instant it would matter — measured over fifty thousand real
+//! positions before the cause was found, and the reason
+//! [`terms::to_move`] reads `current_player` instead. Second, it costs Elo:
+//! `+2` is worth −21 / −16, `+6` −43 / −30 and `+12` −45 / −36 as a
+//! leave-one-out against the round-seven default. The value objective *likes*
+//! it, at one or two victory points; the policy objective does not, which is
+//! the same divergence as the predictor above.
+//!
+//! **4. [`EvalWeights::value_scale`] (default `1.0`).** The one knob a
+//! `duels-eval` round has that a search can see and `phased` cannot: scaling
+//! this crate's output by `k` divides `mcts-eval`'s fitted leaf temperature by
+//! `k`. The maximum-likelihood calibration turns out to be about right —
+//! measured on the same intermediate bundle as the predictor above, `k = 2.0`
+//! reads **+84.7** and `k = 0.6` reads **+74.4** against the anchor where
+//! `k = 1.0` reads **+94.8**, all at 3200 games and seed 1. Worth having
+//! measured, because "the calibration `calibrate.rs` fits is also the
+//! calibration the search wants" was an assumption and is now a measurement.
+//! It is also the knob to re-check first if a future round moves the output
+//! scale a long way: round seven took the maximum-likelihood temperature over
+//! this corpus from 34.5 to 23.1 victory points while `mcts-eval`'s fitted
+//! constants stayed where they were, and `k` is how a `duels-eval` round would
+//! compensate for that without touching a search.
+//!
+//! ## The `yellow_equity` mystery is still open, and is now stranger
+//!
+//! Round five's follow-up note flagged [`EvalWeights::yellow_equity`] as the
+//! result to be most suspicious of: the term needed four times the weight its
+//! own stated mechanism implies, and the working theory was that it was a proxy
+//! for a different, unidentified mispricing of commercial cards. Round seven
+//! corrected four genuinely mispriced terms and re-swept it, and `4.0` is
+//! **still** on the plateau: 3.0 reads +139.1 / +154.3, 4.0 (the default)
+//! +149.2 / +165.6, 4.5 +147.5 / +165.8, 5.0 +150.8 / +157.9, 5.5 +152.5 /
+//! +155.2 and 6.0 +150.5 / +148.4 against `phased:base=v6` over 3200 games on
+//! each of two disjoint seed ranges — flat from 4 to 5.5 and falling below 4,
+//! which is where round five left it.
+//!
+//! Two candidate mechanisms were ruled *out* along the way. It is not the
+//! menu's blindness to the count-scaled Age III commercial cards — that is
+//! [`CountPricing`] above, and pricing it is worth nothing. It is not the
+//! coins-to-points rate, which round five had already ruled out. What remains
+//! untested is the control round five named and did not build: a **flat**
+//! per-yellow bonus, with `decisions_left` removed, which would say whether
+//! the term is pricing discard yield at all or is pricing something that merely
+//! correlates with holding commercial cards early. That needs a second knob and
+//! is the obvious follow-up.
+//!
+//! ## Cost
+//!
+//! `examples/eval_bench.rs`, every configuration timed on the same 2151
+//! positions. The per-**leaf** number is the one that matters for this round,
+//! because `evaluate` is what a search calls tens of thousands of times per
+//! decision while `Root::new` is called once per tree node:
+//!
+//! ```text
+//!                                     Root::new    evaluate       sum
+//! v1 (the round-one evaluation)         1.819 us    0.220 us   2.039 us
+//! v5 (the round-five evaluation)        3.467 us    0.455 us   3.922 us
+//! v6 (the round-six evaluation)         3.462 us    0.457 us   3.919 us
+//! default (round seven)                 3.488 us    0.470 us   3.958 us
+//! default + owned-token equity          3.674 us    0.469 us   4.143 us
+//! default + the count-priced menu       3.508 us    0.468 us   3.976 us
+//! ```
+//!
+//! **Round seven is free**, at +0.013 us per leaf and +0.026 us per node,
+//! which is inside the benchmark's run-to-run spread. It was not free when
+//! first written: the dead-race gate's reachability walk read
+//! **0.720 us** per `evaluate`, a **+47%** regression on the one number a leaf
+//! value cannot afford to regress. Two guards fixed it and are in the code for
+//! that reason — the walk is skipped entirely when the ladder rung is zero
+//! (a player holding no symbols cannot care whether the race is alive), and
+//! [`terms::supremacy_live`] stops at the *second* unreachable symbol, since
+//! seven symbols exist and six win. The honest count,
+//! [`terms::supremacy_reachable`], is kept for the tests and the diagnostics
+//! and is not on the hot path.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -1158,6 +1557,42 @@ pub enum GuildPricing {
     Projected,
 }
 
+/// Whether [`menu::TakeValue`] prices the coins a card pays *per building its
+/// taker already owns*.
+///
+/// Five commercial cards — all of them Age III — print no coins at all and
+/// instead pay `amount_per_unit ×` a count of the builder's own city, straight
+/// through [`duels_core::data::Card::coins_per_own`]: three coins per
+/// manufactured good, two per raw material, one per military building, one per
+/// commercial building, two per constructed wonder. This is exactly the shape
+/// of the guild bug round five fixed — [`menu::TakeValue::free_value`] starts a
+/// card's value from `def.victory_points` and `def.coins`, and `def.coins` is
+/// zero for all five — except that here the payout is not a projection but a
+/// count that is already on the table, so there is nothing to estimate.
+///
+/// The main evaluation was never wrong about these cards: the coins arrive in
+/// the post-action state and [`terms::coin_points`] reads them. It was the
+/// *menu* that could not see them, and so under-valued what the next mover's
+/// turn was worth and how much taking one of these away from them was worth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CountPricing {
+    /// A card is worth its printed coins, which for these five is zero — the
+    /// pre-existing behaviour, reproduced bit for bit by [`Config::v6`].
+    #[default]
+    Unpriced,
+    /// `coins_per_own × count(taker's city) × coin_marginal`, read off the
+    /// player the menu is pricing for.
+    ///
+    /// **Off by default — an honest negative.** It is the more correct model
+    /// and it measures at nothing: −2.7 / −0.9 Elo as a leave-one-out against
+    /// the round-seven default over 3200 games on each of two disjoint seed
+    /// ranges. The reason is almost certainly that all five cards are Age III
+    /// and the menu term is `λ = 0.6` of one softmax entry, so the blind spot
+    /// was real and rarely load-bearing. Kept, with the measurement written
+    /// down, rather than enabled on the strength of the argument.
+    Counted,
+}
+
 /// What [`menu::menu_term`] does when nothing on the board is affordable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MenuFloor {
@@ -1345,6 +1780,25 @@ pub struct ScienceWeights {
     /// if they would rather deny it — a tempo tax they pay whether or not the
     /// token itself is valuable.
     pub pair_tempo_tax: f64,
+    /// What the ladder rung is multiplied by once **scientific supremacy is no
+    /// longer reachable** for this player — when the symbols they do not hold
+    /// can no longer all be obtained, counted from the card data by
+    /// [`terms::supremacy_reachable`].
+    ///
+    /// `1.0` is the pre-existing behaviour and is what [`Config::v6`] restores:
+    /// a player at four distinct symbols collected the full rung whether or not
+    /// a fifth and sixth were still physically in the game. That is the flaw
+    /// this knob fixes, and it is why the whole ladder measured **over-priced**
+    /// — see [`EvalWeights::science_ladder`].
+    ///
+    /// The rung is not taken to zero. Distinct symbols keep paying without
+    /// supremacy: they are printed victory points (which
+    /// [`terms::card_and_token_vp`] already counts) and they are pairs waiting
+    /// to be completed for a progress token (which [`terms::science_ladder`]'s
+    /// own `pair_threat` prices, and which this scale deliberately does **not**
+    /// touch). What is worthless once the race is dead is the *convexity* — the
+    /// rung's jump from 6 to 12 to 18 exists because six symbols win the game.
+    pub dead_race_scale: f64,
 }
 
 impl Default for ScienceWeights {
@@ -1352,9 +1806,11 @@ impl Default for ScienceWeights {
         Self {
             ladder: [0.0, 1.0, 2.5, 6.0, 12.0, 18.0],
             strong_token_mult: 0.15,
-            pair_threat_weight: 1.0,
+            pair_threat_weight: 0.5,
             pair_token_share: 0.5,
             pair_tempo_tax: 0.5,
+            // **Measured.** See the round-seven section of the crate docs.
+            dead_race_scale: 0.0,
         }
     }
 }
@@ -1515,6 +1971,66 @@ pub struct EvalWeights {
     /// [`terms::yellow_equity`]. Measured, not guessed — see
     /// [`terms::DISCARD_RATE_PER_DECISION`].
     pub yellow_discard_rate: f64,
+    /// Victory points for being the player **to move**
+    /// ([`terms::to_move`]) — the value of the right to move, and, on a
+    /// post-action state, the credit for a move that earned an extra turn.
+    /// Zero switches the term off entirely and restores the previous
+    /// arithmetic exactly.
+    ///
+    /// Round six priced a play-again wonder while it was still *unbuilt* and
+    /// measured that at about +47 Elo. This is the other half of the same
+    /// idea: the turn once it is actually in hand. See [`terms::to_move`] for
+    /// why that has to be read off `current_player` rather than off
+    /// `GameState::extra_turn`.
+    ///
+    /// **Zero by default — an honest negative, and an unambiguous one.** As a
+    /// leave-one-out against the round-seven default over 3200 games on each of
+    /// two disjoint seed ranges, `2` is worth −21 / −16, `6` is worth −43 / −30
+    /// and `12` is worth −45 / −36. `examples/leaf_probe.rs` says the opposite
+    /// — the right to move is worth one or two victory points as a *predictor*
+    /// — which is the same policy-versus-value divergence the round-seven
+    /// section of the crate docs is about.
+    pub to_move: f64,
+    /// Weight on [`terms::token_equity`], the forward value of the progress
+    /// tokens a player already **owns** — what Theology, Economy, Strategy,
+    /// Architecture, Masonry and Urbanism are worth for the rest of the game,
+    /// as against the printed victory points
+    /// [`duels_core::scoring::breakdown`] already counts. Zero switches the
+    /// term off entirely and restores the previous arithmetic exactly.
+    ///
+    /// **Zero by default — an honest negative, and a genuine gap correctly
+    /// filled.** Six of the ten tokens are rules changes this evaluation
+    /// priced at nothing, which also meant [`PendingModel::Completed`] chose
+    /// between them on printed victory points alone. It is worth +7.1 / +8.0
+    /// Elo at `0.5` against `phased:base=v6` over 3200 games on each of two
+    /// disjoint seed ranges, and −2 / −5 as a leave-one-out against the
+    /// finished round-seven default, which is the comparison that decides it.
+    /// Kept as an option with the measurement written down; see
+    /// [`terms::TokenTable`] for what each channel is priced from.
+    pub token_equity: f64,
+    /// A single multiplier on the whole weighted sum
+    /// ([`evaluate`]'s ordinary return, and [`Root::denial_term`] with it) —
+    /// **not** on the rails or on a finished game's `instant_result`, which
+    /// are magnitudes rather than judgements.
+    ///
+    /// # What this is for, and who it is invisible to
+    ///
+    /// It is invisible to `duels-agent-phased`, which takes an argmax: scaling
+    /// every candidate's score by the same positive constant cannot reorder
+    /// them (the tie window is `1e-6` against scores of order ten, and the
+    /// rails it does not scale are five hundred). It is **not** invisible to
+    /// `duels-agent-mcts-eval`, which maps this crate's output through a
+    /// logistic of fitted temperature `T` and averages the result into a
+    /// win-rate estimate: multiplying by `k` there is exactly dividing that
+    /// temperature by `k`, so this knob is the one instrument a
+    /// `duels-eval` round has for asking whether the leaf value a search wants
+    /// is sharper or flatter than the maximum-likelihood calibration
+    /// `examples/calibrate.rs` fits.
+    ///
+    /// `1.0` — the calibration as fitted — is [`Config::v6`]'s value and is
+    /// what the shipped default keeps; see the round-seven section of the
+    /// crate docs for the sweep that says so.
+    pub value_scale: f64,
 }
 
 impl Default for EvalWeights {
@@ -1546,30 +2062,78 @@ impl Default for EvalWeights {
             military_endgame_urgency: 1.5,
             vp_projection: 1.0,
             coins_div3: 1.0,
-            development: 1.0 / 3.0,
+            // **Was `1/3` — the rate at which a coin becomes a victory point
+            // — on the argument that "a coin this city never has to spend is
+            // worth exactly what a coin in hand is worth". Round seven cut it
+            // to `0.2`.** The argument is sound about a coin and wrong about
+            // this term: `development_value` counts a *want* the pool is
+            // projected to have, over `take_rate x decisions_left` builds
+            // that may never happen, and a projected saving is not a coin. It
+            // is worth +4 / +14 Elo over 3200 games on each of two disjoint
+            // seed ranges as the last step of the round-seven refit (+149.2 /
+            // +165.6 against `phased:base=v6`, where `1/3` reads +145.5 /
+            // +151.8), on a flat curve between 0.16 and 0.25.
+            development: 0.2,
             development_take_rate: 0.6,
-            science_ladder: 1.0,
+            // **Was `1.0`. Round seven halves it, and the same round adds
+            // the reachability gate that explains why it was too big** — see
+            // [`ScienceWeights::dead_race_scale`]. The two together are the
+            // largest single effect of the round: `1.0` costs −24 / −27 Elo as
+            // a leave-one-out against this default over 3200 games on each of
+            // two disjoint seed ranges, and switching the gate off as well
+            // costs another −10 / −7.
+            //
+            // The honest reading of the sweep is that the ladder was worth
+            // *less* than nothing at `1.0`: with everything else at its
+            // round-six value, driving this weight to `0.1` was worth +63 /
+            // +57 Elo on its own. `0.5` with the gate in place is the setting
+            // that keeps the scientific-supremacy route on the board — the
+            // gate costs the route almost nothing, while a flat cut to `0.2`
+            // takes this agent's science wins from ~40 in 3200 games to 3 —
+            // and it is the setting the round-seven refit was tuned around.
+            science_ladder: 0.5,
             science: ScienceWeights::default(),
             race_card_liquidity: 0.15,
             race_liquidity_cap: 8.0,
             coin_safety_floor: 3.0,
             coin_safety_penalty: 0.5,
             resource_vulnerability: 0.4,
-            // Fitted, not derived. The term divides the bill by three, which
-            // is the rate at which coins become victory points at scoring; at
-            // `1.0` that is all this weight would say. Three reproduces
-            // consistently better on two disjoint seed ranges (+265 / +267 Elo
-            // against the previous agent, versus +233 / +226 at one), which
-            // says a coin the opponent is forced to spend on trade is worth
-            // roughly a whole victory point rather than a third of one. That
-            // is not implausible — a trade payment costs them the coin *and*
-            // whatever they would rather have bought with it — but it is a
-            // measurement, not an argument, and is flagged as such.
-            resource_bill: 3.0,
+            // **`One`, and derived rather than fitted — which is a reversal.**
+            // Round two fitted `3.0` and flagged it: the term already divides
+            // the bill by three, which is the rate at which coins become
+            // victory points, so `1.0` is all this weight has to say and
+            // three said a trade coin was worth a whole victory point. Round
+            // two's own comment called that "a measurement, not an argument".
+            //
+            // Round seven re-measured it with the science ladder and chain
+            // equity corrected, and the derived value now wins by a wide
+            // margin: sweeping 0.6 / 1.0 / 1.4 / 1.7 / 2.0 / 2.2 / 2.5 / 3.0
+            // against `phased:base=v6` over 3200 games on each of two disjoint
+            // seed ranges reads +135/+142, +145/+144, +148/+145, +130/+133,
+            // +123/+127, +116/+122, +109/+117 and +98/+107 — monotone from
+            // `3.0` down to a plateau at 1.0-1.4. **`3.0` was compensating for
+            // two other over-priced terms**, which is exactly the failure mode
+            // a fitted weight has and a derived one does not; `1.0` is taken
+            // because it is the honest rate and is indistinguishable from the
+            // top of the plateau.
+            resource_bill: 1.0,
             coin_smooth_beta: 0.6,
             coin_smooth_ref: 5.0,
             coin_endgame_decisions: 2.0,
-            chain_equity: 1.0,
+            // **Was `1.0`; round seven cuts it to a quarter, and this is the
+            // single largest re-weighting of the round.** Round two shipped
+            // `1.0` and recorded that switching it off was worth −51 / +17 —
+            // "indistinguishable from zero, kept on the strength of the pooled
+            // result and of the fact that [`menu`] needs its table anyway".
+            // With the round-seven ladder in place the sign is no longer in
+            // doubt: 0.9 / 0.6 / 0.5 / 0.25 / 0.1 / 0.0 read +66/+63,
+            // +80/+79, +84/+90, +98/+107, +95/+112 and +96/+112 against
+            // `phased:base=v6` over 3200 games on each of two disjoint seed
+            // ranges. Flat below 0.25, so a quarter is taken rather than zero:
+            // the forward value of a chain starter is real, it was simply
+            // priced at four times what it is worth, and keeping the term
+            // non-zero keeps `menu`'s table honest about what it feeds.
+            chain_equity: 0.25,
             menu: MenuWeights::default(),
             deny_chain_gift: 0.5,
             wonder_potential: 0.5,
@@ -1642,6 +2206,12 @@ impl Default for EvalWeights {
             // round did not build that control, and it is the obvious follow-up.
             yellow_equity: 4.0,
             yellow_discard_rate: terms::DISCARD_RATE_PER_DECISION,
+            to_move: 0.0,
+            token_equity: 0.0,
+            // The calibration as `examples/calibrate.rs` fits it. See the
+            // field docs, and the round-seven sweep that measured both
+            // directions and found neither.
+            value_scale: 1.0,
         }
     }
 }
@@ -1693,6 +2263,9 @@ pub struct Config {
     pub destroy_replace_discount: bool,
     /// Whether the menu prices a guild card at all. See [`GuildPricing`].
     pub guild_pricing: GuildPricing,
+    /// Whether the menu prices a commercial card's count-scaled coin payout.
+    /// See [`CountPricing`].
+    pub count_pricing: CountPricing,
     /// What the menu falls back on when nothing is affordable. See
     /// [`MenuFloor`].
     pub menu_floor: MenuFloor,
@@ -1822,8 +2395,42 @@ impl Config {
         }
     }
 
-    /// The configuration the *sixth* round of work shipped with, which is also
-    /// today's [`Config::default`].
+    /// The configuration the *sixth* round of work shipped with.
+    ///
+    /// Round seven changed [`Config::default`], so — following the contract
+    /// spelled out under [`Config::v7`] — this function stops being an alias
+    /// for the default and spells out round seven's *off* values instead:
+    /// the science ladder back at its round-six weight with the dead-race gate
+    /// disabled, no owned-token equity, the menu blind to a commercial card's
+    /// count-scaled coins, and the value scale at one.
+    ///
+    /// `tests/v6_identity.rs` asserts this reproduces round six's arithmetic
+    /// bit for bit, which is what makes `phased` against `phased:base=v6` a
+    /// single-binary measurement.
+    pub fn v6() -> Config {
+        Config {
+            eval: EvalWeights {
+                development: 1.0 / 3.0,
+                resource_bill: 3.0,
+                chain_equity: 1.0,
+                science_ladder: 1.0,
+                science: ScienceWeights {
+                    dead_race_scale: 1.0,
+                    pair_threat_weight: 1.0,
+                    ..Config::v7().eval.science
+                },
+                to_move: 0.0,
+                token_equity: 0.0,
+                value_scale: 1.0,
+                ..Config::v7().eval
+            },
+            count_pricing: CountPricing::Unpriced,
+            ..Config::v7()
+        }
+    }
+
+    /// The configuration the *seventh* round of work shipped with, which is
+    /// also today's [`Config::default`].
     ///
     /// # Why a snapshot with no `#[cfg(test)]` copy behind it
     ///
@@ -1849,19 +2456,20 @@ impl Config {
     ///
     /// The moment [`Config::default`] moves, this stops being a snapshot of
     /// anything. So a round that changes the default must, in the same PR:
-    /// add `v7()` and re-point this function's `..` at it, spelling out round
-    /// seven's *off* values here (exactly as [`Config::v2`]'s comment
-    /// describes). If some future agent pins a generation the way `mcts-uct`
-    /// once did, that agent's own golden-values test is what re-baselining
-    /// means for it — this crate cannot enforce that on its behalf.
+    /// add `v8()` and re-point this function's `..` at it, spelling out round
+    /// eight's *off* values here (exactly as [`Config::v2`]'s comment
+    /// describes, and exactly as round seven did to [`Config::v6`]). If some
+    /// future agent pins a generation the way `mcts-uct` once did, that
+    /// agent's own golden-values test is what re-baselining means for it —
+    /// this crate cannot enforce that on its behalf.
     ///
     /// Because the newest link in this chain is defined *as* the default
-    /// (`v1`-`v5` are deltas from it, not literal field values), any
-    /// same-crate check that `v6 == default` is a tautology — this is not a
+    /// (`v1`-`v6` are deltas from it, not literal field values), any
+    /// same-crate check that `v7 == default` is a tautology — this is not a
     /// gap introduced by removing the downstream test, it was always true.
     /// See the note in
     /// `tests::the_generation_snapshots_are_a_chain_of_distinct_configurations`.
-    pub fn v6() -> Config {
+    pub fn v7() -> Config {
         Config::default()
     }
 }
@@ -1874,13 +2482,24 @@ impl Config {
         let e = &self.eval;
         let b = &self.blend;
         format!(
-            "guild={}/{:.2},menufloor={},afford={:.2},supply={},yellow={:.2}@{:.3},\
+            "sci={:.2}/dead={:.2}/pair={:.2},tokeneq={:.2},tomove={:.2},scale={:.3},count={},\
+             guild={}/{:.2},menufloor={},afford={:.2},supply={},yellow={:.2}@{:.3},\
              models={}/{}/{},pending={},wonder={}/{:.2}/{:.2}/{:.2},destroyrepl={},\
              rails={}/{:.0},shieldprice={},horizon={},lockin={:.2},\
              menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
              smooth={:.2}@{:.1}|\
              mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
              blend={},a={:.2},b={:.2},n={:.1},c0={:.2},floors={:.2}/{:.2}/{:.2}/{:.2}/{:.2},boosts={:.2}/{:.2}",
+            e.science_ladder,
+            e.science.dead_race_scale,
+            e.science.pair_threat_weight,
+            e.token_equity,
+            e.to_move,
+            e.value_scale,
+            match self.count_pricing {
+                CountPricing::Unpriced => "unpriced",
+                CountPricing::Counted => "counted",
+            },
             match self.guild_pricing {
                 GuildPricing::Unpriced => "unpriced",
                 GuildPricing::Projected => "projected",
@@ -1997,6 +2616,7 @@ pub struct Root {
     menu: MenuTables,
     wonders: terms::WonderBudget,
     guilds: terms::GuildTable,
+    tokens: terms::TokenTable,
     /// `replace_r`, indexed by [`duels_core::data::Resource::index`]. Empty
     /// (all zero) unless [`Config::destroy_replace_discount`] is on.
     replace: [f64; duels_core::data::NUM_RESOURCES],
@@ -2105,6 +2725,23 @@ impl Root {
             [0.0; duels_core::data::NUM_RESOURCES]
         };
 
+        // The owned-token prices, read off the two `TakeValue`s the menu has
+        // already built rather than recomputed, so the two cannot disagree
+        // about what a shield or a coin is worth. Built only when something
+        // reads it.
+        let tokens = if config.eval.token_equity == 0.0 {
+            terms::TokenTable::empty()
+        } else {
+            terms::TokenTable::of(
+                state,
+                &supply,
+                chain.starters(),
+                [take[0].shield_delta[1], take[1].shield_delta[1]],
+                [take[0].coin_marginal, take[1].coin_marginal],
+                &config.eval,
+            )
+        };
+
         let menu = if config.eval.menu.lambda == 0.0 {
             MenuTables::unpriced(state, take, chain)
         } else {
@@ -2123,6 +2760,7 @@ impl Root {
 
         Root {
             guilds,
+            tokens,
             wonders,
             replace,
             deny_scale: 1.0 + (config.eval.deny_opponent_commit_boost - 1.0) * commit_opp.s,
@@ -2193,6 +2831,13 @@ impl Root {
         &self.guilds
     }
 
+    /// The root-fixed forward prices of the ten progress tokens, for
+    /// diagnostics. All zero unless [`EvalWeights::token_equity`] is non-zero.
+    #[inline]
+    pub fn tokens(&self) -> &terms::TokenTable {
+        &self.tokens
+    }
+
     /// How replaceable `card`'s production is: `0` for a card whose resources
     /// the market can no longer print (every Age III destroy, since Age III
     /// prints no brown or grey card — counted off `data/cards.json` by
@@ -2258,7 +2903,15 @@ impl Root {
     /// A function of the root position and the action only, so it is added
     /// once per candidate rather than once per chance outcome.
     pub fn denial_term(&self, action: Action) -> f64 {
-        self.config.eval.deny * self.deny_scale * deny_vp(action, &self.stance)
+        let v = self.config.eval.deny * self.deny_scale * deny_vp(action, &self.stance);
+        // Scaled with the position value it is added to, so a `value_scale`
+        // that only a search can see cannot quietly reweight the one term a
+        // 1-ply agent adds outside `evaluate`. Guarded, so `1.0` is exact.
+        if self.config.eval.value_scale == 1.0 {
+            v
+        } else {
+            v * self.config.eval.value_scale
+        }
     }
 }
 
@@ -2306,8 +2959,18 @@ fn evaluate_at(state: &GameState, me: Player, root: &Root, depth: u8) -> f64 {
     ) {
         return v;
     }
-    player_value(state, me, root) - player_value(state, me.other(), root)
-        + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
+    let sum = player_value(state, me, root) - player_value(state, me.other(), root)
+        + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu);
+    // The one place the output scale is applied. Guarded rather than
+    // multiplied by `1.0`, so `value_scale = 1.0` is bit-identical to the
+    // arithmetic before this knob existed. Deliberately below the rails and
+    // the terminal result, which are magnitudes rather than judgements — see
+    // [`EvalWeights::value_scale`].
+    if root.config.eval.value_scale == 1.0 {
+        sum
+    } else {
+        sum * root.config.eval.value_scale
+    }
 }
 
 /// Finish a turn the engine left mid-effect, and score what it leaves.
@@ -2345,8 +3008,13 @@ fn resolve_pending(state: &GameState, me: Player, root: &Root, depth: u8) -> Opt
             Some(duels_core::state::Pending::Destroy { .. })
         );
     let unresolved = if discount {
-        player_value(state, me, root) - player_value(state, me.other(), root)
-            + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu)
+        let sum = player_value(state, me, root) - player_value(state, me.other(), root)
+            + menu::menu_term(state, me, root.age, &root.menu, &root.config.eval.menu);
+        if root.config.eval.value_scale == 1.0 {
+            sum
+        } else {
+            sum * root.config.eval.value_scale
+        }
     } else {
         0.0
     };
@@ -2487,6 +3155,21 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
                 e.yellow_discard_rate,
             )
     };
+    // What the progress tokens this city already holds are worth for the rest
+    // of the game, beyond the printed points `breakdown` scores. Root-fixed
+    // prices, post-action ownership — see [`terms::TokenTable`].
+    let tokens = if e.token_equity == 0.0 {
+        0.0
+    } else {
+        e.token_equity * terms::token_equity(state, p, &root.tokens)
+    };
+    // A turn in hand, as against round six's projection of one still under a
+    // wonder. See [`terms::to_move`].
+    let tempo = if e.to_move == 0.0 {
+        0.0
+    } else {
+        e.to_move * terms::to_move(state, p)
+    };
 
     points
         + liquidity
@@ -2502,6 +3185,8 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
         + gift
         + guilds
         + yellow
+        + tokens
+        + tempo
 }
 
 /// The probability-weighted expected value of taking `action` in `state`,
@@ -3817,10 +4502,26 @@ mod tests {
             discounted.replace.iter().any(|&x| x > 0.0),
             "Age I should still have production sources in the pool"
         );
-        assert!(
-            expected_value(&early, action, Player::One, &discounted)
-                < expected_value(&early, action, Player::One, &plain),
-            "a replaceable destroy should be worth less than a permanent one"
+        // The discount *bites*: it blends the resolved value back towards the
+        // pending state's own score by the modelled fraction, so the two must
+        // differ. It is deliberately **not** asserted that the discounted
+        // value is the *lower* of the two, which is what this test used to
+        // claim. That only holds when the destroy's resolved score is above
+        // the pending-state reference, and the reference is a distorted
+        // quantity by construction — `menu_term` reads the mover as moving
+        // again in a pending state, which is the whole reason
+        // `PendingModel::Completed` exists. Round seven's re-weighting was
+        // enough to flip the sign in this particular hand-built position
+        // (plain -8.16, discounted -5.60), which is a fact about the reference
+        // rather than about the discount, and is one more reason this knob is
+        // off by default and measured at -0.9 / +5.8.
+        let d = expected_value(&early, action, Player::One, &discounted);
+        let pl = expected_value(&early, action, Player::One, &plain);
+        assert_ne!(
+            d.to_bits(),
+            pl.to_bits(),
+            "the discount did not bite on a replaceable destroy: \
+             discounted {d}, plain {pl}"
         );
     }
 

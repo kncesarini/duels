@@ -85,9 +85,14 @@
 //!   `military_sigma_scale`/`kappa`, `military_sigma_min`,
 //!   `military_logistic_scale`), the smooth coin model's `coin_smooth_beta`
 //!   /`beta` and `coin_smooth_ref`/`cref`, `resource_bill`/`bill`, the
-//!   `next_age_start` array as `start1`/`start2`/`start3`, and the individual
+//!   `next_age_start` array as `start1`/`start2`/`start3`, the individual
 //!   weights `military_position`, `vp_projection`, `development`,
-//!   `science_ladder`, `deny`, `deny_chain_gift`, `wonder_potential`.
+//!   `science_ladder`, `deny`, `deny_chain_gift`, `wonder_potential`, the
+//!   science pair-threat weight (`science_pair_threat`/`pairthreat`) and the
+//!   dead-race gate (`dead_race_scale`/`dead`), the forward token-equity term
+//!   (`token_equity`/`tokeneq`), the right-to-move term (`to_move`/`tomove`),
+//!   the value-scale knob (`value_scale`/`scale`), and the count-priced menu
+//!   switch (`count`/`count_pricing`, `unpriced`/`counted`).
 //! * `random` -- bare name only; it has no parameters.
 //!
 //! # Examples
@@ -119,6 +124,7 @@ use duels_agent_phased::{
     WonderModel,
 };
 use duels_agents_api::Agent;
+use duels_eval::CountPricing;
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
 
@@ -642,6 +648,20 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
             "vp_projection" => cfg.eval.vp_projection = parse_field(k, v)?,
             "development" => cfg.eval.development = parse_field(k, v)?,
             "science_ladder" => cfg.eval.science_ladder = parse_field(k, v)?,
+            "science_pair_threat" | "pairthreat" => {
+                cfg.eval.science.pair_threat_weight = parse_field(k, v)?
+            }
+            "dead_race_scale" | "dead" => cfg.eval.science.dead_race_scale = parse_field(k, v)?,
+            "token_equity" | "tokeneq" => cfg.eval.token_equity = parse_field(k, v)?,
+            "to_move" | "tomove" => cfg.eval.to_move = parse_field(k, v)?,
+            "value_scale" | "scale" => cfg.eval.value_scale = parse_field(k, v)?,
+            "count" | "count_pricing" => {
+                cfg.count_pricing = match v {
+                    "unpriced" | "off" => CountPricing::Unpriced,
+                    "counted" | "on" => CountPricing::Counted,
+                    other => return Err(format!("phased: unknown count \"{other}\"")),
+                }
+            }
             "deny" => cfg.eval.deny = parse_field(k, v)?,
             "deny_chain_gift" => cfg.eval.deny_chain_gift = parse_field(k, v)?,
             "wonder_potential" => cfg.eval.wonder_potential = parse_field(k, v)?,
@@ -1073,7 +1093,8 @@ mod tests {
         let off = parse_phased_config(
             "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
              pending=unresolved,guild=unpriced,guildproj=0,menufloor=none,afford=0,\
-             supply=raw,yellow=0,wprem=0",
+             supply=raw,yellow=0,wprem=0,science_ladder=1,chaineq=1,bill=3,\
+             development=0.3333333333333333,pairthreat=1,dead=1",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -1094,7 +1115,8 @@ mod tests {
         assert_eq!(
             parse_phased_config(
                 "pending=unresolved,wonder=flat,destroyrepl=off,wprem=0,guild=unpriced,guildproj=0,\
-                 menufloor=none,afford=0,supply=raw,yellow=0"
+                 menufloor=none,afford=0,supply=raw,yellow=0,science_ladder=1,chaineq=1,bill=3,\
+                 development=0.3333333333333333,pairthreat=1,dead=1"
             )
             .unwrap(),
             PhasedConfig::v3()
@@ -1113,7 +1135,9 @@ mod tests {
         assert_eq!(parse_phased_config("base=v4").unwrap(), PhasedConfig::v4());
         assert_eq!(
             parse_phased_config(
-                "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0,wprem=0"
+                "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0,wprem=0,\
+                 science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
+                 pairthreat=1,dead=1"
             )
             .unwrap(),
             PhasedConfig::v4()
@@ -1141,7 +1165,11 @@ mod tests {
         // The round-six key, and its "off" value reproducing v5's.
         assert_eq!(parse_phased_config("base=v5").unwrap(), PhasedConfig::v5());
         assert_eq!(
-            parse_phased_config("wprem=0").unwrap(),
+            parse_phased_config(
+                "wprem=0,science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
+                 pairthreat=1,dead=1"
+            )
+            .unwrap(),
             PhasedConfig::v5(),
             "the extra-turn premium is the only thing round six changed"
         );

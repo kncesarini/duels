@@ -72,7 +72,8 @@ use duels_strategy::science::token_value;
 
 use crate::terms::{self, DevSupply, GuildTable, MilSmoothing, WonderBudget, MAX_UNITS};
 use crate::{
-    CoinModel, Config, GuildPricing, MenuFloor, MenuShieldPricing, MenuWeights, MilitaryModel,
+    CoinModel, Config, CountPricing, GuildPricing, MenuFloor, MenuShieldPricing, MenuWeights,
+    MilitaryModel,
 };
 
 /// The largest shield gain one card can carry: the biggest printed red card
@@ -124,6 +125,17 @@ pub struct TakeValue {
     /// exact no-op. See [`terms::yellow_equity`], of which this is the
     /// per-card finite difference.
     yellow_step: f64,
+    /// What one unit of each [`duels_core::data::CountTarget`] this player's
+    /// own city holds is worth in coins-turned-victory-points: `count(target) ×
+    /// coin_marginal`, indexed by [`terms::count_target_index`]. A
+    /// count-scaled commercial card's payout is `amount_per_unit ×` the entry
+    /// for its own target. All zero under [`crate::CountPricing::Unpriced`].
+    count_coin: [f64; terms::NUM_COUNT_TARGETS],
+    /// Whether [`TakeValue::free_value`] adds it at all. Branched on rather
+    /// than left to a table of zeros, so `Unpriced` skips the addition
+    /// entirely and is an exact no-op rather than an `x + 0.0` (which is not
+    /// bit-identical to `x` when `x` is negative zero).
+    count_pricing: CountPricing,
 }
 
 /// The root-fixed tables [`TakeValue::of`] reads, bundled so its signature
@@ -242,6 +254,12 @@ impl TakeValue {
                 * terms::decisions_left(state, player)
         };
 
+        let count_coin = if config.count_pricing == CountPricing::Unpriced {
+            [0.0; terms::NUM_COUNT_TARGETS]
+        } else {
+            terms::own_count_table(state, player).map(|c| c * coin_marginal)
+        };
+
         TakeValue {
             player,
             shield_delta,
@@ -249,6 +267,8 @@ impl TakeValue {
             guild: *guild,
             guild_pricing: config.guild_pricing,
             yellow_step,
+            count_coin,
+            count_pricing: config.count_pricing,
             pricing: config.menu_shield_pricing,
             military_slope: legacy_military_step
                 .unwrap_or_else(|| terms::military_slope(state, player, sm)),
@@ -383,10 +403,33 @@ impl TakeValue {
         v += self.production_value(card);
         v += chain.equity(self.player, card);
         v += self.guild_value(card);
+        if self.count_pricing != CountPricing::Unpriced {
+            v += self.count_value(card);
+        }
         if def.kind == CardType::Commercial {
             v += self.yellow_step;
         }
         v
+    }
+
+    /// What a card's count-scaled coin payout is worth to this player.
+    ///
+    /// **Zero for every card that does not print one** — five of the
+    /// seventy-three do, all of them Age III commercial cards whose
+    /// `def.coins` is zero, which is why the menu could not see them at all
+    /// (counted off `data/cards.json` by
+    /// `terms::tests::the_count_scaled_commercial_cards_print_no_coins`) — and
+    /// zero throughout under
+    /// [`crate::CountPricing::Unpriced`], which is what makes the whole thing
+    /// an exact no-op when it is switched off.
+    #[inline]
+    pub fn count_value(&self, card: CardId) -> f64 {
+        match card.def().coins_per_own {
+            Some((target, per)) => {
+                f64::from(per) * self.count_coin[terms::count_target_index(target)]
+            }
+            None => 0.0,
+        }
     }
 
     /// What a guild card's majority scoring is worth to this player.
