@@ -121,10 +121,10 @@ interface GameStore {
   buildFlagBundle: (notes: string) => Promise<string>;
 }
 
-/** The JSON a flagged position is exported as. Not a generated type: two of
- * its four parts are (`ExportPayload`, `AnalysisPayload`), but the bundle
- * itself is assembled here and its shape is the contract with whatever later
- * reads a directory of these. */
+/** The JSON a flagged position is exported as. Not a generated type: its
+ * parts come from generated ones (`ExportPayload`, `AnalysisPayload`), but the
+ * bundle itself is assembled here, and its shape is the contract with whatever
+ * later reads a directory of these. */
 export interface FlagBundle {
   /** The room's setup seed. `duels_server::room::replay(seed, moves)`
    * reconstructs the exact position this was flagged in. */
@@ -550,11 +550,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
   buildFlagBundle: async (notes) => {
     const { roomId, analysis } = get();
     if (!roomId) throw new Error("not in a game");
-    // Fetched fresh rather than reused from state, so the move list in the
-    // bundle is unambiguously the one that reconstructs the position the
-    // analysis below describes.
+    // Both fetched fresh, so the move list and the numbers describe the same
+    // position rather than one being however stale the last refresh left it.
+    // They cannot drift apart between the two calls: the flag control is only
+    // reachable while this browser is the seat on move, and nothing else
+    // advances a room. The cached analysis is the fallback for a failed
+    // refresh - a bundle with slightly older numbers still replays exactly,
+    // and is far better than losing the reasoning already typed.
     const exported = await fetchExport(roomId);
-    const current = analysis ?? (await fetchAnalysis(roomId));
+    const current = await fetchAnalysis(roomId).catch((e: unknown) => {
+      if (analysis) return analysis;
+      throw e;
+    });
     const bundle: FlagBundle = {
       seed: exported.seed,
       moves: exported.moves,

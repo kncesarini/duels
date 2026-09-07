@@ -205,3 +205,118 @@ describe("useGameStore reconnect behavior", () => {
     expect(ws.sentCount).toBe(2);
   });
 });
+
+describe("advanced mode: analysis and the flag bundle", () => {
+  const realFetch = globalThis.fetch;
+
+  const ANALYSIS = {
+    room_id: "room-1",
+    turn: 9,
+    age: 1,
+    current_player: "one",
+    game_over: false,
+    value: 15.9,
+    win_probability: 0.583,
+    actions: [
+      { action: { type: "Build", slot: 14 }, value: -6.07, win_probability: 0.564 },
+      { action: { type: "Discard", slot: 14 }, value: -11.2, win_probability: 0.481 },
+    ],
+    eval_generation: "sci=0.50/dead=0.00",
+  };
+  const EXPORT = {
+    room_id: "room-1",
+    seed: 424242,
+    moves: [{ type: "PickWonder", wonder: "piraeus" }, { type: "Discard", slot: 19 }],
+  };
+
+  /** Route each endpoint to its payload, or to a rejection for the ones named
+   * in `fail`, so a partial outage can be exercised. */
+  function mockApi(fail: string[] = []) {
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      const which = u.endsWith("/analysis") ? "analysis" : u.endsWith("/export") ? "export" : "other";
+      if (fail.includes(which)) return { ok: false, status: 503, statusText: "unavailable", json: async () => ({}) };
+      return { ok: true, json: async () => (which === "analysis" ? ANALYSIS : EXPORT) };
+    }) as unknown as typeof fetch;
+  }
+
+  beforeEach(() => {
+    useGameStore.setState({ roomId: "room-1", analysis: null, analysisError: null });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    useGameStore.setState({ roomId: null, analysis: null, analysisError: null });
+  });
+
+  it("does nothing outside a game rather than fetching an analysis of nothing", async () => {
+    mockApi();
+    useGameStore.setState({ roomId: null });
+    await useGameStore.getState().loadAnalysis();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(useGameStore.getState().analysis).toBeNull();
+  });
+
+  it("stores the analysis and clears any previous error", async () => {
+    mockApi();
+    useGameStore.setState({ analysisError: "an old failure" });
+    await useGameStore.getState().loadAnalysis();
+    const s = useGameStore.getState();
+    expect(s.analysis?.win_probability).toBe(0.583);
+    expect(s.analysisError).toBeNull();
+  });
+
+  // A failed refresh mid-game must not blank the panel: stale numbers plus a
+  // label beat numbers that silently vanish.
+  it("keeps the last good analysis on screen when a refresh fails", async () => {
+    mockApi();
+    await useGameStore.getState().loadAnalysis();
+    mockApi(["analysis"]);
+    await useGameStore.getState().loadAnalysis();
+    const s = useGameStore.getState();
+    expect(s.analysis?.win_probability).toBe(0.583);
+    expect(s.analysisError).not.toBeNull();
+  });
+
+  it("builds a bundle carrying the seed, the moves, every score and the notes", async () => {
+    mockApi();
+    const json = await useGameStore.getState().buildFlagBundle("the military term is asleep here");
+    const bundle = JSON.parse(json) as Record<string, unknown>;
+    expect(bundle.seed).toBe(424242);
+    expect(bundle.moves).toEqual(EXPORT.moves);
+    expect(bundle.current_win_probability).toBe(0.583);
+    expect(bundle.action_win_probabilities).toEqual(ANALYSIS.actions);
+    expect(bundle.eval_generation).toBe("sci=0.50/dead=0.00");
+    expect(bundle.notes).toBe("the military term is asleep here");
+    expect(bundle.captured).toEqual({
+      room_id: "room-1",
+      turn: 9,
+      age: 1,
+      current_player: "one",
+      value: 15.9,
+    });
+  });
+
+  // The reasoning is the expensive part of a flag - it was typed by hand. A
+  // failed analysis refresh must fall back to the numbers already on screen
+  // rather than throw it away; the export is what makes the bundle useful and
+  // it succeeded.
+  it("falls back to the analysis on screen if the refresh fails while flagging", async () => {
+    mockApi();
+    await useGameStore.getState().loadAnalysis();
+    mockApi(["analysis"]);
+    const json = await useGameStore.getState().buildFlagBundle("still worth recording");
+    expect((JSON.parse(json) as { current_win_probability: number }).current_win_probability).toBe(0.583);
+  });
+
+  it("gives up rather than emitting a bundle with no numbers in it at all", async () => {
+    mockApi(["analysis"]);
+    await expect(useGameStore.getState().buildFlagBundle("nothing to attach")).rejects.toThrow();
+  });
+
+  it("refuses to build a bundle outside a game", async () => {
+    mockApi();
+    useGameStore.setState({ roomId: null });
+    await expect(useGameStore.getState().buildFlagBundle("x")).rejects.toThrow("not in a game");
+  });
+});
