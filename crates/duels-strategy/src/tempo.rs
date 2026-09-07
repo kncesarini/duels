@@ -45,9 +45,9 @@ use crate::prices::Prices;
 /// judgement call in the model is visible in one struct.
 ///
 /// The two headline numbers, [`ThreatWeights::game_swing_vp`] and the
-/// [`ThreatWeights::stakes_scale`] band, are Kristian's calls: a race lost is
-/// worth about twenty-four points of swing, and a player who is behind should
-/// gamble on races rather than spend turns denying them.
+/// [`ThreatWeights::stakes_scale`] band, are the project owner's calls: a race
+/// lost is worth about twenty-four points of swing, and a player who is
+/// behind should gamble on races rather than spend turns denying them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThreatWeights {
     // --- tempo ------------------------------------------------------------

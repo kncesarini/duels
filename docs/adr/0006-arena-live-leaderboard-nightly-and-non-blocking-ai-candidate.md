@@ -6,7 +6,7 @@ Milestone M6b of the original architecture pass was specified as "real agents,
 leaderboard, nightly workflow, `ai-candidate` gate", with the executive summary
 calling for an "Arena with paired-seed games, Bayesian-Elo leaderboard, and SPRT
 gating; nightly round-robin in CI; promotion of a new champion happens via an
-automated PR that Kristian approves."
+automated PR that the project owner approves."
 
 By the time it was built, the arena skeleton (`duels-arena`: paired-seed
 matches, pairwise logistic Elo, SPRT, spec-string agent configs) already
