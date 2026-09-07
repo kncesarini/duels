@@ -720,6 +720,43 @@ pub(crate) fn play_out(
         .unwrap_or_else(|| duels_core::scoring::civilian_result(state))
 }
 
+/// Play at most `plies` steps of the same policy [`play_out`] uses, and report
+/// the [`GameResult`] **only if the game actually ended** inside that window.
+///
+/// `None` means the window ran out with the game still going, and `state` has
+/// been advanced by exactly `plies` legal moves — which is what
+/// [`crate::LeafValue::Truncated`] then scores statically.
+///
+/// A `plies` of zero returns `None` without touching `state` or the RNG, so a
+/// zero-ply truncation is exactly a static evaluation of the leaf.
+///
+/// Deliberately *not* written as `play_out` with a smaller `max_plies`: that
+/// function's cap is a safety net that scores the position as if Age III had
+/// just ended, which is the wrong answer for a truncation — the whole point
+/// here is to tell "the game finished" apart from "the window closed".
+pub(crate) fn play_out_capped(
+    state: &mut GameState,
+    weights: &RolloutWeights,
+    race: &RaceWeights,
+    buf: &mut Vec<Action>,
+    wbuf: &mut Vec<f64>,
+    rng: &mut StdRng,
+    plies: u32,
+) -> Option<GameResult> {
+    for _ in 0..plies {
+        engine::legal_actions_into(state, buf);
+        if buf.is_empty() {
+            break;
+        }
+        let action = pick(state, weights, race, buf, wbuf, rng);
+        engine::apply_unchecked(state, action, rng);
+    }
+    // `legal_actions` is empty exactly when the game is over, so an empty
+    // action list above is the same "the game ended" case as a settled
+    // result; both come back through `state.result()`.
+    state.result()
+}
+
 /// `pick` and `play_out` exactly as they read before [`RaceWeights`] existed —
 /// including the double `weight()` evaluation the single-pass rewrite removed.
 ///
@@ -849,6 +886,98 @@ mod tests {
                 expected / total
             );
         }
+    }
+
+    /// A truncated playout must be **the prefix of the playout it truncates**:
+    /// the same states, and — the load-bearing half —
+    /// *exactly the same randomness consumed*, so that
+    /// [`crate::LeafValue::Truncated`]'s evaluation step is provably free of
+    /// RNG draws of its own.
+    ///
+    /// Checked by running both against streams seeded alike and then drawing
+    /// from each: a single extra or missing draw inside either function makes
+    /// the two follow-up draws differ.
+    #[test]
+    fn a_truncated_playout_is_the_prefix_of_the_full_one() {
+        for seed in 0..8u64 {
+            for plies in [0u32, 1, 4, 8, 16] {
+                let state = engine::new_game(seed);
+                let w = RolloutWeights::BIASED;
+                let race = RaceWeights::NEUTRAL;
+
+                let mut capped_state = state;
+                let mut rng_a = StdRng::seed_from_u64(seed ^ 0xC0DE);
+                let (mut buf, mut wbuf) = (Vec::new(), Vec::new());
+                let finished = play_out_capped(
+                    &mut capped_state,
+                    &w,
+                    &race,
+                    &mut buf,
+                    &mut wbuf,
+                    &mut rng_a,
+                    plies,
+                );
+
+                let mut full_state = state;
+                let mut rng_b = StdRng::seed_from_u64(seed ^ 0xC0DE);
+                let (mut buf, mut wbuf) = (Vec::new(), Vec::new());
+                // The same policy, stopped by the same number of plies. This
+                // *scores* an unfinished game rather than reporting it as
+                // unfinished, which is the one thing the capped version is
+                // written not to do — but it walks the identical prefix.
+                play_out(
+                    &mut full_state,
+                    &w,
+                    &race,
+                    &mut buf,
+                    &mut wbuf,
+                    &mut rng_b,
+                    plies,
+                );
+
+                assert_eq!(
+                    capped_state, full_state,
+                    "seed {seed}, {plies} plies: the prefixes diverged"
+                );
+                assert_eq!(
+                    rng_a.gen::<u64>(),
+                    rng_b.gen::<u64>(),
+                    "seed {seed}, {plies} plies: the two playouts consumed different randomness"
+                );
+                // A real game is far longer than 16 plies, so none of these
+                // may claim to have finished; the "finished" arm is exercised
+                // by the whole-search tests.
+                assert!(
+                    finished.is_none(),
+                    "seed {seed}: a game ended within {plies} plies"
+                );
+            }
+        }
+    }
+
+    /// A zero-ply truncation is a pure no-op: no state change, and not one
+    /// random number drawn — which is what makes
+    /// `tree::tests::the_degenerate_leaf_settings_reduce_to_their_edges`
+    /// able to compare it against a static evaluation bit for bit.
+    #[test]
+    fn a_zero_ply_truncation_touches_nothing() {
+        let state = engine::new_game(4);
+        let mut advanced = state;
+        let mut rng = StdRng::seed_from_u64(11);
+        let mut reference = StdRng::seed_from_u64(11);
+        let (mut buf, mut wbuf) = (Vec::new(), Vec::new());
+        let finished = play_out_capped(
+            &mut advanced,
+            &RolloutWeights::BIASED,
+            &RaceWeights::NEUTRAL,
+            &mut buf,
+            &mut wbuf,
+            &mut rng,
+            0,
+        );
+        assert!(finished.is_none());
+        assert_eq!(advanced, state);
+        assert_eq!(rng.gen::<u64>(), reference.gen::<u64>());
     }
 
     /// The crux of `SMART`: a chain-free build must be picked far more often
