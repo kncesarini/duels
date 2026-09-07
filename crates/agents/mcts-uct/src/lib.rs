@@ -460,6 +460,375 @@
 //!     --games 400 --budget nodes:2000 --sprt-elo0 0 --sprt-elo1 20
 //! ```
 //!
+//! # Leaf values (`Config::leaf`)
+//!
+//! [`LeafValue`] decides what a freshly added leaf is worth: the playout this
+//! crate has always used, `duels-eval`'s hand-crafted evaluation through a
+//! calibrated sigmoid, a truncated playout that ends in one, or a mixture.
+//! See the `leaf` module for the mechanism — the per-age temperature
+//! calibration, where the one `duels_eval::Root` is built, why the perspective
+//! is always Player One, and the algebra relating [`LeafValue::Blend`]'s
+//! weight to the exploration constant. This section is the measurement.
+//!
+//! `LeafValue::Rollout` is the default and is bit-for-bit the agent that
+//! existed before the option, down to building no `duels_eval::Root` at all
+//! (`tests::leaf_rollout_is_the_pre_leaf_agent_move_for_move`,
+//! `tree::tests::leaf_rollout_grows_the_same_tree_as_the_pre_leaf_search`,
+//! `tree::tests::the_rollout_leaf_builds_no_evaluation_root`; the move digests
+//! of whole seeded self-play games at `Nodes(300)` and `Nodes(2000)` were also
+//! checked against a build of the parent commit and agree).
+//!
+//! ## What each variant costs
+//!
+//! `examples/leaf_bench.rs`, 30 positions at `Nodes(2000)` — a node budget, so
+//! the *work* is exactly fixed (52,000 simulations per column) and only the
+//! elapsed time moves. Run on a machine that was not quiet, so read the ratio
+//! column and not the absolute microseconds:
+//!
+//! | leaf | µs/simulation | throughput vs default |
+//! |---|---|---|
+//! | `Rollout` (default) | 18.84 | 1.00x |
+//! | `Static` | 1.55 | **12.15x** |
+//! | `Truncated { plies: 4 }` | 2.57 | 7.33x |
+//! | `Truncated { plies: 8 }` | 3.83 | 4.92x |
+//! | `Truncated { plies: 16 }` | 5.60 | 3.37x |
+//! | `Blend { weight: 0.3 }` | 18.83 | 1.00x |
+//! | `Blend { weight: 0.5 }` | 18.66 | 1.01x |
+//!
+//! Read as a decomposition: if a whole simulation is 18.84 µs and the same
+//! simulation with the playout replaced by one cached-`Root` evaluation is
+//! 1.55 µs, then **the playout is about 92% of what a simulation costs** and
+//! everything else — descent, expansion, backpropagation, the evaluation
+//! itself — is the remaining 1.5 µs. The truncated rows interpolate between
+//! the two about as linearly as that implies.
+//!
+//! A blend measures at parity with a plain rollout rather than the few percent
+//! *slower* it must strictly be — it does the playout and then a 1.5 µs
+//! evaluation on top. That extra is about 8% of a simulation, which is inside
+//! this bench's run-to-run spread on a machine that is not quiet, so read the
+//! blend rows as "no measurable throughput cost" rather than as free. The
+//! consequence for a wall-clock budget is the same either way, and the
+//! `TimeMs` rows below are the actual test of it.
+//!
+//! ## The tuning sweep (a separate seed range, and **not** evidence)
+//!
+//! `20001..20151`, 300 games each against default `mcts-uct` at `Nodes(2000)`,
+//! `+/-` about 2.9. Kept for the record and for what it says about the shape of
+//! the family, not as a strength claim — the ranges below are the evidence:
+//!
+//! | candidate | score | Elo |
+//! |---|---|---|
+//! | `leaf=static` | 27.0% | -170.7 |
+//! | `leaf=static,c=0.5` | 35.3% | -104.6 |
+//! | `leaf=trunc:4` | 37.0% | -92.1 |
+//! | `leaf=trunc:8` | 40.7% | -65.4 |
+//! | `leaf=trunc:8,c=0.5` | 46.7% | -23.1 |
+//! | `leaf=trunc:16` | 47.0% | -20.8 |
+//! | `leaf=blend:0.9,c=0.1` | 47.3% | -18.5 |
+//! | `leaf=blend:0.3` | 55.0% | +34.7 |
+//! | `leaf=trunc:16,c=0.5` | 55.3% | +37.1 |
+//! | `leaf=blend:0.5` | 56.3% | +46.4 |
+//! | `leaf=blend:0.5,c=0.3` | 57.5% | +52.3 |
+//! | `leaf=blend:0.3,c=0.7` | 58.0% | +55.9 |
+//! | `leaf=blend:0.8,c=0.2` | 58.7% | +60.6 |
+//! | `leaf=blend:0.3,c=0.5` | 60.3% | +72.6 |
+//! | `leaf=blend:0.7,c=0.5` | 61.0% | +77.4 |
+//! | `leaf=blend:0.7,c=0.2` | 62.3% | +87.2 |
+//! | `leaf=blend:0.6,c=0.4` | 62.7% | +90.9 |
+//! | **`leaf=blend:0.5,c=0.5`** | **63.7%** | **+97.1** |
+//! | `leaf=blend:0.7,c=0.3` | 65.0% | +107.2 |
+//! | `c=0.5` alone | 54.0% | +27.8 |
+//! | control (default vs default) | 52.0% | +13.9 |
+//!
+//! Three things to read off it. **A pure static leaf is much weaker than the
+//! playout it replaces** at a fixed node count — which is the project's
+//! standing prior, holding up. The family is *ordered*: the more playout is
+//! left in the leaf, the better, until the static term is gone entirely (at
+//! `blend:0.9` the playout is too diluted and the gain is gone again). And
+//! the good region is a broad **ridge running roughly along `c = 1 - weight`**
+//! — every candidate from `blend:0.5,c=0.5` to `blend:0.7,c=0.3` scores
+//! between 62% and 65%, which at `+/-` 2.9 is one indistinguishable plateau
+//! rather than a peak. That is the direction [`LeafValue::Blend`]'s rescaling
+//! algebra predicts, and it is as much as a 300-game sweep can confirm: at
+//! `weight = 0.3` the "matching" `c = 0.7` (+55.9) actually scored *below* the
+//! unmatched `c = 0.5` (+72.6), so the ridge's exact ridgeline is inside this
+//! sweep's noise.
+//!
+//! ### What a *pure* static leaf actually gets wrong
+//!
+//! Worth recording, because it is the sharpest diagnostic in this whole
+//! investigation. Victory kinds for `leaf=static` in that sweep (300 games):
+//!
+//! | | `leaf=static` | default |
+//! |---|---|---|
+//! | wins by military supremacy | **1** | 37 |
+//! | wins by scientific supremacy | **28** | 2 |
+//! | wins by civilian score | 51 | 177 |
+//!
+//! A static leaf wins by military supremacy **once in 81 wins** while
+//! conceding 37, and wins by *scientific* supremacy fourteen times more often
+//! than the agent it replaced. It is not uniformly blind: it over-values
+//! science and under-sees military. The `duels-eval` terms give a position
+//! credit for accumulated scientific symbols in a way the search can then go
+//! and collect, whereas a military race is a *tempo* fact about the next few
+//! moves that only a playout walking those moves discovers — and `Root`'s
+//! military smoothing is fixed at the search root, so it cannot even move as
+//! the leaf gets deeper (see `leaf`'s note on stale calibration).
+//!
+//! This is the concrete form of `CLAUDE.md`'s prior that win-condition
+//! awareness belongs in the search policy rather than the evaluation, and it
+//! is why the blend works: keeping half a playout keeps the military sight
+//! that the evaluation has no way to supply.
+//!
+//! Two candidates were carried forward: the sweep's nominal maximum
+//! (`blend:0.7,c=0.3`) and the middle of the plateau (`blend:0.5,c=0.5`).
+//! **The maximum did not survive** — see the next section. Reporting the
+//! sweep's argmax as the answer would have shipped the weaker of the two, and
+//! this is the clearest illustration in this crate of why the sweep range is
+//! quarantined from the evidence ranges.
+//!
+//! ## What it measures: `+89` Elo, on three disjoint ranges
+//!
+//! 1,200 games per range at `Nodes(2000)`, paired and seat-swapped, against
+//! **today's actual default** (verified, not assumed: `c=1.000`,
+//! `race=neutral`, `prior=none`, `dets=1`, `leaf=rollout`). `+/-` is one
+//! binomial standard error:
+//!
+//! | arm | `1..600` | `5001..5600` | `10001..10600` | pooled (3,600 games) | Elo |
+//! |---|---|---|---|---|---|
+//! | **`leaf=blend:0.5,c=0.5`** | 64.42% | 62.04% | 61.21% | **62.56% +/- 0.81** | **+89.2 [+77.5, +101.0]** |
+//! | `leaf=blend:0.7,c=0.3` (the sweep's argmax) | 61.92% | 61.88% | 58.92% | 60.90% +/- 0.81 | +77.0 [+65.4, +88.7] |
+//! | `leaf=blend:0.5` (`c` unchanged) | 60.54% | 59.29% | 57.42% | 59.08% +/- 0.82 | +63.8 [+52.3, +75.4] |
+//! | `c=0.5` alone (attribution control) | 49.12% | 51.46% | 49.71% | 50.10% +/- 0.83 | +0.7 [-10.7, +12.0] |
+//! | `c=0.3` alone (attribution control) | 37.00% | 35.21% | 35.75% | 35.99% +/- 0.80 | -100.1 [-112.0, -88.3] |
+//! | default vs default (noise floor) | 48.96% | 48.25% | 49.83% | 49.01% +/- 0.83 | -6.9 [-18.2, +4.5] |
+//!
+//! Every range is positive for all three blend arms, SPRT (`elo0 = 0` vs
+//! `elo1 = 20`) reads `AcceptH1` on every one of their nine range-runs
+//! (`llr` 10.3 to 17.9 against a 2.944 bound), and the intervals are nowhere
+//! near the control's. This is by a wide margin the largest effect measured in
+//! this crate: the previous best, the terminal rails, was `+26` Elo.
+//!
+//! **The exploration constant is not the effect.** `c = 0.5` on its own scores
+//! 50.10% over the same 3,600 games — indistinguishable from the noise floor.
+//! It is worth about `+25` Elo *in combination* with the blend (62.56% against
+//! 59.08%), which is the direction [`LeafValue::Blend`]'s rescaling argument
+//! predicts: at `weight = 0.5` the reward's spread is halved, so the
+//! exploration bonus has to be halved with it to leave the balance where it
+//! was tuned.
+//!
+//! `c = 0.3` makes that argument much more sharply, which is why it is in the
+//! table. On its own it is a **disaster** — `-100` Elo, one of the largest
+//! negatives ever measured here — and yet `blend:0.7,c=0.3`, which contains
+//! it, is `+77`. A knob worth `-100` alone and `+77` in combination is not
+//! plausibly an independent contribution; it is the rescaling the blended
+//! reward requires.
+//!
+//! ## Why the sweep's argmax lost, and what it says about the mechanism
+//!
+//! `blend:0.7,c=0.3` won the 300-game sweep (+107 against +97) and then
+//! finished 12 Elo *behind* `blend:0.5,c=0.5` over 3,600, losing on all three
+//! ranges. Pooled victory kinds say why, and it is not noise:
+//!
+//! | pooled, 3,600 games | wins by military | wins by civilian score |
+//! |---|---|---|
+//! | `blend:0.5,c=0.5` vs default | **342** - 288 | 1,815 - 992 |
+//! | `blend:0.7,c=0.3` vs default | 170 - **323** | 1,911 - 1,036 |
+//!
+//! At `weight = 0.7` the search gets *better* at city quality (1,911 civilian
+//! wins, more than the 0.5 blend manages) and **loses the military race
+//! outright** — 170 military wins against the default's 323, having been ahead
+//! 342-288 at `weight = 0.5`. That is `CLAUDE.md`'s standing prior showing up
+//! as a measurement: a static evaluation cannot see a race developing three
+//! moves out, so diluting the playout past about half trades away exactly the
+//! thing the playout was providing. The blend weight is not a free knob to
+//! push towards the evaluation; it is the balance between two different kinds
+//! of sight.
+//!
+//! ## Where the wins come from: points, not races
+//!
+//! Pooled victory kinds over the same 3,600 games, `leaf=blend:0.5,c=0.5`
+//! against the default:
+//!
+//! | | blend | default |
+//! |---|---|---|
+//! | wins by civilian score | **1,815** | 992 |
+//! | wins by military supremacy | 342 | 288 |
+//! | wins by scientific supremacy | 62 | 34 |
+//! | wins by tiebreak | 31 | 32 |
+//!
+//! `+823` of the `+904` win margin is **civilian score**. That matters because
+//! the other mechanism this crate ships — [`RaceWeights::TIER1_ONLY`]'s
+//! terminal rails — is *entirely* military (`138-68` there, with the number of
+//! military-decided games unmoved). These are not the same effect wearing two
+//! hats: the rails stop a playout walking past a decisive move, and the blend
+//! makes the search better at the long game of city quality, which is where
+//! `duels-eval`'s terms actually live.
+//!
+//! The composition test says the same thing, and more sharply. With
+//! `race=tier1` on **both** sides, 1,200 games on each of two ranges:
+//!
+//! | | `1..600` | `5001..5600` | pooled (2,400) | Elo |
+//! |---|---|---|---|---|
+//! | `leaf=blend:0.5,c=0.5,race=tier1` vs `race=tier1` | 62.79% | 65.46% | **64.12% +/- 0.98** | **+100.9 [+86.6, +115.6]** |
+//! | `race=tier1` vs `race=tier1` (control) | 51.12% | 50.75% | 50.94% +/- 1.02 | +6.5 [-7.4, +20.4] |
+//!
+//! `+100.9` with the rails on both sides, against `+89.2` with them nowhere:
+//! the two mechanisms **add**, and if anything the blend is worth slightly
+//! *more* once the rails are present.
+//!
+//! The victory kinds explain why they cannot be the same effect. With the
+//! rails on both sides the blend's military edge disappears — 191 military
+//! wins against 175, essentially level, where without rails it was 342-288 —
+//! while its civilian margin is undiminished (1,293 against 652). The rails
+//! were already supplying the military tempo sight, so the blend stops needing
+//! to; what it adds on top is entirely city quality. Two mechanisms, two
+//! win conditions, one addition.
+//!
+//! ## Budget equivalence: worth more than a doubling
+//!
+//! The cleanest way to size a search improvement, and the framing the terminal
+//! rails were reported in. 400 games each, `1..201`, candidate at
+//! `Nodes(1000)` against the default at `Nodes(2000)`:
+//!
+//! | half-budget side | score vs default at `Nodes(2000)` | ms/game, half-budget side vs full |
+//! |---|---|---|
+//! | `leaf=blend:0.5,c=0.5` at `Nodes(1000)` | **55.5% +/- 2.5** | 437 vs 782 (56%) |
+//! | `leaf=rollout` at `Nodes(1000)` (control) | 40.0% +/- 2.4 | 408 vs 817 (50%) |
+//!
+//! Halving the node budget costs the default 10 points of score; the blend at
+//! *half* the budget **beats** the full-budget default outright. So the leaf
+//! value is worth more than a doubling of search.
+//!
+//! And it gets there on 56% of the opponent's wall clock, against the
+//! control's 50% — i.e. the blend's own throughput cost shows up here as
+//! about six points of extra wall clock for half the nodes, nothing like
+//! enough to consume a 15-point score advantage. That is the first hint of
+//! what the `TimeMs` rows below say, and this is the framing the terminal
+//! rails were reported in too, so the two are directly comparable.
+//!
+//! ## Ladder: nothing regressed, and the gap to `phased` widened
+//!
+//! 400 games each at `Nodes(2000)`, seeds `1..200`:
+//!
+//! | opponent | `leaf=blend:0.5,c=0.5` | default |
+//! |---|---|---|
+//! | `greedy-ev` | **400/400** (+1161 Elo) | 399/400 (+970 Elo) |
+//! | `phased` | **89.25%** (+365.9 Elo) | 80.13% (+241.4 Elo) |
+//! | `alphabeta` | **84.50%** (+293.5 Elo) | 74.88% (+189.1 Elo) |
+//!
+//! Nothing regressed, and the margin widened on all three.
+//!
+//! The `phased` row was the pre-registered red flag, and it is the one to read
+//! first: the blend scores its leaves with `phased`'s *own* evaluation, so if
+//! it beat `phased` by **less** than the plain default does, that would point
+//! at something wrong in the integration — an evaluation being read with the
+//! wrong sign, a stale pricing context, a leaf value that is really just
+//! noise — rather than at a mechanism that merely fails to help. It beats
+//! `phased` by nine points more than the default does, which is the opposite
+//! of that failure signature.
+//!
+//! ## At a wall-clock budget
+//!
+//! The test this crate has been burned by twice: a change that wins at a fixed
+//! node count can lose at a fixed clock if it costs more per unit of work
+//! (`Config::prior` is the cautionary tale — a `+11.7` point estimate at
+//! `Nodes` measured `-33` at `TimeMs`). 400 games per range, **one match at a
+//! time with `RAYON_NUM_THREADS=1`**, so each game gets a whole core and the
+//! per-decision work is production-like; nothing else was running.
+//!
+//! | budget | `1..200` | `5001..5200` | pooled (800) | Elo | control (default vs default) |
+//! |---|---|---|---|---|---|
+//! | `TimeMs(20)` | 67.13% | 62.25% | **64.69% +/- 1.69** | **+105.2 [+80.5, +130.9]** | 46.25%, -26.0 |
+//! | `TimeMs(100)` | 65.25% | 60.75% | **63.00% +/- 1.71** | **+92.5 [+67.9, +117.9]** | 48.50%, -10.4 |
+//!
+//! `AcceptH1` on all four range-runs. **The gain does not merely survive a
+//! wall-clock budget, it grows**: `+105` at `TimeMs(20)` and `+93` at
+//! `TimeMs(100)`, against `+89` at `Nodes(2000)`.
+//!
+//! That direction is the expected one rather than a surprise, and the cost
+//! table is why. A blend has no measurable throughput cost — it does the same
+//! playout and adds a ~1.5 µs evaluation — so a wall-clock budget buys it
+//! essentially the same number of simulations it buys the default, and the
+//! leaf-value advantage transfers intact. What is left is a budget effect:
+//! `TimeMs(20)` buys roughly a thousand simulations, which is the
+//! `Nodes(1000)` regime where the budget-equivalence table already showed the
+//! blend at its most valuable. A better leaf value is worth more when there
+//! are fewer leaves to average over — which is also why `TimeMs(100)`, at
+//! roughly five thousand simulations, lands slightly *below* `TimeMs(20)` and
+//! slightly above `Nodes(2000)`. The whole family of budgets is consistent:
+//! the effect is large everywhere and largest where search is scarcest.
+//!
+//! This is the one section that has to be read with `CLAUDE.md`'s load
+//! warning in mind, so to be explicit about the conditions: 2,400 games of
+//! wall-clock measurement, each of the six matches run to completion on its
+//! own with `RAYON_NUM_THREADS=1` and no other work on the machine,
+//! `TimeMs(100)` averaging 6.8 seconds per game. These are not
+//! small-sample indicative numbers.
+//!
+//! Note the controls: `-26.0` at `TimeMs(20)` and `-10.4` at `TimeMs(100)`,
+//! against `-6.9` at `Nodes(2000)`. A wall-clock noise floor is genuinely
+//! wider, and wider still at the shorter budget where a scheduling hiccup is
+//! a larger fraction of a decision — which is the reason `CLAUDE.md` insists
+//! on running these one at a time. Both are nowhere near the candidate's
+//! interval: the closest approach is the `TimeMs(20)` control's upper bound
+//! against that budget's lower bound, and they are 106 points apart.
+//!
+//! ## Verdict: it clears every criterion, and it is still not the default
+//!
+//! [`LeafValue::Rollout`] stays [`Config::default`], and this is a deliberate
+//! call rather than an oversight — the same call, for the same reason, that
+//! [`RaceWeights::TIER1_ONLY`] got.
+//!
+//! The strength evidence is not in question. It is the largest effect ever
+//! measured in this crate by a factor of three: `+89.2` Elo pooled over 3,600
+//! games, positive on three of three disjoint seed ranges, `AcceptH1` on every
+//! range-run, an interval nowhere near the noise floor's, *larger* at both
+//! wall-clock budgets than at the node budget (`+105` and `+93`), worth more
+//! than a doubling of the node budget, no ladder regression anywhere, and
+//! additive with the one other mechanism it could plausibly have
+//! overlapped with. Every criterion this work was set is cleared, and the
+//! `TimeMs` criterion — the one that has reversed this crate's conclusions
+//! before — is cleared by the largest margin of any of them. The
+//! hypothesis this work was built to test — *can `duels-eval`'s hand-crafted
+//! evaluation serve as a leaf value in this search?* — is answered, and the
+//! mechanism is identified rather than merely asserted: the gain is civilian
+//! score, which is where `duels-eval`'s terms live, and pushing the weight
+//! past a half trades away the playout's sight of military races.
+//!
+//! What stops it being a one-line default change here is that it is **not one
+//! line**. The measured candidate changes [`Config::leaf`] *and*
+//! [`Config::exploration`], because a blended reward has half the spread a
+//! Bernoulli playout does and the exploration constant has to be rescaled to
+//! match (see [`LeafValue::Blend`]). Flipping the default therefore moves this
+//! crate's tuned `c`, which every other knob in `Config` was tuned against —
+//! the rollout weights, the race tables, the widening constants, the prior
+//! sweep — and it moves `leaderboard::CHAMPION`, the committed
+//! `arena/leaderboard.*`, and what `duels-server` serves. That is a change
+//! worth its own reviewable PR with the ladder refitted around the new `c`,
+//! not a side effect of the PR that measured the leaf value.
+//!
+//! So the recommendation is explicit and on the record: **promote this**, as
+//! its own change, as
+//!
+//! ```text
+//! leaf: LeafValue::Blend { weight: 0.5 },   // in Config::default()
+//! exploration: 0.5,                         // and its matching rescale
+//! ```
+//!
+//! and re-run the ladder at the new default before the leaderboard is
+//! believed. Everything needed to make that decision is in the tables above.
+//!
+//! ## Reproducing
+//!
+//! ```text
+//! cargo run --release -p duels-arena -- match \
+//!     --agent-a mcts-uct:leaf=blend:0.5,c=0.5 --agent-b mcts-uct \
+//!     --games 1200 --budget nodes:2000 --seed 1 --sprt-elo0 0 --sprt-elo1 20
+//! cargo run --release -p duels-agent-mcts-uct --example leaf_bench
+//! cargo run --release -p duels-eval --example calibrate -- 200
+//! ```
+//!
 //! The value convention (every node accumulates the result from
 //! [`duels_core::Player::One`]'s perspective; the zero-sum flip happens once,
 //! at selection) and the widening rule are documented in the `tree` module.
@@ -482,6 +851,7 @@
 #![warn(missing_docs)]
 
 mod chance;
+mod leaf;
 mod rollout;
 mod tree;
 
@@ -490,6 +860,10 @@ use duels_core::{engine, Action, Observation};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
+pub use leaf::{
+    generation_name, temperature, win_probability, LeafValue, TEMPERATURE_AGE_I,
+    TEMPERATURE_AGE_II, TEMPERATURE_AGE_III, TEMPERATURE_OVERALL,
+};
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode};
 
@@ -983,6 +1357,159 @@ mod tests {
             }
             assert!(decisions > 20, "the game was too short to prove much");
         }
+    }
+
+    /// The equivalence that makes the leaf-value option safe to add, and the
+    /// twin of the three above: with [`LeafValue::Rollout`] the agent is
+    /// move-for-move the agent this crate shipped before leaf values existed,
+    /// driven by the verbatim pre-leaf `simulate` in `tree.rs` (which reaches
+    /// the playout directly rather than through the new `leaf_value`).
+    ///
+    /// Whole seeded games, so the two RNG streams have to stay in step across
+    /// dozens of `choose` calls. `tree::tests::leaf_rollout_grows_the_same_
+    /// tree_as_the_pre_leaf_search` is the stronger, node-for-node form of the
+    /// same claim, and `tree::tests::the_rollout_leaf_builds_no_evaluation_root`
+    /// is the third part: the default path does not even build a
+    /// `duels_eval::Root`.
+    #[test]
+    fn leaf_rollout_is_the_pre_leaf_agent_move_for_move() {
+        for seed in 0..8u64 {
+            let cfg = Config {
+                leaf: LeafValue::Rollout,
+                ..Config::default()
+            };
+            let mut agent = MctsAgent::with_config(seed, cfg);
+            let mut legacy_rng = StdRng::seed_from_u64(seed);
+
+            let mut state = engine::new_game(seed ^ 0xC0FF_EE00);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+            let mut decisions = 0u32;
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let budget = 24 + u64::from(decisions % 7);
+                let got = agent.choose(&obs, &legal, Budget::Nodes(budget));
+                let want = legacy_choose(&mut legacy_rng, cfg, &obs, &legal, budget);
+                assert_eq!(
+                    got, want,
+                    "seed {seed}, decision {decisions}: LeafValue::Rollout changed the move"
+                );
+                engine::apply(&mut state, got, &mut rng).expect("a legal action");
+                decisions += 1;
+                assert!(decisions < 5_000);
+            }
+            assert!(decisions > 20, "the game was too short to prove much");
+        }
+    }
+
+    /// A leaf variant must not change *what* the agent is allowed to do: full
+    /// seeded games from both seats, every variant, no panic and no illegal
+    /// move — and every variant has to actually search.
+    #[test]
+    fn every_leaf_value_plays_full_games_without_incident() {
+        for (i, leaf) in [
+            LeafValue::Rollout,
+            LeafValue::Static,
+            LeafValue::Truncated { plies: 8 },
+            LeafValue::Blend { weight: 0.5 },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut wins = 0u32;
+            for seed in 0..6u64 {
+                let seat = if seed % 2 == 0 {
+                    Player::One
+                } else {
+                    Player::Two
+                };
+                let mut mcts = MctsAgent::with_config(
+                    seed ^ 0x0BAD_1DEA,
+                    Config {
+                        leaf,
+                        ..Config::default()
+                    },
+                );
+                let mut opponent = RandomAgent::new(seed ^ 0x5EED_5EED);
+                let mut state = engine::new_game(seed + 900 * i as u64);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+                loop {
+                    let legal = engine::legal_actions(&state);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    let obs = state.observation();
+                    let action = if state.current_player() == seat {
+                        mcts.choose(&obs, &legal, CI_BUDGET)
+                    } else {
+                        opponent.choose(&obs, &legal, CI_BUDGET)
+                    };
+                    assert!(legal.contains(&action), "{leaf:?} returned {action:?}");
+                    engine::apply(&mut state, action, &mut rng).expect("a legal action");
+                }
+                let result = state.result().expect("a finished game has a result");
+                if result.winner() == Some(seat) {
+                    wins += 1;
+                }
+                assert!(mcts.total_simulations() > 0);
+            }
+            println!("{leaf:?}: {wins}/6 against random at {CI_BUDGET:?}");
+        }
+    }
+
+    /// The spec string a results file records has to name the leaf value *and*
+    /// the evaluation generation it was scored against — a strength number
+    /// measured against `duels-eval` v6 is not comparable with one measured
+    /// against a later round, and a results file that does not say which is
+    /// uninterpretable after the fact.
+    #[test]
+    fn the_spec_reports_the_leaf_value_and_its_evaluation_generation() {
+        let describe = |leaf| {
+            MctsAgent::with_config(
+                1,
+                Config {
+                    leaf,
+                    ..Config::default()
+                },
+            )
+            .spec()
+            .params
+        };
+        assert!(describe(LeafValue::Rollout).contains("leaf=rollout"));
+        assert!(describe(LeafValue::Static).contains("leaf=static"));
+        assert!(describe(LeafValue::Truncated { plies: 8 }).contains("leaf=truncated(8)"));
+        assert!(describe(LeafValue::Blend { weight: 0.5 }).contains("leaf=blend(0.500)"));
+        // The pin, spelled out where a results file will record it.
+        assert!(describe(LeafValue::Static).contains("evalgen=v6"));
+        let older = MctsAgent::with_config(
+            1,
+            Config {
+                leaf: LeafValue::Static,
+                eval_generation: duels_eval::Config::v1(),
+                ..Config::default()
+            },
+        )
+        .spec()
+        .params;
+        assert!(older.contains("evalgen=v1"), "{older}");
+    }
+
+    /// The pin is a *frozen snapshot*, not "whatever `duels-eval` defaults to
+    /// today". The two are the same configuration as of this writing, which is
+    /// exactly why this has to be asserted rather than eyeballed: the moment a
+    /// seventh `duels-eval` round moves the default, this agent must keep
+    /// scoring against the generation its strength was measured on until
+    /// somebody re-measures it.
+    #[test]
+    fn the_default_leaf_generation_is_the_frozen_snapshot() {
+        assert_eq!(
+            Config::default().eval_generation,
+            duels_eval::Config::v6(),
+            "the pin must name a frozen generation"
+        );
     }
 
     /// A race variant must not change *what* the agent is allowed to do: full

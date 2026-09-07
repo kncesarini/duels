@@ -39,8 +39,11 @@
 //!   `exploration`/`c`, `rollout` (`uniform`/`biased`/`smart`), `race`
 //!   (`neutral`/`mild`/`medium`/`strong`/`tier1_only`), `chance_widen_c`,
 //!   `chance_widen_alpha`, `max_rollout_plies`, `time_check_interval`,
-//!   `root_determinizations`/`dets`, and `prior` (`none`, `expansion_order`,
-//!   or `progressive_bias:<weight>`).
+//!   `root_determinizations`/`dets`, `prior` (`none`, `expansion_order`,
+//!   or `progressive_bias:<weight>`), `leaf` (`rollout`, `static`,
+//!   `truncated:<plies>` or `blend:<weight>`) and `evalgen`
+//!   (`v1`..`v6`/`default`, which `duels-eval` generation a non-rollout leaf
+//!   scores against).
 //! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
 //!   name (`military_position`, `military_endgame_urgency`,
 //!   `science_distinct_symbol`, `science_near_supremacy`,
@@ -50,7 +53,7 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`default`), guild pricing
+//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`v6`/`default`), guild pricing
 //!   (`guild`, `unpriced`/`projected`) and the guild projection weight
 //!   (`guildproj`), the menu floor (`menufloor`, `none`/`discard`/
 //!   `discardwonder`), the menu's soft affordability width (`afford`), the
@@ -94,7 +97,7 @@ use duels_agent_alphabeta::{eval, playout, AlphaBetaAgent, Config as AlphaBetaCo
 use duels_agent_greedy::{EvalWeights as GreedyWeights, GreedyAgent};
 use duels_agent_greedy_ev::{EvalWeights as GreedyEvWeights, GreedyEvAgent};
 use duels_agent_mcts_uct::{
-    Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
+    Config as MctsConfig, LeafValue, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
 };
 use duels_agent_phased::{
     Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, GuildPricing, MenuFloor,
@@ -102,6 +105,9 @@ use duels_agent_phased::{
     WonderModel,
 };
 use duels_agents_api::Agent;
+// The evaluation generation an `mcts-uct` leaf value scores against. The same
+// type `phased` re-exports as its `Config`, named for what it is here.
+use duels_eval::Config as EvalConfig;
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
 
@@ -303,6 +309,77 @@ pub fn parse_mcts_config(params: &str) -> Result<MctsConfig, String> {
                     }
                 };
             }
+            "leaf" => {
+                // `truncated` and `blend` each carry a parameter, spelled with
+                // a colon (`leaf=trunc:8`, `leaf=blend:0.3`) so it survives
+                // the `,`/`=` splitting, exactly as `prior` and `alphabeta`'s
+                // `metric` do. A bare `truncated`/`blend` takes the default
+                // the tuning sweep settled on.
+                cfg.leaf = match v.split_once(':') {
+                    Some(("trunc" | "truncated", p)) => LeafValue::Truncated {
+                        plies: parse_field("leaf", p)?,
+                    },
+                    Some(("blend", w)) => {
+                        // Range-checked, unlike the other float keys in this
+                        // module, and for a specific reason: a blend weight
+                        // outside `[0, 1]` makes the leaf value stop being a
+                        // probability, which silently violates the value
+                        // convention every node in that tree accumulates
+                        // (`duels_agent_mcts_uct::tree`). An out-of-range
+                        // *evaluation* weight elsewhere is merely a strange
+                        // agent; this one is a broken search that would still
+                        // produce a plausible-looking win rate.
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-uct: leaf blend weight must be in [0, 1], got \"{w}\" \
+                                 (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        LeafValue::Blend { weight }
+                    }
+                    None => match v {
+                        "rollout" | "off" => LeafValue::Rollout,
+                        "static" => LeafValue::Static,
+                        "trunc" | "truncated" => LeafValue::Truncated { plies: 8 },
+                        "blend" => LeafValue::Blend { weight: 0.5 },
+                        other => {
+                            return Err(format!(
+                                "mcts-uct: unknown leaf \"{other}\" (expected \"rollout\", \
+                                 \"static\", \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                            ))
+                        }
+                    },
+                    Some((other, _)) => {
+                        return Err(format!(
+                            "mcts-uct: leaf \"{other}\" takes no parameter (only \
+                             \"truncated:<plies>\" and \"blend:<weight>\" do)"
+                        ))
+                    }
+                };
+            }
+            "evalgen" | "eval_generation" => {
+                // Which frozen `duels-eval` generation a non-rollout leaf
+                // scores against. `default` deliberately does *not* mean the
+                // agent's own default here: it means "whatever `duels-eval`
+                // defaults to right now", which is the escape hatch for
+                // measuring a *new* evaluation round against the pin.
+                cfg.eval_generation = match v {
+                    "v1" => EvalConfig::v1(),
+                    "v2" => EvalConfig::v2(),
+                    "v3" => EvalConfig::v3(),
+                    "v4" => EvalConfig::v4(),
+                    "v5" => EvalConfig::v5(),
+                    "v6" => EvalConfig::v6(),
+                    "default" => EvalConfig::default(),
+                    other => {
+                        return Err(format!(
+                            "mcts-uct: unknown evalgen \"{other}\" (expected \"v1\"..\"v6\" \
+                             or \"default\")"
+                        ))
+                    }
+                };
+            }
             other => return Err(format!("mcts-uct: unknown key \"{other}\"")),
         }
     }
@@ -327,6 +404,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v3" => cfg = PhasedConfig::v3(),
                 "v4" => cfg = PhasedConfig::v4(),
                 "v5" => cfg = PhasedConfig::v5(),
+                "v6" => cfg = PhasedConfig::v6(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
@@ -697,6 +775,87 @@ mod tests {
         let agent = make_agent_from_spec("mcts-uct:prior=expansion_order", 1).unwrap();
         assert!(
             agent.spec().params.contains("prior=expansion_order"),
+            "{}",
+            agent.spec().params
+        );
+    }
+
+    /// The leaf-value family, round-tripped: every variant parses, the
+    /// parameterised ones carry their parameter, and each one reaches the spec
+    /// string a results file records.
+    #[test]
+    fn the_leaf_key_reaches_every_variant_and_shows_up_in_the_spec() {
+        // The default has to keep reading `Rollout`: that is what makes the
+        // shipped agent the pre-leaf-value one.
+        assert_eq!(parse_mcts_config("").unwrap().leaf, LeafValue::Rollout);
+        for (value, want) in [
+            ("rollout", LeafValue::Rollout),
+            ("off", LeafValue::Rollout),
+            ("static", LeafValue::Static),
+            ("truncated:4", LeafValue::Truncated { plies: 4 }),
+            ("trunc:16", LeafValue::Truncated { plies: 16 }),
+            ("truncated", LeafValue::Truncated { plies: 8 }),
+            ("blend:0.3", LeafValue::Blend { weight: 0.3 }),
+            ("blend", LeafValue::Blend { weight: 0.5 }),
+        ] {
+            let cfg = parse_mcts_config(&format!("leaf={value}")).unwrap();
+            assert_eq!(cfg.leaf, want, "leaf={value}");
+        }
+        // Unknown variants, a parameter on one that takes none, and an
+        // unparsable parameter are all errors rather than a silently-wrong
+        // benchmark.
+        assert!(parse_mcts_config("leaf=sideways").is_err());
+        assert!(parse_mcts_config("leaf=static:3").is_err());
+        assert!(parse_mcts_config("leaf=trunc:not_a_number").is_err());
+        assert!(parse_mcts_config("leaf=blend:not_a_number").is_err());
+        // A blend weight outside [0, 1] is rejected rather than accepted into
+        // a search whose leaf values are then not probabilities.
+        assert!(parse_mcts_config("leaf=blend:1.5").is_err());
+        assert!(parse_mcts_config("leaf=blend:-0.5").is_err());
+        assert!(parse_mcts_config("leaf=blend:0.0").is_ok());
+        assert!(parse_mcts_config("leaf=blend:1.0").is_ok());
+
+        for (spec, want) in [
+            ("mcts-uct:leaf=static", "leaf=static"),
+            ("mcts-uct:leaf=trunc:8", "leaf=truncated(8)"),
+            ("mcts-uct:leaf=blend:0.3", "leaf=blend(0.300)"),
+        ] {
+            let agent = make_agent_from_spec(spec, 1).unwrap();
+            assert!(
+                agent.spec().params.contains(want),
+                "{spec}: {}",
+                agent.spec().params
+            );
+        }
+    }
+
+    /// The evaluation generation a leaf value scores against is pinned, and
+    /// both the pin and any override reach the results file.
+    #[test]
+    fn the_eval_generation_key_names_a_frozen_duels_eval_snapshot() {
+        // The pin: not `EvalConfig::default()`, which a `duels-eval` round can
+        // move, but the frozen snapshot it currently equals.
+        assert_eq!(
+            parse_mcts_config("").unwrap().eval_generation,
+            EvalConfig::v6()
+        );
+        for (value, want) in [
+            ("v1", EvalConfig::v1()),
+            ("v2", EvalConfig::v2()),
+            ("v3", EvalConfig::v3()),
+            ("v4", EvalConfig::v4()),
+            ("v5", EvalConfig::v5()),
+            ("v6", EvalConfig::v6()),
+            ("default", EvalConfig::default()),
+        ] {
+            let cfg = parse_mcts_config(&format!("evalgen={value}")).unwrap();
+            assert_eq!(cfg.eval_generation, want, "evalgen={value}");
+        }
+        assert!(parse_mcts_config("evalgen=v99").is_err());
+
+        let agent = make_agent_from_spec("mcts-uct:leaf=static,evalgen=v2", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("evalgen=v2"),
             "{}",
             agent.spec().params
         );
