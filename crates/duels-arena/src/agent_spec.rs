@@ -67,7 +67,7 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`v6`/`v7`/`default`), the
+//! * `phased` -- `base` (`v1`..`v8`/`default`), the
 //!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
 //!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
 //!   (`guild`, `unpriced`/`projected`) and the guild projection weight
@@ -76,7 +76,10 @@
 //!   supply weighting (`supply`, `raw`/`dealt`), the yellow-density term
 //!   (`yellow`, with `discardrate`), the pending-effect model
 //!   (`pending`, `unresolved`/`completed`), the wonder model (`wonder`,
-//!   `flat`/`budget`, with `wturns` and `wextra`), the flat model's extra-turn
+//!   `flat`/`budget`/`rationed`, with `wturns`, `wextra` and the rationed
+//!   model's reference build probability `wonder_p_build_ref`/`pref`), the
+//!   science ladder's symbol-reachability model (`reach_model`/`reach`,
+//!   `optimistic`/`structure`), the flat model's extra-turn
 //!   premium (`wonder_extra_turn_premium`/`wprem`), the destroy-replacement
 //!   discount (`destroy_replace`/`destroyrepl`, `on`/`off`), the terminal rails
 //!   (`rails` `on`/`off`, `imminent`), the menu's shield price
@@ -130,7 +133,10 @@ use duels_agent_phased::{
     WonderModel,
 };
 use duels_agents_api::Agent;
-use duels_eval::CountPricing;
+// `ReachModel` is round nine's addition and `duels-agent-phased` does not
+// re-export it; taken straight from the library below the agents, exactly as
+// `CountPricing` already is.
+use duels_eval::{CountPricing, ReachModel};
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
 
@@ -410,7 +416,7 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                     "v8" => duels_eval::Config::v8(),
                     other => {
                         return Err(format!(
-                            "mcts-eval: unknown eval generation \"{other}\" (expected v1-v7)"
+                            "mcts-eval: unknown eval generation \"{other}\" (expected v1-v8)"
                         ))
                     }
                 });
@@ -558,6 +564,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v5" => cfg = PhasedConfig::v5(),
                 "v6" => cfg = PhasedConfig::v6(),
                 "v7" => cfg = PhasedConfig::v7(),
+                "v8" => cfg = PhasedConfig::v8(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
@@ -600,7 +607,15 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 cfg.wonder_model = match v {
                     "flat" => WonderModel::Flat,
                     "budget" => WonderModel::Budget,
+                    "rationed" => WonderModel::Rationed,
                     other => return Err(format!("phased: unknown wonder_model \"{other}\"")),
+                }
+            }
+            "reach_model" | "reach" => {
+                cfg.eval.science.reach_model = match v {
+                    "optimistic" | "off" => ReachModel::Optimistic,
+                    "structure" | "on" => ReachModel::Structure,
+                    other => return Err(format!("phased: unknown reach_model \"{other}\"")),
                 }
             }
             "destroy_replace" | "destroyrepl" => {
@@ -613,6 +628,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
             "wonder_turns_per_wonder" | "wturns" => {
                 cfg.eval.wonder_turns_per_wonder = parse_field(k, v)?
             }
+            "wonder_p_build_ref" | "pref" => cfg.eval.wonder_p_build_ref = parse_field(k, v)?,
             "wonder_extra_turn_vp" | "wextra" => cfg.eval.wonder_extra_turn_vp = parse_field(k, v)?,
             "wonder_extra_turn_premium" | "wprem" => {
                 cfg.eval.wonder_extra_turn_premium = parse_field(k, v)?
@@ -1285,6 +1301,26 @@ mod tests {
             "the ladder's top rungs and the leaf temperature are the only \
              things round eight changed"
         );
+        // Round nine's two options. **It did not move the default** -- it
+        // measured both and left them off -- so unlike every block above this
+        // one there is no "off" string to reproduce a previous generation
+        // with, and `base=v8` is still `default()`. What the keys are for is
+        // reaching the options from a spec string at all, which is how the
+        // round's own transfer checks against `alphabeta` and `mcts-uct` were
+        // run. `pref` is read only under `wonder=rationed`.
+        assert_eq!(parse_phased_config("base=v8").unwrap(), PhasedConfig::v8());
+        assert_eq!(
+            parse_phased_config("wonder=flat,wonder_potential=0.5,reach=optimistic,pref=1")
+                .unwrap(),
+            PhasedConfig::default(),
+            "round nine's options are off in the default, so naming their off \
+             values has to be a no-op"
+        );
+        let on = parse_phased_config("wonder=rationed,reach=structure,pref=0.875").unwrap();
+        assert_eq!(on.wonder_model, WonderModel::Rationed);
+        assert_eq!(on.eval.science.reach_model, ReachModel::Structure);
+        assert_eq!(on.eval.wonder_p_build_ref, 0.875);
+        assert!(parse_phased_config("reach=hopeful").is_err());
         let on =
             parse_phased_config("ladder1=0.5,ladder2=2,ladder3=7,ladder4=25,temp1=30").unwrap();
         assert_eq!(on.eval.science.ladder, [0.0, 0.5, 2.0, 7.0, 25.0, 54.0]);
