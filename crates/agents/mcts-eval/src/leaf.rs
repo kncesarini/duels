@@ -104,6 +104,19 @@
 //! badly, while the default blend, which keeps a real playout alongside it,
 //! wins clearly.
 //!
+//! **What a shared `Root` may and may not carry.** The line between the two is
+//! `duels-eval`'s to draw, and it drew it: a `Root` holds *prices* — what a
+//! shield or a coin or a produced resource is worth in this game — which are
+//! properly read once and are what makes the shared `Root` cheap. It must not
+//! hold a *quantity about the position*, because this tree will hand it leaves
+//! that are different positions. `duels_eval::terms::wonder_p_build` was
+//! cached in `Root` when `WonderModel::Rationed` landed, which made it the
+//! second kind, and every leaf in this tree was scored by the root turn's
+//! wonder-slot and decision counts. It is now derived from the state being
+//! scored. Nothing here changed and nothing on the default path moved —
+//! `Rationed` is not the default — but the rule is worth stating where it gets
+//! violated, which is here rather than in `duels-eval`.
+//!
 //! # Where the perspective flip is (and is not)
 //!
 //! [`static_value`] always evaluates for [`Player::One`], because that is the

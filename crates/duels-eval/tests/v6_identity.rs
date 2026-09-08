@@ -164,6 +164,14 @@ fn v6_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let wonders = match c.wonder_model {
         WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p, e),
         WonderModel::Budget => terms::wonder_potential_budget(state, p, root.wonders()),
+        // Round nine's third model, which no snapshot this file drives can be
+        // in: `Config::v8()` sets `WonderModel::Flat` and every older snapshot
+        // chains through it. Spelled out rather than left to a wildcard so a
+        // later round adding a fourth model has to think about this verbatim
+        // copy instead of silently falling through it.
+        WonderModel::Rationed => {
+            unreachable!("this copy is only ever driven with WonderModel::Flat")
+        }
     };
     let gift = if e.menu.lambda == 0.0 {
         -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age())
@@ -359,7 +367,13 @@ fn config_v6_reproduces_round_six_bit_for_bit() {
 
 #[test]
 fn the_round_seven_default_is_not_a_no_op() {
-    compare(Config::default(), false);
+    // `Config::v7()`, not `Config::default()`: the claim this test makes is
+    // about *round seven*, and driving it from today's default would fold in
+    // every later round as well. Round nine is what made the distinction worth
+    // spelling out — it added a third `WonderModel`, which the verbatim
+    // round-six copy above cannot represent and does not have to, and which a
+    // round-ten default move could put in this copy's path.
+    compare(Config::v7(), false);
 }
 
 #[test]

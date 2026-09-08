@@ -35,7 +35,7 @@ use duels_core::{engine, Action, GameState, Player};
 use duels_eval::{
     evaluate, expected_value, rail_owner, win_probability, Blend, CoinModel, Config, CountPricing,
     EconomyModel, EvalWeights, GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel,
-    PendingModel, RailModel, Root, ScienceWeights, SupplyModel, WonderModel,
+    PendingModel, RailModel, ReachModel, Root, ScienceWeights, SupplyModel, WonderModel,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -423,6 +423,45 @@ fn the_property_holds_under_every_model_combination() {
         }
     }
     configs.push(Config::v6());
+    configs.push(Config::v7());
+    configs.push(Config::v8());
+    // Round nine's two options. `ReachModel::Structure` is the first thing in
+    // this crate to read the *structure* rather than a mask of what is gone —
+    // which slots are occupied, which of those are revealed, and what card a
+    // revealed one holds. Every one of those is public information
+    // (`face_up_card` is `None` for a face-down slot), but that is exactly the
+    // kind of claim this file exists to check rather than accept, and a
+    // reachability test that could see a face-down identity would be the worst
+    // possible place for a leak: it gates a thirty-victory-point rung.
+    // `WonderModel::Rationed` reads `decisions_left` and the shared wonder-slot
+    // count, both of which an age-ending candidate moves.
+    for reach_model in [ReachModel::Optimistic, ReachModel::Structure] {
+        for wonder_model in [
+            WonderModel::Flat,
+            WonderModel::Budget,
+            WonderModel::Rationed,
+        ] {
+            for dead_race_scale in [0.0, 0.25, 1.0] {
+                configs.push(Config {
+                    wonder_model,
+                    eval: EvalWeights {
+                        wonder_potential: 3.0,
+                        science: ScienceWeights {
+                            reach_model,
+                            dead_race_scale,
+                            // A rung big enough that the gate cannot be a
+                            // rounding error, and a ladder that pays from the
+                            // first symbol so the walk is not short-circuited.
+                            ladder: [0.0, 5.0, 10.0, 20.0, 40.0, 80.0],
+                            ..Config::default().eval.science
+                        },
+                        ..Config::default().eval
+                    },
+                    ..Config::default()
+                });
+            }
+        }
+    }
     for (i, config) in configs.iter().enumerate() {
         for seed in 0..6u64 {
             for &steps in &[7usize, 17, 29, 43] {
@@ -737,6 +776,44 @@ fn round_four_configs() -> Vec<Config> {
             ..Config::default()
         },
         Config::v6(),
+        Config::v7(),
+        Config::v8(),
+        // Round nine, both halves, through the pending-effect path.
+        //
+        // `ReachModel::Structure` is the entry that has to be here: it is the
+        // first thing in this crate to read the *structure* — which slots are
+        // occupied, which of those are face up, and what card a face-up one
+        // holds — rather than a mask of what is gone. Every one of those is
+        // public (`face_up_card` is `None` for a face-down slot, and
+        // `revealed_slots` is an `Observation` field), but "is public" is a
+        // claim and this is the test that checks it. `WonderModel::Rationed`
+        // is here too, because `wonder_p_build` reads `decisions_left`, which
+        // an age-ending candidate moves.
+        Config {
+            pending_model: PendingModel::Completed,
+            wonder_model: WonderModel::Rationed,
+            eval: EvalWeights {
+                science: ScienceWeights {
+                    reach_model: ReachModel::Structure,
+                    dead_race_scale: 0.25,
+                    ..Config::default().eval.science
+                },
+                ..Config::default().eval
+            },
+            ..Config::default()
+        },
+        Config {
+            wonder_model: WonderModel::Rationed,
+            eval: EvalWeights {
+                wonder_potential: 3.0,
+                science: ScienceWeights {
+                    reach_model: ReachModel::Structure,
+                    ..Config::default().eval.science
+                },
+                ..all_on
+            },
+            ..Config::default()
+        },
     ]
 }
 

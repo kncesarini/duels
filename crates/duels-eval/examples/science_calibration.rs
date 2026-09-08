@@ -42,6 +42,24 @@
 //!   [`duels_eval::ScienceWeights::ladder`] entry is actually written in. A
 //!   bucket gap says "this is wrong"; `δ_k` says by how much and in what units.
 //!
+//! # `--factors`: is the error explained by something the evaluation cannot see?
+//!
+//! Round nine added a second question on top, because a bucket gap alone does
+//! not name a term. Every `(age, symbols)` cell is split by a *second* factor —
+//! cards left in the structure, how many symbols are still assemblable, how
+//! many missing symbols are face up right now, the unbuilt-play-again-wonder
+//! differential, and who took the first decision of the age — and
+//! [`rung_correction_where`] re-runs the `δ_k` fit inside each bin.
+//!
+//! The reading is the whole point. **A gap that is the same in every bin of a
+//! factor is a factor the evaluation already prices**, however strongly that
+//! factor predicts the outcome. **A gap that moves across the bins is a term
+//! the evaluation is missing**, and that is the only kind of finding that names
+//! one. Round nine's own use of it is in the crate docs: the `reachable` split
+//! is what said round eight's named "age-scale the ladder rung" follow-up was
+//! aimed at the wrong population, and the `extra-turn diff` split is what
+//! pointed at the wonder term.
+//!
 //! # The reading configuration is separate from the playing ones
 //!
 //! `--read` is the [`Config`] every position is *scored* with — the evaluation
@@ -78,6 +96,11 @@
 //!     --games 1000 --read "v7:base=v7" "a:base=v7,sci=3.0" "b:base=v7,sci=3.0"
 //! cargo run --release -p duels-eval --example science_calibration -- \
 //!     --games 1000 --read "r8:"       "a:base=v7,sci=3.0" "b:base=v7,sci=3.0"
+//!
+//! # round nine's factor tables, off the same fixed corpus
+//! cargo run --release -p duels-eval --example science_calibration -- \
+//!     --games 2000 --factors --read "v8:base=v8" \
+//!     "a:base=v7,sci=3.0" "b:base=v7,sci=3.0"
 //! ```
 
 use duels_core::scoring::GameResult;
@@ -134,6 +157,50 @@ impl Driver {
     }
 }
 
+/// How many of the distinct symbols `p` does **not** hold are printed on a
+/// card that is face up in the structure at this instant.
+///
+/// The distinction the project owner drew in Age II — "all four of the age's
+/// distinct symbols still achievable, face-up and known, or face-down but
+/// plausibly reachable" — is exactly this against
+/// [`duels_eval::terms::supremacy_reachable`], which counts a symbol reachable
+/// whenever *some* card printing it is not provably gone, face down or not.
+fn faceup_missing_symbols(state: &duels_core::GameState, p: Player) -> u8 {
+    let held = state.player(p).science();
+    let mut n = 0u8;
+    for sym in duels_strategy::masks::ALL_SCIENCE {
+        if held[sym.index()] > 0 {
+            continue;
+        }
+        let mut mask = state.occupied_slots();
+        let mut found = false;
+        while mask != 0 {
+            let slot = mask.trailing_zeros() as u8;
+            mask &= mask - 1;
+            if let Some(card) = state.face_up_card(slot) {
+                if card.def().science == Some(sym) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if found {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Play-again wonders `p` has drafted and not yet built — the extra turns they
+/// still have in hand, which is the half of the parity question that is still
+/// to come.
+fn extra_turn_wonders(state: &duels_core::GameState, p: Player) -> u8 {
+    let ps = state.player(p);
+    ps.wonders()
+        .filter(|&w| !ps.has_built_wonder(w) && w.def().play_again)
+        .count() as u8
+}
+
 /// One observation for the comparison.
 #[derive(Clone, Copy)]
 struct Sample {
@@ -152,6 +219,27 @@ struct Sample {
     /// First position in this game at which this seat held this many symbols
     /// in this age.
     first: bool,
+    // --- round nine: the factors the project owner named, one field each ----
+    /// Cards still in the current age's structure, taken *and* untaken slots
+    /// excluded — `GameState::occupied_slots().count_ones()`. Twenty at the
+    /// start of an age, zero at its end, so it is "which turn of the age is
+    /// this" in the units the board actually offers.
+    cards_left: u8,
+    /// How many distinct symbols this player could still *end the game*
+    /// holding, from [`duels_eval::terms::supremacy_reachable`] — six wins, so
+    /// anything below six means the supremacy race is dead for them.
+    reach: u8,
+    /// Of the symbols this player does not hold, how many are printed on a
+    /// card that is **face up in the structure right now**. The project
+    /// owner's "face-up and known" against "face-down but plausibly
+    /// reachable": `reach` counts the second, this counts the first.
+    faceup_missing: u8,
+    /// Unbuilt play-again wonders this player holds minus the opponent's — the
+    /// parity lever, since an extra turn is the only thing that re-assigns the
+    /// remaining slot sequence.
+    extra_turn_diff: i8,
+    /// Whether this player took the first decision of the current age.
+    age_starter: bool,
 }
 
 /// Play one game and emit every `(player, position)` sample from it.
@@ -173,6 +261,11 @@ fn play_one(
     // (age, symbols) pairs already seen, per seat.
     let mut seen: [Vec<(u8, u8)>; 2] = [Vec::new(), Vec::new()];
     let mut trace: Vec<(Player, Sample)> = Vec::new();
+    // Who took the first decision of each age, indexed by age minus one.
+    // Recorded rather than derived: the age-boundary first-player choice runs
+    // through `Phase::ChooseFirstPlayer` and the military track, and the only
+    // reliable read of "who actually started" is to watch it happen.
+    let mut age_starter: [Option<Player>; 3] = [None; 3];
 
     while !state.is_over() {
         let legal = engine::legal_actions(&state);
@@ -180,6 +273,12 @@ fn play_one(
             break;
         }
         let me = state.current_player();
+        if state.phase() == duels_core::state::Phase::Turn {
+            let slot = &mut age_starter[usize::from(state.age().clamp(1, 3)) - 1];
+            if slot.is_none() {
+                *slot = Some(me);
+            }
+        }
         // One `Root` serves both players: `evaluate` is antisymmetric, so the
         // non-mover's probability is exactly one minus the mover's.
         //
@@ -210,6 +309,12 @@ fn play_one(
                     mover: p == me,
                     side_a: p == a_seat,
                     first,
+                    cards_left: state.occupied_slots().count_ones() as u8,
+                    reach: duels_eval::terms::supremacy_reachable(&state, p),
+                    faceup_missing: faceup_missing_symbols(&state, p),
+                    extra_turn_diff: extra_turn_wonders(&state, p) as i8
+                        - extra_turn_wonders(&state, p.other()) as i8,
+                    age_starter: age_starter[usize::from(age.clamp(1, 3)) - 1] == Some(p),
                 },
             ));
         }
@@ -278,6 +383,147 @@ fn table(title: &str, samples: &[Sample], keep: impl Fn(&Sample) -> bool) {
     }
 }
 
+/// Split one `(age, symbols)` cell by a second factor, and report what the
+/// evaluation predicts against what actually happens in each bin.
+///
+/// This is the round-nine extension, and the question it answers is narrower
+/// and sharper than the plain bucket table's. A gap in `table` says the
+/// evaluation is wrong at that symbol count. A gap that *differs across the
+/// bins here* says the evaluation is wrong **because it cannot see this
+/// factor** — which is the only kind of finding that names a new term. A
+/// factor the evaluation already prices correctly shows the same gap in every
+/// bin, however strongly it predicts the outcome.
+fn factor_table(
+    title: &str,
+    samples: &[Sample],
+    name: &str,
+    bin: impl Fn(&Sample) -> Option<(usize, &'static str)>,
+    bins: usize,
+) {
+    println!("\n{title}  (factor: {name})");
+    println!(
+        "  {:>3}  {:>4}  {:>16}  {:>7}  {:>10}  {:>9}  {:>8}",
+        "age", "sym", name, "n", "predicted", "actual", "gap"
+    );
+    for age in 1..=3u8 {
+        for symbols in 2..=5u8 {
+            let mut rows: Vec<(String, Bucket)> = Vec::new();
+            for _ in 0..bins {
+                rows.push((String::new(), Bucket::default()));
+            }
+            for s in samples
+                .iter()
+                .filter(|s| s.age == age && s.symbols == symbols && s.first && s.mover)
+            {
+                if let Some((i, label)) = bin(s) {
+                    if i < bins {
+                        rows[i].0 = label.to_string();
+                        rows[i].1.add(s);
+                    }
+                }
+            }
+            if rows.iter().map(|r| r.1.n).sum::<u32>() < 30 {
+                continue;
+            }
+            for (label, b) in &rows {
+                if b.n == 0 {
+                    continue;
+                }
+                let predicted = b.predicted / f64::from(b.n);
+                let actual = f64::from(b.won) / f64::from(b.n);
+                let se = (actual * (1.0 - actual) / f64::from(b.n)).sqrt();
+                println!(
+                    "  {age:>3}  {symbols:>4}  {label:>16}  {:>7}  {predicted:>10.3}  \
+                     {actual:>9.3}  {:>+8.3}  ±{:.3}",
+                    b.n,
+                    actual - predicted,
+                    1.96 * se
+                );
+            }
+        }
+    }
+}
+
+/// Every round-nine factor table, off the same corpus.
+fn factor_tables(samples: &[Sample]) {
+    println!(
+        "\n=== round nine: is the evaluation's science error explained by a factor \
+         it cannot see? ===\n(first position at that count, the player to move. A gap that \
+         moves across the bins of one\n factor is a term the evaluation is missing; a gap that \
+         is flat across them is not.)"
+    );
+
+    factor_table(
+        "how far into the age the count was reached",
+        samples,
+        "cards left",
+        |s| {
+            Some(match s.cards_left {
+                0..=6 => (0, "0-6 (late)"),
+                7..=13 => (1, "7-13 (mid)"),
+                _ => (2, "14-20 (early)"),
+            })
+        },
+        3,
+    );
+
+    factor_table(
+        "whether six distinct symbols are still assemblable",
+        samples,
+        "reachable",
+        |s| {
+            Some(match s.reach {
+                6..=7 => (0, "6+ (race live)"),
+                5 => (1, "5 (one short)"),
+                _ => (2, "<=4 (dead)"),
+            })
+        },
+        3,
+    );
+
+    factor_table(
+        "missing symbols that are face up on the board right now",
+        samples,
+        "face-up missing",
+        |s| {
+            Some(match s.faceup_missing {
+                0 => (0, "0"),
+                1 => (1, "1"),
+                _ => (2, "2+"),
+            })
+        },
+        3,
+    );
+
+    factor_table(
+        "unbuilt play-again wonders, this player minus the opponent",
+        samples,
+        "extra-turn diff",
+        |s| {
+            Some(match s.extra_turn_diff {
+                i8::MIN..=-1 => (0, "behind"),
+                0 => (1, "level"),
+                _ => (2, "ahead"),
+            })
+        },
+        3,
+    );
+
+    factor_table(
+        "who took the first decision of this age",
+        samples,
+        "age starter",
+        |s| {
+            Some(if s.age_starter {
+                (0, "this player")
+            } else {
+                (1, "the opponent")
+            })
+        },
+        2,
+    );
+}
+
 /// The residual value, in victory points, that the evaluation is *missing* at
 /// each distinct-symbol count.
 ///
@@ -303,12 +549,26 @@ fn table(title: &str, samples: &[Sample], keep: impl Fn(&Sample) -> bool) {
 /// position are exact complements, so counting both would halve every standard
 /// error while adding no information.
 fn rung_correction(samples: &[Sample], age: u8) -> ([f64; 6], [f64; 6], [u32; 6]) {
+    rung_correction_where(samples, age, |_| true)
+}
+
+/// [`rung_correction`] restricted to a subset of the corpus.
+///
+/// Added in round nine so the same fit can be run *inside* one bin of a second
+/// factor — the actionable form of a factor table, since it reports the
+/// missing victory points per rung rather than a probability gap, and a
+/// [`duels_eval::ScienceWeights::ladder`] entry is written in victory points.
+fn rung_correction_where(
+    samples: &[Sample],
+    age: u8,
+    keep: impl Fn(&Sample) -> bool,
+) -> ([f64; 6], [f64; 6], [u32; 6]) {
     let t = duels_eval::win_probability_temperature(age);
     // Rails are magnitudes rather than judgements (`±imminent` = 500), so they
     // would swamp a likelihood; drop them, as `calibrate.rs` drops terminals.
     let rows: Vec<&Sample> = samples
         .iter()
-        .filter(|s| s.mover && s.age == age && s.value.abs() < 100.0)
+        .filter(|s| s.mover && s.age == age && s.value.abs() < 100.0 && keep(s))
         .collect();
     let mut delta = [0.0f64; 6];
     let mut n = [0u32; 6];
@@ -383,6 +643,39 @@ fn correction_table(samples: &[Sample]) {
     }
 }
 
+/// One bin of a second factor: its label, and the predicate that selects it.
+type FactorBin = (&'static str, fn(&Sample) -> bool);
+
+/// [`correction_table`] run inside each bin of a second factor, so the missing
+/// victory points per rung can be read against that factor directly.
+fn correction_by_factor(samples: &[Sample], name: &str, bins: &[FactorBin]) {
+    println!("\nfitted additive correction per symbol count, split by {name}, in victory points");
+    println!(
+        "  {:>3}  {:>16}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
+        "age", name, "d1", "d2", "d3", "d4", "d5"
+    );
+    for age in 1..=3u8 {
+        for (label, keep) in bins {
+            let (delta, _se, n) = rung_correction_where(samples, age, keep);
+            if n.iter().sum::<u32>() < 200 {
+                continue;
+            }
+            println!(
+                "  {age:>3}  {label:>16}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
+                format!("{:+.1}", delta[1]),
+                format!("{:+.1}", delta[2]),
+                format!("{:+.1}", delta[3]),
+                format!("{:+.1}", delta[4]),
+                format!("{:+.1}", delta[5]),
+            );
+            println!(
+                "       {:>16}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}   (mover positions)",
+                "", n[1], n[2], n[3], n[4], n[5]
+            );
+        }
+    }
+}
+
 /// Apply one `key=value` override — deliberately the same table as
 /// `examples/head_to_head.rs`, so a configuration screened on one instrument
 /// can be inspected on the other by the same string.
@@ -396,8 +689,26 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
             "v5" => Config::v5(),
             "v6" => Config::v6(),
             "v7" => Config::v7(),
-            "v8" | "default" => Config::default(),
+            "v8" => Config::v8(),
+            "default" => Config::default(),
             other => return Err(format!("unknown base \"{other}\"")),
+        };
+        return Ok(());
+    }
+    if key == "reach" {
+        cfg.eval.science.reach_model = match raw {
+            "optimistic" | "0" => duels_eval::ReachModel::Optimistic,
+            "structure" | "1" => duels_eval::ReachModel::Structure,
+            other => return Err(format!("unknown reach model \"{other}\"")),
+        };
+        return Ok(());
+    }
+    if key == "wonder" {
+        cfg.wonder_model = match raw {
+            "flat" => duels_eval::WonderModel::Flat,
+            "budget" => duels_eval::WonderModel::Budget,
+            "rationed" => duels_eval::WonderModel::Rationed,
+            other => return Err(format!("unknown wonder model \"{other}\"")),
         };
         return Ok(());
     }
@@ -406,6 +717,7 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
         .map_err(|_| format!("\"{raw}\" is not a number (key {key})"))?;
     let e = &mut cfg.eval;
     match key {
+        "wonder_potential" => e.wonder_potential = v,
         "sci" => e.science_ladder = v,
         "dead" => e.science.dead_race_scale = v,
         "pairthreat" => e.science.pair_threat_weight = v,
@@ -444,6 +756,7 @@ fn main() {
     let mut threads: usize = 8;
     let mut sides: Vec<String> = Vec::new();
     let mut read_arg: Option<String> = None;
+    let mut factors = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -451,6 +764,7 @@ fn main() {
             "--seed" => seed = args.next().and_then(|s| s.parse().ok()).unwrap_or(seed),
             "--threads" => threads = args.next().and_then(|s| s.parse().ok()).unwrap_or(threads),
             "--read" => read_arg = args.next(),
+            "--factors" => factors = true,
             _ => sides.push(a),
         }
     }
@@ -536,4 +850,33 @@ fn main() {
         |s| s.first && s.mover,
     );
     correction_table(&samples);
+    if factors {
+        factor_tables(&samples);
+        correction_by_factor(
+            &samples,
+            "cards left",
+            &[
+                ("0-6 (late)", |s| s.cards_left <= 6),
+                ("7-13 (mid)", |s| s.cards_left >= 7 && s.cards_left <= 13),
+                ("14-20 (early)", |s| s.cards_left >= 14),
+            ],
+        );
+        correction_by_factor(
+            &samples,
+            "reachable",
+            &[
+                ("6+ (race live)", |s| s.reach >= 6),
+                ("<=5 (dead)", |s| s.reach <= 5),
+            ],
+        );
+        correction_by_factor(
+            &samples,
+            "extra-turn diff",
+            &[
+                ("behind", |s| s.extra_turn_diff < 0),
+                ("level", |s| s.extra_turn_diff == 0),
+                ("ahead", |s| s.extra_turn_diff > 0),
+            ],
+        );
+    }
 }
