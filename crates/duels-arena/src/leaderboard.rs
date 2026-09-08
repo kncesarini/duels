@@ -117,7 +117,7 @@ pub const ANCHOR_ELO: f64 = 1000.0;
 /// against by the `ai-candidate` CI check. See the module docs on why this is
 /// a hand-maintained constant.
 pub const CHAMPION: LadderEntry = LadderEntry {
-    agent: "mcts-uct",
+    agent: "mcts-eval",
     budget: "nodes:2000",
 };
 
@@ -760,10 +760,14 @@ mod tests {
         );
         assert_eq!(board.rows[0].rank, 1);
         // The champion is a hand-maintained constant, not "whoever is top of
-        // this table" — see the module docs. In this synthetic fixture the
-        // strongest row is `mcts-eval` and the champion is still `mcts-uct`,
-        // which is exactly the separation being asserted.
-        assert!(!board.rows[0].champion, "the top row is not the champion");
+        // this table" — see the module docs; the two coincide here because
+        // `CHAMPION` was moved to `mcts-eval` once it measured strongest, not
+        // because `champion` is derived from `rank`. `champion` is computed
+        // by matching `CHAMPION.agent` against each row's own agent name
+        // (see `champion: r.agent == CHAMPION.agent` above) — a future ladder
+        // shuffle that outranked `mcts-eval` again would immediately show the
+        // two diverge, without this test needing to change.
+        assert!(board.rows[0].champion, "the top row should be the champion");
         assert!(
             board
                 .rows
