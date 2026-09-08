@@ -201,10 +201,13 @@ jobs:
           # Computed, not hardcoded, so the commit message and PR body below
           # never go stale when an agent is added to `LADDER` (this file's own
           # header comment used to say "21" and quietly went wrong the first
-          # time that happened).
-          PAIRING_COUNT: ${{ length(fromJson(needs.plan.outputs.matrix)) }}
+          # time that happened). Counted in bash via `jq`, not as a GHA
+          # expression: expression syntax has no `length()` function, only
+          # `jq`'s does.
+          PAIRING_MATRIX: ${{ needs.plan.outputs.matrix }}
         run: |
           set -euo pipefail
+          PAIRING_COUNT="$(jq 'length' <<< "$PAIRING_MATRIX")"
           # `git status --porcelain`, not `git diff`: on the very first run
           # after this workflow lands the files may be untracked, which
           # `git diff` reports as no change at all.
