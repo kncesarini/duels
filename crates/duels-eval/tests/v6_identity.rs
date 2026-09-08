@@ -405,6 +405,7 @@ fn the_generation_chain_is_still_a_chain_of_distinct_configurations() {
         ("v5", Config::v5()),
         ("v6", Config::v6()),
         ("v7", Config::v7()),
+        ("v8", Config::v8()),
     ];
     for i in 0..chain.len() {
         for j in i + 1..chain.len() {
@@ -415,9 +416,12 @@ fn the_generation_chain_is_still_a_chain_of_distinct_configurations() {
             );
         }
     }
-    // `v7` is *defined* as the default, so this is a tautology and is here to
-    // fail loudly if a later round ever re-points it without adding `v8`.
-    assert_eq!(Config::v7(), Config::default());
+    // `v8` is *defined* as the default, so this is a tautology and is here to
+    // fail loudly if a later round ever re-points it without adding `v9`.
+    // Round eight is why this reads `v8` and not `v7`: it moved the default,
+    // and the contract under `Config::v8` is that the round doing so re-points
+    // the previous snapshot at literal values in the same PR.
+    assert_eq!(Config::v8(), Config::default());
 }
 
 /// The dead-race gate has to be a gate rather than a blanket reduction, so it

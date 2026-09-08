@@ -193,7 +193,8 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
             "v4" => Config::v4(),
             "v5" => Config::v5(),
             "v6" => Config::v6(),
-            "v7" | "default" => Config::default(),
+            "v7" => Config::v7(),
+            "v8" | "default" => Config::default(),
             other => return Err(format!("unknown base \"{other}\"")),
         };
         return Ok(());

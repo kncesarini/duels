@@ -210,7 +210,8 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
             "v4" => Config::v4(),
             "v5" => Config::v5(),
             "v6" => Config::v6(),
-            "v7" | "default" => Config::default(),
+            "v7" => Config::v7(),
+            "v8" | "default" => Config::default(),
             other => return Err(format!("unknown base \"{other}\"")),
         };
         return Ok(());
@@ -265,6 +266,8 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
         "tomove" => e.to_move = v,
         "scale" => e.value_scale = v,
         "pairthreat" => e.science.pair_threat_weight = v,
+        "ladder1" => e.science.ladder[1] = v,
+        "ladder2" => e.science.ladder[2] = v,
         "ladder3" => e.science.ladder[3] = v,
         "ladder4" => e.science.ladder[4] = v,
         "ladder5" => e.science.ladder[5] = v,

@@ -214,17 +214,25 @@ fn reliability(samples: &[Sample], t: f64) {
 }
 
 fn main() {
+    // `calibrate <games> [first seed]`. The seed offset exists so a refit can
+    // be reproduced on a **disjoint** range of games before it is believed,
+    // which is this project's standing rule for anything measured (`CLAUDE.md`)
+    // and applies to a fitted constant exactly as it applies to an Elo.
     let games: u64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(200);
+    let first: u64 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     let config = Config::default();
     let mut samples: Vec<Sample> = Vec::new();
     let mut decided = 0u32;
     let mut draws = 0u32;
 
-    for seed in 0..games {
+    for seed in first..first + games {
         // Both seat orders, so a first-player advantage this large (see
         // `CLAUDE.md`) cannot bias the fit towards whoever moves first.
         for swap in [false, true] {

@@ -174,6 +174,7 @@ fn main() {
         Row::new("v4 (the round-four evaluation)", Config::v4()),
         Row::new("v5 (the round-five evaluation)", Config::v5()),
         Row::new("v6 (the round-six evaluation)", Config::v6()),
+        Row::new("v7 (the round-seven evaluation)", Config::v7()),
         Row::new(
             "default + owned-token equity",
             Config {
