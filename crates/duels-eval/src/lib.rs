@@ -2035,6 +2035,124 @@
 //! [`terms::faceup_symbols`] is one pass for all seven symbols rather than one
 //! per symbol.
 //!
+//! ## Correction: `p_build` was frozen at the root, and is not any more
+//!
+//! [`WonderModel::Rationed`] shipped reading `p_build` **once from the root
+//! position** and reusing it for every state scored against that
+//! [`Root`]. The project owner ruled that a defect rather than a tradeoff, and
+//! the rule it violates is worth stating in full because it constrains every
+//! future term this crate adds:
+//!
+//! > A leaf evaluation is always computed from the exact state being
+//! > evaluated. A [`Root`] may cache a *price* — what a shield, a coin or a
+//! > produced resource is worth in this game — because that is a property of
+//! > the game and is what makes one shared `Root` cheap. It may not cache a
+//! > *quantity about the position*, because its consumers hand
+//! > [`evaluate`] states that are not the root.
+//!
+//! `p_build` is the second kind: it is `cap_share × turn_factor`, built from
+//! the wonder slots and the decisions left, both of which change on every
+//! move. Freezing it bit hardest in `mcts-eval`, which builds one `Root` per
+//! search tree — a leaf ten plies deep was priced by the root turn's slot and
+//! decision counts. It also never held even at one ply:
+//! [`expected_value`] scores *post-action* states against a `Root` read
+//! *pre-action*, so `phased` was mis-scoring by one move throughout.
+//!
+//! [`terms::wonder_potential_rationed`] now derives `p_build` from the state it
+//! is scoring and no longer accepts it as an argument, so the mistake is
+//! unrepresentable rather than merely fixed. `Root::wonder_p_build` is gone.
+//!
+//! What this costs and what it invalidates:
+//!
+//! * **Nothing on the default path.** [`WonderModel::Flat`] is the default and
+//!   never read the cached value.
+//!   `duels-agent-phased`'s `tests/p_build_identity.rs` is the proof, and it
+//!   is a *measured* one rather than a reading of the `match` arms: twelve
+//!   whole seeded self-play games, every decision hashed, against the digest
+//!   the pre-fix tree produced. Its second half pins that the same harness
+//!   under [`WonderModel::Rationed`] does **not** reproduce its pre-fix
+//!   digest, so the fix is not vacuous.
+//!   `round_nine_identity::the_rationed_term_reads_p_build_from_the_state_being_scored`
+//!   is the term-level half: over real games it finds several hundred
+//!   candidate moves that move `p_build`, and a worst-case stale read of
+//!   several victory points.
+//! * **Every `Rationed` Elo figure in this section predates the fix.** The
+//!   `mcts-eval` verdict measurement was re-run at the same scale and is
+//!   below; the `phased` sweep and the `mcts-uct` / `alphabeta` transfer
+//!   checks were not, and their numbers describe the frozen-`p_build`
+//!   function.
+//!
+//! ### The verdict measurement, re-run
+//!
+//! `mcts-eval` (live, rationed at `wonder_potential = 1.25`) against
+//! `mcts-eval:eval=v8` (pinned, flat at `0.5`), same binary either side,
+//! `Nodes(2000)`, 3200 paired seat-swapped games per range — the identical
+//! protocol, run twice per range: once against the pre-fix tree as a matched
+//! control, once against the fix.
+//!
+//! ```text
+//!              pre-fix (control)            fixed                  worth
+//!  seed 1      -24.4 [-36.4, -12.3]   -19.7 [-31.7,  -7.6]         +4.7
+//!  seed 5001   -34.6 [-46.7, -22.5]    -9.6 [-21.6,  +2.5]        +25.0
+//!  pooled      -29.5 [-38.0, -21.0]   -14.6 [-23.1,  -6.1]   +14.9 +/-12.1
+//! ```
+//!
+//! **The controls reproduce this section's published figures to the decimal**
+//! (`-24.4` and `-34.6`), which is what makes the comparison a measurement of
+//! the fix rather than of two differently-built harnesses.
+//!
+//! So the fix is worth about **+15 Elo** to the rationed model as an
+//! `mcts-eval` leaf, pooled over 6400 games, and the improvement itself clears
+//! zero. **It does not overturn the round-nine verdict.** The fixed model is
+//! still negative pooled, one range's interval still excludes zero, and the
+//! other only reaches parity — so `Rationed` stays off by default, on the same
+//! rule and now on better evidence. Two things worth carrying forward: the
+//! effect is much larger on one range than the other, which is what a
+//! single-range read of either number would have missed; and the victory kinds
+//! move the way the mechanism predicts, with the rationed side's *military*
+//! wins rising `239 -> 287` on the seed-5001 range as the leaf stops pricing
+//! deep positions by the root turn's decision budget.
+//!
+//! The `phased` numbers were **not** re-measured. `Rationed`'s value to
+//! `phased` was `+30` and its cost to `mcts-eval` was `-30`; the fix moved the
+//! second by `+15`, so the direction of that split is unlikely to have
+//! reversed, but "unlikely" is not a measurement and the sweep is the obvious
+//! thing for a tenth round to redo before quoting `+29.7 / +31.1 / ...` again.
+//!
+//! ### Cost: none
+//!
+//! Deriving `p_build` per `evaluate` instead of once per `Root` is what this
+//! fix trades, and at search volumes that is 2000 extra reads per tree.
+//! `examples/eval_bench.rs` over 2146 positions puts `evaluate` at
+//! **0.423 us** with the rationed model against **0.418 us** for the default —
+//! about `+1.2%`, inside the benchmark's noise — and `Root::new` at
+//! **3.095 us** against **3.136 us**, nominally *faster*, since the fix
+//! removes two reads from it. Against one full `mcts-eval` simulation at
+//! roughly 18.8 us the added work is under a tenth of a percent, and the four
+//! matches above bear that out: `70.8-71.0` moves per game and wall times per
+//! game (`1579 / 1704` fixed against `1628 / 1522` control) that overlap in
+//! both directions. There is no throughput regression to report.
+//! * The argument originally given for freezing — that a candidate building a
+//!   wonder is otherwise credited twice, once for the wonder leaving the
+//!   unbuilt set and again for `p_build` rising on what is left — is a real
+//!   effect and is *not* what freezing fixed. Freezing removed the whole
+//!   `p_build` response to a move, right and wrong parts together, and paid
+//!   for it by mis-scoring every position that was not the root. A term that
+//!   knows the difference is open work for a later round.
+//! * **Two other root-fixed readers of `p_build` remain, and neither is on the
+//!   default path.** [`terms::WonderBudget::of`] caches it for
+//!   [`WonderModel::Budget`], alongside per-effect prices that genuinely
+//!   cannot be rebuilt per leaf at search volumes;
+//!   [`terms::GuildTable::of`] caches it to project how many wonders the
+//!   Builders Guild ends up counting. Both carry the same defect. Both are
+//!   built only when something switches them on — `Budget` needs
+//!   `wonder_model = Budget` or `menu_floor = DiscardAndWonder`, `GuildTable`
+//!   needs `guild_pricing = Projected` or a non-zero
+//!   [`EvalWeights::guild_projection`] — and the default sets none of those,
+//!   so after this fix **no default-path code reads a stale `p_build` at
+//!   all**. They were deliberately left alone: fixing either is a change to a
+//!   different model, wants its own measurement, and belongs in its own PR.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -2472,6 +2590,25 @@ pub enum WonderModel {
     /// supply *civilian-score* judgement. Round nine found no formulation that
     /// paid both — see the round-nine section of the crate docs for the four
     /// that were tried.
+    ///
+    /// # Every Elo figure above predates the frozen-`p_build` fix
+    ///
+    /// All of them were measured while `p_build` was read once from the root
+    /// position and reused for every state scored against it — a defect, now
+    /// fixed (see [`terms::wonder_potential_rationed`]). `Flat` is the default
+    /// and is untouched, so nothing on the default path moved and nothing else
+    /// in this crate's measured history is affected; but this model is a
+    /// different function than it was when those numbers were taken.
+    ///
+    /// The `mcts-eval` figure **was** re-measured, against a matched pre-fix
+    /// control that reproduced the old numbers to the decimal: `-19.7` and
+    /// `-9.6` in place of `-24.4` and `-34.6`, so the fix is worth about
+    /// `+15` Elo here and the verdict — off by default — is unchanged. The
+    /// `phased` sweep and the `mcts-uct` / `alphabeta` transfer checks were
+    /// **not** re-measured; treat those as the shape of the policy/value
+    /// split rather than as this option's current strength, and re-run the
+    /// sweep before quoting them again. The full table is in the round-nine
+    /// section of the crate docs.
     Rationed,
 }
 
@@ -3651,11 +3788,6 @@ pub struct Root {
     smoothing: MilSmoothing,
     menu: MenuTables,
     wonders: terms::WonderBudget,
-    /// `p_build`, indexed by [`Player::index`], for
-    /// [`WonderModel::Rationed`]. Root-fixed for the reason
-    /// [`terms::wonder_potential_rationed`] spells out; all zero under every
-    /// other model, so nothing reads it there and nothing pays for it.
-    wonder_p_build: [f64; 2],
     guilds: terms::GuildTable,
     tokens: terms::TokenTable,
     /// `replace_r`, indexed by [`duels_core::data::Resource::index`]. Empty
@@ -3760,16 +3892,13 @@ impl Root {
         } else {
             terms::WonderBudget::empty()
         };
-        // `p_build` for the rationed flat model, root-fixed exactly as
-        // `WonderBudget` root-fixes the same number, and computed only when
-        // something reads it — it is a handful of counts, but `Root::new` runs
-        // once per search-tree node and this keeps every other model's
-        // arithmetic bit-identical to before the variant existed.
-        let wonder_p_build = if config.wonder_model == WonderModel::Rationed {
-            [Player::One, Player::Two].map(|p| terms::wonder_p_build(state, p, &config.eval))
-        } else {
-            [0.0; 2]
-        };
+        // `p_build` for `WonderModel::Rationed` is deliberately *not* cached
+        // here. It used to be, and that was the defect: a `Root` is built once
+        // per decision (`phased`) or once per search tree (`mcts-eval`) and
+        // every leaf is priced against it, so a cached `p_build` scored leaves
+        // by the root's wonder-slot and decision counts rather than their own.
+        // `terms::wonder_potential_rationed` reads it off the state it is
+        // scoring instead — see its docs and the round-nine crate docs.
         let replace = if config.destroy_replace_discount {
             std::array::from_fn(|r| (supply.sources[r] * DESTROY_REPLACE_SHARE).min(1.0))
         } else {
@@ -3813,7 +3942,6 @@ impl Root {
             guilds,
             tokens,
             wonders,
-            wonder_p_build,
             replace,
             deny_scale: 1.0 + (config.eval.deny_opponent_commit_boost - 1.0) * commit_opp.s,
             supply,
@@ -4295,10 +4423,9 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let wonders = match c.wonder_model {
         WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p, e),
         WonderModel::Budget => terms::wonder_potential_budget(state, p, &root.wonders),
-        WonderModel::Rationed => {
-            e.wonder_potential
-                * terms::wonder_potential_rationed(state, p, e, root.wonder_p_build[p.index()])
-        }
+        // `p_build` is read off `state` — the position being scored — and not
+        // off `root`. See `terms::wonder_potential_rationed`.
+        WonderModel::Rationed => e.wonder_potential * terms::wonder_potential_rationed(state, p, e),
     };
     // The opponent-menu term subsumes this one — a free chain build is just
     // one kind of high-value accessible card, and it is priced there properly

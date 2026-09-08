@@ -217,6 +217,76 @@ fn the_two_round_nine_options_are_off_and_change_nothing() {
     assert!(checked > 5000, "only {checked} candidates compared");
 }
 
+/// `p_build` is a quantity about the position, so the rationed term has to read
+/// it off **the state being scored** and not off the [`Root`] it is scored
+/// against.
+///
+/// This is the guard for the frozen-`p_build` fix. The term used to take
+/// `p_build` as an argument and `Root` used to cache it, so every state scored
+/// against one `Root` was priced by the root turn's wonder slots and decisions
+/// left. The signature no longer allows that; what this test adds is the
+/// measurement of what it was worth, over real positions rather than by
+/// argument. `duels-agent-phased`'s `tests/p_build_identity.rs` is the other
+/// half — the same fix seen as a change in an agent's decisions.
+#[test]
+fn the_rationed_term_reads_p_build_from_the_state_being_scored() {
+    let e = Config::default().eval;
+    let mut moves_that_move_p_build = 0u32;
+    let mut worst_stale_vp = 0.0f64;
+    for seed in 0..16u64 {
+        walk(seed, |state| {
+            let me = state.current_player();
+            for action in engine::legal_actions(state) {
+                let mut next = *state;
+                // One arbitrary chance outcome is enough: `p_build` is built
+                // from counts no card reveal can touch.
+                let outcomes = engine::chance_outcomes(state, action);
+                let Some((outcome, _)) = outcomes.first() else {
+                    continue;
+                };
+                if engine::apply_with_outcome(&mut next, action, outcome).is_err() {
+                    continue;
+                }
+                let pre = terms::wonder_p_build(state, me, &e);
+                let post = terms::wonder_p_build(&next, me, &e);
+                if pre.to_bits() == post.to_bits() {
+                    continue;
+                }
+                moves_that_move_p_build += 1;
+                // The term the evaluation now pays, and the one it used to pay
+                // for exactly this state — the whole delta is the staleness.
+                let flat = terms::wonder_potential(&next, me, &e);
+                let fresh = terms::wonder_potential_rationed(&next, me, &e);
+                if post == 0.0 {
+                    // The guarded early exit, so a dead hand is exactly `+0.0`
+                    // with no signed zero to argue about.
+                    assert_eq!(fresh.to_bits(), 0.0f64.to_bits());
+                } else {
+                    assert_eq!(
+                        fresh.to_bits(),
+                        (post * flat).to_bits(),
+                        "the rationed term is not p_build(post) x flat(post) on {action:?}"
+                    );
+                }
+                worst_stale_vp = worst_stale_vp.max((fresh - pre * flat).abs());
+            }
+        });
+    }
+    assert!(
+        moves_that_move_p_build > 500,
+        "only {moves_that_move_p_build} candidate moves moved p_build at all, \
+         so the staleness this fixes is untested"
+    );
+    // Not a threshold to tune — a floor far below what was observed, so the
+    // test says "this was worth real victory points" and not "this differs in
+    // the last bit". The largest single-move staleness seen over these games
+    // is several victory points.
+    assert!(
+        worst_stale_vp > 1.0,
+        "the worst stale read was only {worst_stale_vp} victory points"
+    );
+}
+
 /// ...and both options have to *do* something when they are switched on, or
 /// this file would be asserting that a pile of dead code is dead.
 #[test]
@@ -281,7 +351,7 @@ fn the_rationed_model_is_the_flat_one_scaled_by_p_build() {
             for p in Player::ALL {
                 let p_build = terms::wonder_p_build(state, p, &e);
                 let flat = terms::wonder_potential(state, p, &e);
-                let rationed = terms::wonder_potential_rationed(state, p, &e, p_build);
+                let rationed = terms::wonder_potential_rationed(state, p, &e);
                 if p_build == 0.0 {
                     // The guarded early exit, so a dead hand is exactly zero
                     // with no signed-zero or rounding to argue about.
@@ -329,7 +399,7 @@ fn the_rationed_model_is_the_flat_one_scaled_by_p_build() {
             for p in Player::ALL {
                 let p_build = terms::wonder_p_build(state, p, &e);
                 let flat = terms::wonder_potential(state, p, &e);
-                let got = terms::wonder_potential_rationed(state, p, &clamped, p_build);
+                let got = terms::wonder_potential_rationed(state, p, &clamped);
                 if p_build >= terms::OPENING_P_BUILD {
                     assert_eq!(got.to_bits(), flat.to_bits());
                     clamped_at_one += 1;
@@ -371,7 +441,7 @@ fn a_hand_that_cannot_be_built_is_worth_less_than_one_that_can() {
         p_build < 1.0,
         "test setup: p_build is {p_build}, so nothing is being rationed"
     );
-    assert!(terms::wonder_potential_rationed(&late, Player::One, &e, p_build) < flat);
+    assert!(terms::wonder_potential_rationed(&late, Player::One, &e) < flat);
 }
 
 /// The structural reachability model has to be a *sharpening*: it can only ever

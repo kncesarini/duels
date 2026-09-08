@@ -1281,13 +1281,34 @@ pub fn wonder_power_flat(w: WonderId, e: &EvalWeights) -> f64 {
 /// [`wonder_potential`] rationed by the chance the wonders it is summing are
 /// ever built.
 ///
-/// `p_build` is [`wonder_p_build`] read **once from the root position** and
-/// passed in, which is load-bearing rather than an optimisation: a candidate
-/// that builds a wonder would otherwise be credited twice, once through the
-/// wonder leaving the unbuilt set and again through `p_build` rising for
-/// everything left in it. That is the same discipline
-/// [`crate::WonderModel::Budget`] follows, via [`WonderBudget`], and for the
-/// same reason.
+/// `p_build` is [`wonder_p_build`] read from **the state being scored**, which
+/// is why this function derives it itself rather than taking it as an argument.
+///
+/// It did take one, until it was found that passing a root-fixed `p_build` in
+/// is a defect rather than a discipline. A leaf value has to be a function of
+/// the position it is scoring and of nothing else: a search builds one
+/// [`crate::Root`] and prices every leaf against it, so a frozen `p_build`
+/// scored a leaf many plies deep — with fewer wonder slots and fewer decisions
+/// left than the root had — by the root's turn number. Even at one ply the
+/// state handed to [`crate::evaluate`] is a *post-action* state while the
+/// [`crate::Root`] was read pre-action, so the two never actually agreed. The
+/// signature now makes the mistake unrepresentable.
+///
+/// The argument for freezing it was that a candidate which builds a wonder
+/// would otherwise be credited twice — once through the wonder leaving the
+/// unbuilt set, and again through `p_build` rising for everything left in it.
+/// That double count is real but it is not what freezing fixed: freezing
+/// removed the whole `p_build` *response* to a move, correct and incorrect
+/// parts together, and paid for it by mis-scoring every position the root was
+/// not. If the residual double count is worth attacking it wants a term that
+/// knows the difference, not a stale read. See the round-nine section of the
+/// crate docs.
+///
+/// [`crate::WonderModel::Budget`] still root-fixes the same quantity, inside
+/// [`WonderBudget`], because it root-fixes the per-effect *prices* alongside it
+/// and those genuinely cannot be rebuilt per leaf at search volumes. That model
+/// is not the default and carries the same defect; it is left alone here rather
+/// than changed in passing.
 ///
 /// # Why this is the derived shape and the flat weight is not
 ///
@@ -1318,12 +1339,8 @@ pub fn wonder_power_flat(w: WonderId, e: &EvalWeights) -> f64 {
 /// the game and less than that from there on, which matters because the two
 /// consumers of this crate do not want the same thing from a term's magnitude.
 /// See the round-nine section of the crate docs.
-pub fn wonder_potential_rationed(
-    state: &GameState,
-    p: Player,
-    e: &EvalWeights,
-    p_build: f64,
-) -> f64 {
+pub fn wonder_potential_rationed(state: &GameState, p: Player, e: &EvalWeights) -> f64 {
+    let p_build = wonder_p_build(state, p, e);
     if p_build == 0.0 {
         return 0.0;
     }
