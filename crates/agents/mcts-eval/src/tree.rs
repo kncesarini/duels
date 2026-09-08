@@ -900,6 +900,107 @@ impl Tree {
     }
 }
 
+/// What the search concluded about its root position, read back out after the
+/// budget is spent.
+///
+/// # Why this exists
+///
+/// The search already computes all of this on the way to picking a move; until
+/// this type existed it computed it, used it inside [`best_of`], and dropped
+/// it. Nothing in the agent needs it, so this is **read-only bookkeeping for
+/// callers outside the agent** — a training-corpus generator, a diagnostic, a
+/// UI that wants to show the search's own read of a position. Populating it
+/// changes no search decision, consumes no randomness, and touches no node:
+/// [`root_stats`] is a fold over statistics that are already there.
+///
+/// # What `value` is, exactly
+///
+/// The root's own backed-up mean, on the same `[0, 1]` **Player One** scale
+/// every node in this tree accumulates (see the module docs' value
+/// convention). So it is the average of `visits` leaf values, and under
+/// [`Config::default`] a leaf value is *half a playout and half
+/// [`duels_eval::win_probability`]* — which is to say: this is a search-derived
+/// win probability, but not a search-derived quantity *independent of*
+/// `duels-eval`. Anything fitting `duels-eval` against it is fitting against a
+/// target that already contains `duels-eval` at the blend weight, and has to
+/// account for that. Under [`Config::rollout_base`] the same field is a pure
+/// playout win rate with no evaluation in it at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RootStats {
+    /// The root's backed-up mean value, from [`Player::One`]'s perspective.
+    pub value: f64,
+    /// The player who was to move at the root — whose perspective
+    /// [`RootStats::value_for_mover`] reports.
+    pub mover: Player,
+    /// Root visits, summed across the ensemble's trees. Close to, but not
+    /// exactly, the node budget: a slice of zero still runs one simulation
+    /// (see `Slices::run`).
+    pub visits: u64,
+    /// Every root action and how many visits it received, summed across the
+    /// ensemble's trees. An action the search never expanded is present with
+    /// `0`. The order is the first tree's own (shuffled) root order, which is
+    /// **not** `engine::legal_actions` order — match on the [`Action`], don't
+    /// index.
+    ///
+    /// This is the raw material for a policy target: normalising these to sum
+    /// to one gives the visit distribution AlphaZero-style training uses.
+    pub policy: Vec<(Action, u32)>,
+}
+
+impl RootStats {
+    /// [`RootStats::value`] from the point of view of the player who was
+    /// actually to move — the one perspective flip, exactly as
+    /// [`Tree::exploit`] does it.
+    pub fn value_for_mover(&self) -> f64 {
+        match self.mover {
+            Player::One => self.value,
+            Player::Two => 1.0 - self.value,
+        }
+    }
+}
+
+/// Pool [`RootStats`] over an ensemble of trees rooted at the same public
+/// position.
+///
+/// Returns `None` if there are no trees, or if the first tree's root is not a
+/// decision node (which cannot happen for a tree the agent built, since
+/// `Tree::new` always makes one).
+pub(crate) fn root_stats(trees: &[Tree]) -> Option<RootStats> {
+    let first = trees.first()?;
+    let Kind::Decision { mover, actions, .. } = &first.nodes[0].kind else {
+        return None;
+    };
+    let mut visits = 0u64;
+    let mut value_sum = 0.0f64;
+    for tree in trees {
+        visits += u64::from(tree.nodes[0].visits);
+        value_sum += tree.nodes[0].value_sum;
+    }
+    let policy = actions
+        .iter()
+        .map(|&action| {
+            let n: u32 = trees
+                .iter()
+                .filter_map(|t| t.root_child(action))
+                .map(|c| c.visits)
+                .sum();
+            (action, n)
+        })
+        .collect();
+    Some(RootStats {
+        // The same `visits == 0` convention `Node::mean` uses, so a root that
+        // somehow ran no simulation reads as "no information" rather than NaN.
+        value: if visits == 0 {
+            0.5
+        } else {
+            value_sum / visits as f64
+        },
+        mover: *mover,
+        visits,
+        policy,
+    })
+}
+
 /// The move an ensemble of root determinizations agrees on: the action with
 /// the most root visits *summed across the trees*, ties broken by the pooled
 /// value from the mover's perspective.
