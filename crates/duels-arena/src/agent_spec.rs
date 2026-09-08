@@ -67,7 +67,9 @@
 //! * `greedy-ev` -- the same field names, against
 //!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
 //!   its own crate).
-//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`v6`/`default`), guild pricing
+//! * `phased` -- `base` (`v1`/`v2`/`v3`/`v4`/`v5`/`v6`/`v7`/`default`), the
+//!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
+//!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
 //!   (`guild`, `unpriced`/`projected`) and the guild projection weight
 //!   (`guildproj`), the menu floor (`menufloor`, `none`/`discard`/
 //!   `discardwonder`), the menu's soft affordability width (`afford`), the
@@ -405,6 +407,7 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                     "v5" => duels_eval::Config::v5(),
                     "v6" => duels_eval::Config::v6(),
                     "v7" => duels_eval::Config::v7(),
+                    "v8" => duels_eval::Config::v8(),
                     other => {
                         return Err(format!(
                             "mcts-eval: unknown eval generation \"{other}\" (expected v1-v7)"
@@ -554,6 +557,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v4" => cfg = PhasedConfig::v4(),
                 "v5" => cfg = PhasedConfig::v5(),
                 "v6" => cfg = PhasedConfig::v6(),
+                "v7" => cfg = PhasedConfig::v7(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
@@ -688,6 +692,17 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 cfg.eval.science.pair_threat_weight = parse_field(k, v)?
             }
             "dead_race_scale" | "dead" => cfg.eval.science.dead_race_scale = parse_field(k, v)?,
+            // The individual ladder rungs, and the leaf temperature, which
+            // round eight moved. `duels-eval`'s own `examples/head_to_head.rs`
+            // uses the same `ladderN` names.
+            "ladder1" => cfg.eval.science.ladder[1] = parse_field(k, v)?,
+            "ladder2" => cfg.eval.science.ladder[2] = parse_field(k, v)?,
+            "ladder3" => cfg.eval.science.ladder[3] = parse_field(k, v)?,
+            "ladder4" => cfg.eval.science.ladder[4] = parse_field(k, v)?,
+            "ladder5" => cfg.eval.science.ladder[5] = parse_field(k, v)?,
+            "temp1" => cfg.eval.win_probability_temperature[0] = parse_field(k, v)?,
+            "temp2" => cfg.eval.win_probability_temperature[1] = parse_field(k, v)?,
+            "temp3" => cfg.eval.win_probability_temperature[2] = parse_field(k, v)?,
             "token_equity" | "tokeneq" => cfg.eval.token_equity = parse_field(k, v)?,
             "to_move" | "tomove" => cfg.eval.to_move = parse_field(k, v)?,
             "value_scale" | "scale" => cfg.eval.value_scale = parse_field(k, v)?,
@@ -1073,12 +1088,13 @@ mod tests {
             ("v5", duels_eval::Config::v5()),
             ("v6", duels_eval::Config::v6()),
             ("v7", duels_eval::Config::v7()),
+            ("v8", duels_eval::Config::v8()),
         ] {
             let cfg = parse_mcts_eval_config(&format!("eval={v}")).unwrap();
             assert_eq!(cfg.eval_override, Some(want), "eval={v}");
         }
         assert!(parse_mcts_eval_config("eval=v0").is_err());
-        assert!(parse_mcts_eval_config("eval=v8").is_err());
+        assert!(parse_mcts_eval_config("eval=v9").is_err());
         assert!(parse_mcts_eval_config("eval=default").is_err());
         assert!(parse_mcts_eval_config("eval=live").is_err());
 
@@ -1176,7 +1192,8 @@ mod tests {
             "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
              pending=unresolved,guild=unpriced,guildproj=0,menufloor=none,afford=0,\
              supply=raw,yellow=0,wprem=0,science_ladder=1,chaineq=1,bill=3,\
-             development=0.3333333333333333,pairthreat=1,dead=1",
+             development=0.3333333333333333,pairthreat=1,dead=1,\
+             ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -1198,7 +1215,8 @@ mod tests {
             parse_phased_config(
                 "pending=unresolved,wonder=flat,destroyrepl=off,wprem=0,guild=unpriced,guildproj=0,\
                  menufloor=none,afford=0,supply=raw,yellow=0,science_ladder=1,chaineq=1,bill=3,\
-                 development=0.3333333333333333,pairthreat=1,dead=1"
+                 development=0.3333333333333333,pairthreat=1,dead=1,\
+                 ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18"
             )
             .unwrap(),
             PhasedConfig::v3()
@@ -1219,7 +1237,8 @@ mod tests {
             parse_phased_config(
                 "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0,wprem=0,\
                  science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
-                 pairthreat=1,dead=1"
+                 pairthreat=1,dead=1,ladder4=12,ladder5=18,\
+                 temp1=47.57,temp2=43.75,temp3=25.18"
             )
             .unwrap(),
             PhasedConfig::v4()
@@ -1249,12 +1268,28 @@ mod tests {
         assert_eq!(
             parse_phased_config(
                 "wprem=0,science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
-                 pairthreat=1,dead=1"
+                 pairthreat=1,dead=1,ladder4=12,ladder5=18,\
+                 temp1=47.57,temp2=43.75,temp3=25.18"
             )
             .unwrap(),
             PhasedConfig::v5(),
             "the extra-turn premium is the only thing round six changed"
         );
+        // The round-eight keys, and their "off" values reproducing v7's: the
+        // top two science ladder rungs and the three leaf temperatures.
+        assert_eq!(parse_phased_config("base=v7").unwrap(), PhasedConfig::v7());
+        assert_eq!(
+            parse_phased_config("ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18")
+                .unwrap(),
+            PhasedConfig::v7(),
+            "the ladder's top rungs and the leaf temperature are the only \
+             things round eight changed"
+        );
+        let on =
+            parse_phased_config("ladder1=0.5,ladder2=2,ladder3=7,ladder4=25,temp1=30").unwrap();
+        assert_eq!(on.eval.science.ladder, [0.0, 0.5, 2.0, 7.0, 25.0, 54.0]);
+        assert_eq!(on.eval.win_probability_temperature[0], 30.0);
+        assert_ne!(PhasedConfig::v7(), PhasedConfig::default());
         assert_eq!(
             parse_phased_config("wonder_extra_turn_premium=4.5")
                 .unwrap()

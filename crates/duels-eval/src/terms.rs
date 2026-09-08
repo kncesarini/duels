@@ -659,7 +659,7 @@ pub const SYMBOLS_TO_WIN: u8 = 6;
 ///
 /// # Why the evaluation needs this
 ///
-/// [`science_ladder`]'s rung is steeply convex — 6, 12, 18 victory points at
+/// [`science_ladder`]'s rung is steeply convex — 6, 30, 54 victory points at
 /// three, four and five distinct symbols — and the convexity exists for one
 /// reason: six symbols win the game. Until round seven the rung was collected
 /// whether or not a sixth symbol was still *in* the game, so a player sitting
@@ -667,6 +667,11 @@ pub const SYMBOLS_TO_WIN: u8 = 6;
 /// city was credited twelve points for a race that could not be run. That is
 /// most of why the whole ladder measured over-priced; see
 /// [`crate::ScienceWeights::dead_race_scale`].
+///
+/// Round eight made the gate matter a good deal more than it did: the rung at
+/// four and five symbols went from 12 and 18 to **30 and 54**, so the points
+/// this gate withholds from a dead race are now most of what the ladder has to
+/// say about a position.
 pub fn supremacy_reachable(state: &GameState, p: Player) -> u8 {
     let mut n = 0u8;
     walk_symbols(state, p, |reachable| {
