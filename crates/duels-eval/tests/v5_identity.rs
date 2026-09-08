@@ -234,6 +234,14 @@ fn v5_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let wonders = match c.wonder_model {
         WonderModel::Flat => e.wonder_potential * v5_wonder_potential(state, p),
         WonderModel::Budget => terms::wonder_potential_budget(state, p, root.wonders()),
+        // Round nine's third model, which no snapshot this file drives can be
+        // in: `Config::v8()` sets `WonderModel::Flat` and every older snapshot
+        // chains through it. Spelled out rather than left to a wildcard so a
+        // later round adding a fourth model has to think about this verbatim
+        // copy instead of silently falling through it.
+        WonderModel::Rationed => {
+            unreachable!("this copy is only ever driven with WonderModel::Flat")
+        }
     };
     let gift = if e.menu.lambda == 0.0 {
         -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age())
@@ -551,14 +559,18 @@ fn config_v5_switches_off_every_round_six_option() {
     // weights.
     let d = Config::default();
     assert_eq!(v5.pending_model, d.pending_model);
-    assert_eq!(v5.wonder_model, d.wonder_model);
+    // Against `v8` rather than the default: round nine moved `wonder_model`
+    // off `Flat`, so "round six did not touch it" is now a statement about
+    // the generation this snapshot chains through, not about today's default.
+    assert_eq!(v5.wonder_model, Config::v8().wonder_model);
     assert_eq!(v5.guild_pricing, d.guild_pricing);
     assert_eq!(v5.menu_floor, d.menu_floor);
     assert_eq!(v5.supply_model, d.supply_model);
     assert_eq!(v5.destroy_replace_discount, d.destroy_replace_discount);
     assert_eq!(v5.rails, d.rails);
     assert_eq!(v5.blend, d.blend);
-    assert_eq!(v5.eval.wonder_potential, d.eval.wonder_potential);
+    // ...and the same for the weight, which round nine moved with the model.
+    assert_eq!(v5.eval.wonder_potential, Config::v8().eval.wonder_potential);
     assert_eq!(v5.eval.wonder_extra_turn_vp, d.eval.wonder_extra_turn_vp);
     assert_eq!(v5.eval.guild_projection, d.eval.guild_projection);
     assert_eq!(v5.eval.yellow_equity, d.eval.yellow_equity);
