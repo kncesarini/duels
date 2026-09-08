@@ -234,6 +234,14 @@ fn v4_player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let wonders = match c.wonder_model {
         WonderModel::Flat => e.wonder_potential * terms::wonder_potential(state, p, e),
         WonderModel::Budget => terms::wonder_potential_budget(state, p, root.wonders()),
+        // Round nine's third model, which no snapshot this file drives can be
+        // in: `Config::v8()` sets `WonderModel::Flat` and every older snapshot
+        // chains through it. Spelled out rather than left to a wildcard so a
+        // later round adding a fourth model has to think about this verbatim
+        // copy instead of silently falling through it.
+        WonderModel::Rationed => {
+            unreachable!("this copy is only ever driven with WonderModel::Flat")
+        }
     };
     let gift = if e.menu.lambda == 0.0 {
         -e.deny_chain_gift * terms::chain_gift_exposure(state, p, root.age())
@@ -507,7 +515,10 @@ fn config_v4_switches_off_every_round_five_option() {
     // weights.
     let d = Config::default();
     assert_eq!(v4.pending_model, d.pending_model);
-    assert_eq!(v4.wonder_model, d.wonder_model);
+    // Against `v8` rather than the default: round nine moved `wonder_model`
+    // off `Flat`, so "round four did not touch it" is now a statement about
+    // the generation this snapshot chains through, not about today's default.
+    assert_eq!(v4.wonder_model, Config::v8().wonder_model);
     assert_eq!(v4.destroy_replace_discount, d.destroy_replace_discount);
     assert_eq!(v4.rails, d.rails);
     assert_eq!(v4.menu_shield_pricing, d.menu_shield_pricing);

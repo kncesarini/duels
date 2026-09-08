@@ -175,6 +175,36 @@ fn main() {
         Row::new("v5 (the round-five evaluation)", Config::v5()),
         Row::new("v6 (the round-six evaluation)", Config::v6()),
         Row::new("v7 (the round-seven evaluation)", Config::v7()),
+        // Round nine's two options. The rationed wonder model adds two
+        // `wonder_p_build` reads to `Root::new` and one multiply per
+        // `evaluate`; the structural reach model adds a pass over the occupied
+        // slots inside the dead-race gate's walk, which is the one that has to
+        // be watched — round seven's version of that walk was a +47%
+        // regression on `evaluate` before its guards went in.
+        Row::new(
+            "default + the rationed wonder model",
+            Config {
+                eval: duels_eval::EvalWeights {
+                    wonder_potential: 1.25,
+                    ..Config::default().eval
+                },
+                wonder_model: duels_eval::WonderModel::Rationed,
+                ..Config::default()
+            },
+        ),
+        Row::new(
+            "default + the structural reach model",
+            Config {
+                eval: duels_eval::EvalWeights {
+                    science: duels_eval::ScienceWeights {
+                        reach_model: duels_eval::ReachModel::Structure,
+                        ..Config::default().eval.science
+                    },
+                    ..Config::default().eval
+                },
+                ..Config::default()
+            },
+        ),
         Row::new(
             "default + owned-token equity",
             Config {

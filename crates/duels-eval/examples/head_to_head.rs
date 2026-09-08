@@ -211,8 +211,26 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
             "v5" => Config::v5(),
             "v6" => Config::v6(),
             "v7" => Config::v7(),
-            "v8" | "default" => Config::default(),
+            "v8" => Config::v8(),
+            "default" => Config::default(),
             other => return Err(format!("unknown base \"{other}\"")),
+        };
+        return Ok(());
+    }
+    if key == "reach" {
+        cfg.eval.science.reach_model = match raw {
+            "optimistic" | "0" => duels_eval::ReachModel::Optimistic,
+            "structure" | "1" => duels_eval::ReachModel::Structure,
+            other => return Err(format!("unknown reach model \"{other}\"")),
+        };
+        return Ok(());
+    }
+    if key == "wonder" {
+        cfg.wonder_model = match raw {
+            "flat" => duels_eval::WonderModel::Flat,
+            "budget" => duels_eval::WonderModel::Budget,
+            "rationed" => duels_eval::WonderModel::Rationed,
+            other => return Err(format!("unknown wonder model \"{other}\"")),
         };
         return Ok(());
     }
@@ -271,6 +289,8 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
         "ladder3" => e.science.ladder[3] = v,
         "ladder4" => e.science.ladder[4] = v,
         "ladder5" => e.science.ladder[5] = v,
+        "turns" => e.wonder_turns_per_wonder = v,
+        "pref" => e.wonder_p_build_ref = v,
         other => return Err(format!("unknown key \"{other}\"")),
     }
     Ok(())

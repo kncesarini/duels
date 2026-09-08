@@ -21,7 +21,7 @@ use duels_strategy::masks::{iter_cards, masks, DECISIONS_PER_AGE};
 use duels_strategy::military::signed_distance;
 use duels_strategy::science::token_value;
 
-use crate::{EvalWeights, ScienceWeights, SupplyModel};
+use crate::{EvalWeights, ReachModel, ScienceWeights, SupplyModel};
 
 /// The largest number of units of one resource the development term prices.
 ///
@@ -673,8 +673,13 @@ pub const SYMBOLS_TO_WIN: u8 = 6;
 /// this gate withholds from a dead race are now most of what the ladder has to
 /// say about a position.
 pub fn supremacy_reachable(state: &GameState, p: Player) -> u8 {
+    supremacy_reachable_with(state, p, ReachModel::Optimistic)
+}
+
+/// [`supremacy_reachable`] under an explicit [`ReachModel`].
+pub fn supremacy_reachable_with(state: &GameState, p: Player, model: ReachModel) -> u8 {
     let mut n = 0u8;
-    walk_symbols(state, p, |reachable| {
+    walk_symbols_with(state, p, model, |reachable| {
         if reachable {
             n += 1;
         }
@@ -693,9 +698,14 @@ pub fn supremacy_reachable(state: &GameState, p: Player) -> u8 {
 /// `examples/eval_bench.rs`), and the honest count is only wanted by the tests
 /// and the diagnostics.
 pub fn supremacy_live(state: &GameState, p: Player) -> bool {
+    supremacy_live_with(state, p, ReachModel::Optimistic)
+}
+
+/// [`supremacy_live`] under an explicit [`ReachModel`].
+pub fn supremacy_live_with(state: &GameState, p: Player, model: ReachModel) -> bool {
     let budget = duels_strategy::masks::ALL_SCIENCE.len() as u8 - SYMBOLS_TO_WIN;
     let mut missing = 0u8;
-    walk_symbols(state, p, |reachable| {
+    walk_symbols_with(state, p, model, |reachable| {
         if !reachable {
             missing += 1;
         }
@@ -704,10 +714,37 @@ pub fn supremacy_live(state: &GameState, p: Player) -> bool {
     missing <= budget
 }
 
+/// Which scientific symbols are printed on a card that is **face up in the
+/// structure right now**, as a bit per [`data::Science::index`].
+///
+/// One pass over the occupied slots, so the symbol walk behind
+/// [`supremacy_live_with`] pays for it once per call rather than once per
+/// symbol. Public information by construction:
+/// [`GameState::face_up_card`] returns `None` for a face-down slot.
+pub fn faceup_symbols(state: &GameState) -> u8 {
+    let mut out = 0u8;
+    let mut mask = state.occupied_slots();
+    while mask != 0 {
+        let slot = mask.trailing_zeros() as u8;
+        mask &= mask - 1;
+        if let Some(card) = state.face_up_card(slot) {
+            if let Some(sym) = card.def().science {
+                out |= 1u8 << sym.index();
+            }
+        }
+    }
+    out
+}
+
 /// The shared walk behind [`supremacy_reachable`] and [`supremacy_live`]:
 /// call `f` with whether each symbol is still gettable by `p`, stopping early
 /// when `f` returns false.
-fn walk_symbols(state: &GameState, p: Player, mut f: impl FnMut(bool) -> bool) {
+fn walk_symbols_with(
+    state: &GameState,
+    p: Player,
+    model: ReachModel,
+    mut f: impl FnMut(bool) -> bool,
+) {
     let m = masks();
     let held = state.player(p).science();
     let gone = state.player(Player::One).built_mask()
@@ -715,6 +752,15 @@ fn walk_symbols(state: &GameState, p: Player, mut f: impl FnMut(bool) -> bool) {
         | state.wonder_fodder_mask()
         | state.discard_mask();
     let age = state.age().max(1);
+    // Under `Structure`, what the current age can still hand out is read off
+    // the structure rather than off the deck list. Both reads stand down when
+    // the structure is empty, because then the age in `state.age()` is one
+    // whose cards have not been laid out yet and every one of them is
+    // genuinely still coming — see [`ReachModel::Structure`].
+    let occupied = state.occupied_slots();
+    let structural = model == ReachModel::Structure && occupied != 0;
+    let faceup = if structural { faceup_symbols(state) } else { 0 };
+    let face_down = structural && occupied & !state.revealed_slots() != 0;
     for sym in duels_strategy::masks::ALL_SCIENCE {
         let reachable = if held[sym.index()] > 0 {
             true
@@ -723,6 +769,12 @@ fn walk_symbols(state: &GameState, p: Player, mut f: impl FnMut(bool) -> bool) {
             // source, so it is reachable exactly while the token is unclaimed.
             m.law_token()
                 .is_some_and(|law| state.board_tokens().any(|t| t == law))
+        } else if structural {
+            faceup & (1u8 << sym.index()) != 0
+                || iter_cards(m.symbol_mask(sym)).any(|c| {
+                    gone & (1u128 << c.index()) == 0
+                        && (c.def().age > age || (face_down && c.def().age == age))
+                })
         } else {
             iter_cards(m.symbol_mask(sym))
                 .any(|c| gone & (1u128 << c.index()) == 0 && c.def().age >= age)
@@ -818,7 +870,7 @@ pub fn science_ladder(state: &GameState, p: Player, w: &ScienceWeights) -> f64 {
     // the ladder's zero rung, so whether the race is alive cannot change their
     // score. `evaluate` is a search's leaf value, so a branch that skips a
     // seven-symbol walk on a common case is worth taking (`eval_bench.rs`).
-    if rung != 0.0 && w.dead_race_scale != 1.0 && !supremacy_live(state, p) {
+    if rung != 0.0 && w.dead_race_scale != 1.0 && !supremacy_live_with(state, p, w.reach_model) {
         rung *= w.dead_race_scale;
     }
     rung + w.pair_threat_weight * pair_threat(state, p, w)
@@ -1225,6 +1277,73 @@ pub fn wonder_power_flat(w: WonderId, e: &EvalWeights) -> f64 {
         wonder_power(w)
     }
 }
+
+/// [`wonder_potential`] rationed by the chance the wonders it is summing are
+/// ever built.
+///
+/// `p_build` is [`wonder_p_build`] read **once from the root position** and
+/// passed in, which is load-bearing rather than an optimisation: a candidate
+/// that builds a wonder would otherwise be credited twice, once through the
+/// wonder leaving the unbuilt set and again through `p_build` rising for
+/// everything left in it. That is the same discipline
+/// [`crate::WonderModel::Budget`] follows, via [`WonderBudget`], and for the
+/// same reason.
+///
+/// # Why this is the derived shape and the flat weight is not
+///
+/// [`crate::WonderModel::Flat`] pays `wonder_potential × wonder_power` for a
+/// drafted-but-unbuilt wonder at **full weight until the seven-wonder cap
+/// closes**, and `0.5` is a constant standing in for "it will probably get
+/// built". That quantity is not a constant: it is `p_build`, and
+/// [`wonder_p_build`] already computes it — a standalone probability estimate
+/// factored out of the budget model in round five precisely because it has
+/// nothing to do with how a wonder's *effects* happen to be priced.
+///
+/// `examples/wonder_calibration.rs` is what says the constant is wrong rather
+/// than merely inexact. Bucketing real self-play positions by `p_build` and
+/// comparing [`crate::win_probability`]'s claim against the realised win rate,
+/// the fitted additive correction against the `p_build ≥ 0.99` bin is
+/// **−10 to −20 victory points** in every age, and the same corpus bucketed by
+/// unbuilt play-again wonders reads **+17.2 victory points** for a player one
+/// *behind* the opponent in Age III. Both are the same statement: the
+/// evaluation is paying for wonders that are never going to be built. See the
+/// round-nine section of the crate docs.
+/// # The reference probability
+///
+/// [`EvalWeights::wonder_p_build_ref`] divides `p_build` before it is used and
+/// the result is clamped at one, so the factor is
+/// `min(1, p_build / ref)`. At `ref = 1.0` — the default — that is plain
+/// rationing. At [`OPENING_P_BUILD`] it is the *shape* without the change of
+/// scale: the term is worth exactly what the flat model paid at the start of
+/// the game and less than that from there on, which matters because the two
+/// consumers of this crate do not want the same thing from a term's magnitude.
+/// See the round-nine section of the crate docs.
+pub fn wonder_potential_rationed(
+    state: &GameState,
+    p: Player,
+    e: &EvalWeights,
+    p_build: f64,
+) -> f64 {
+    if p_build == 0.0 {
+        return 0.0;
+    }
+    let factor = if e.wonder_p_build_ref == 1.0 {
+        p_build
+    } else {
+        (p_build / e.wonder_p_build_ref).min(1.0)
+    };
+    factor * wonder_potential(state, p, e)
+}
+
+/// `p_build` at the very first decision of a game, which is
+/// [`MAX_WONDERS_BUILT`] over the eight wonders the draft hands out — seven
+/// eighths, exactly.
+///
+/// A derived constant rather than a fitted one, and the natural reference for
+/// [`EvalWeights::wonder_p_build_ref`]: `turn_factor` is capped at one for the
+/// whole of Age I, so `cap_share = 7/8` *is* what
+/// [`wonder_p_build`] returns until wonders start going up.
+pub const OPENING_P_BUILD: f64 = MAX_WONDERS_BUILT as f64 / 8.0;
 
 /// The flat, effect-blind power score [`wonder_potential`] sums.
 ///
