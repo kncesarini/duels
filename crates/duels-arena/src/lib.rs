@@ -43,6 +43,15 @@
 //!   game and, with `--cost`, how much search a decision actually got.
 //! - `examples/age_start_lab.rs`, the age-start-policy measurement harness
 //!   described above.
+//! - `examples/value_corpus.rs`, which is not a measurement harness at all:
+//!   it generates a **training corpus** from `mcts-eval` self-play, recording
+//!   per decision the win probability the search itself backed up at its root,
+//!   keyed by `(seed, actions)` so every position replays from the engine
+//!   (rules-spec R-108) instead of being serialized. `--verify` replays a
+//!   corpus and reports the labels' calibration against the games that
+//!   actually happened. Output goes to the gitignored `arena/corpus/`; read
+//!   that example's module docs before fitting anything against it, in
+//!   particular the section on what the recorded value already contains.
 //!
 //! # Benchmarking on a quiet machine
 //!

@@ -525,7 +525,7 @@ use rand::SeedableRng;
 
 pub use leaf::LeafValue;
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
-pub use tree::{Config, PriorMode};
+pub use tree::{Config, PriorMode, RootStats};
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// half a playout and half [`duels_eval`]'s evaluation.
@@ -538,6 +538,9 @@ pub struct MctsEvalAgent {
     total_simulations: u64,
     /// Nodes allocated during the most recent search.
     last_tree_size: usize,
+    /// What the most recent search concluded about its root, or `None` if the
+    /// most recent decision was forced and no search happened.
+    last_root: Option<RootStats>,
 }
 
 impl MctsEvalAgent {
@@ -558,6 +561,7 @@ impl MctsEvalAgent {
             rng: StdRng::seed_from_u64(seed),
             total_simulations: 0,
             last_tree_size: 0,
+            last_root: None,
         }
     }
 
@@ -575,6 +579,22 @@ impl MctsEvalAgent {
     pub fn last_tree_size(&self) -> usize {
         self.last_tree_size
     }
+
+    /// What the most recent `choose` call's search concluded about its root
+    /// position: the backed-up win probability, and the root visit
+    /// distribution over the legal actions. See [`RootStats`] for what the
+    /// value is and — importantly, for anyone fitting `duels-eval` against it
+    /// — what it already contains.
+    ///
+    /// `None` when the most recent decision was **forced** (one legal action),
+    /// because `choose` returns it without searching at all, and so there is
+    /// no search verdict to report. A caller collecting a corpus should skip
+    /// those plies rather than substitute anything for them.
+    ///
+    /// Reading this changes nothing: it is a snapshot the search already had.
+    pub fn last_root(&self) -> Option<&RootStats> {
+        self.last_root.as_ref()
+    }
 }
 
 impl Agent for MctsEvalAgent {
@@ -591,6 +611,9 @@ impl Agent for MctsEvalAgent {
             !legal.is_empty(),
             "choose must not be called with no legal actions"
         );
+        // Cleared first, so a forced move can never leave the *previous*
+        // search's verdict readable as if it were this decision's.
+        self.last_root = None;
         if legal.len() == 1 {
             return legal[0];
         }
@@ -642,6 +665,9 @@ impl Agent for MctsEvalAgent {
         }
 
         self.last_tree_size = trees.iter().map(|t| t.nodes.len()).sum();
+        // Read-only, and read here rather than recomputed later because the
+        // trees are dropped at the end of this call.
+        self.last_root = tree::root_stats(&trees);
 
         let chosen = tree::best_of(&trees).unwrap_or(legal[0]);
         if legal.contains(&chosen) {
@@ -1351,6 +1377,120 @@ mod tests {
             "won only {wins}/{games} against random at {CI_BUDGET:?}; \
              suspect backpropagation sign, UCB1 perspective, the evaluation's \
              sign, or chance handling"
+        );
+    }
+
+    /// [`MctsEvalAgent::last_root`] must be **only** a readout: adding it may
+    /// not change a single decision the agent makes.
+    ///
+    /// Driven the way the gold-standard identity tests in this repository are:
+    /// whole seeded games, move for move. Here the "before" arm is the agent
+    /// itself with `last_root` never read, which is the strongest statement
+    /// available now that the field is not optional — so what this really
+    /// pins is that reading it is side-effect free and that the RNG stream is
+    /// untouched by populating it (equal total simulations, equal moves).
+    #[test]
+    fn reading_the_root_readout_changes_no_decision() {
+        for seed in 0..6u64 {
+            let mut quiet = MctsEvalAgent::new(seed);
+            let mut watched = MctsEvalAgent::new(seed);
+            let mut state = engine::new_game(seed);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xC0FFEE);
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let a = quiet.choose(&obs, &legal, CI_BUDGET);
+                let b = watched.choose(&obs, &legal, CI_BUDGET);
+                // The readout is consulted on every ply of the second arm and
+                // on none of the first; the two must still agree.
+                let readout = watched.last_root().cloned();
+                assert_eq!(a, b, "seed {seed}: the readout moved a decision");
+                assert_eq!(quiet.total_simulations(), watched.total_simulations());
+                match readout {
+                    None => assert_eq!(legal.len(), 1, "only a forced move has no verdict"),
+                    Some(_) => assert!(legal.len() > 1, "a forced move was searched"),
+                }
+                engine::apply(&mut state, a, &mut rng).expect("a legal action");
+            }
+        }
+    }
+
+    /// What the readout says has to be internally consistent with the search
+    /// that produced it, on real positions rather than a hand-built tree.
+    #[test]
+    fn the_root_readout_agrees_with_the_search_it_reports_on() {
+        let budget = Budget::Nodes(200);
+        let mut seen_searched_plies = 0u32;
+        for seed in 0..4u64 {
+            let mut agent = MctsEvalAgent::new(seed);
+            let mut state = engine::new_game(seed);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0xD15EA5E);
+            loop {
+                let legal = engine::legal_actions(&state);
+                if legal.is_empty() {
+                    break;
+                }
+                let obs = state.observation();
+                let mover = state.current_player();
+                let chosen = agent.choose(&obs, &legal, budget);
+                if let Some(r) = agent.last_root() {
+                    seen_searched_plies += 1;
+                    // A win probability, so it is a probability.
+                    assert!(
+                        (0.0..=1.0).contains(&r.value),
+                        "seed {seed}: root value {} is not in [0, 1]",
+                        r.value
+                    );
+                    assert_eq!(r.mover, mover, "the readout named the wrong mover");
+                    assert_eq!(
+                        r.value_for_mover(),
+                        if mover == Player::One {
+                            r.value
+                        } else {
+                            1.0 - r.value
+                        }
+                    );
+                    // One entry per offered action, and nothing else.
+                    assert_eq!(r.policy.len(), legal.len());
+                    for (action, _) in &r.policy {
+                        assert!(legal.contains(action), "policy named an unoffered action");
+                    }
+                    // Every simulation passes through the root and then through
+                    // exactly one root child, so the child visits can only fall
+                    // short of the root's by the simulations that ended at the
+                    // root itself — of which there are none, since the root is
+                    // never a leaf.
+                    let policy_visits: u64 = r.policy.iter().map(|&(_, n)| u64::from(n)).sum();
+                    assert!(
+                        policy_visits <= r.visits,
+                        "seed {seed}: children saw {policy_visits} of the root's {} visits",
+                        r.visits
+                    );
+                    assert!(r.visits > 0, "a searched position ran no simulation");
+                    // `best_of` picks on visits, ties broken by value, so the
+                    // chosen action must be *a* visit-count maximum.
+                    let top = r.policy.iter().map(|&(_, n)| n).max().unwrap_or(0);
+                    let chosen_visits = r
+                        .policy
+                        .iter()
+                        .find(|&&(a, _)| a == chosen)
+                        .map(|&(_, n)| n)
+                        .expect("the chosen action is in the policy");
+                    assert_eq!(
+                        chosen_visits, top,
+                        "seed {seed}: played an action with {chosen_visits} visits \
+                         while another had {top}"
+                    );
+                }
+                engine::apply(&mut state, chosen, &mut rng).expect("a legal action");
+            }
+        }
+        assert!(
+            seen_searched_plies > 20,
+            "only {seen_searched_plies} searched plies; the test proved little"
         );
     }
 }
