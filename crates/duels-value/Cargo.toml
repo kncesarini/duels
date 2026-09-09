@@ -1,0 +1,22 @@
+[package]
+name = "duels-value"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A learned 7 Wonders Duel position value: public-information-only feature extraction plus a small hand-rolled MLP that predicts the four-way victory-kind-and-loss outcome distribution. A library below the agents, not an agent."
+publish.workspace = true
+
+# Deliberately `duels-core` and nothing else — not even `duels-strategy` or
+# `duels-eval`. `features` and `Net::forward` are pure functions of the state
+# they are handed, so this crate needs no `rand`, no clock, and no ML runtime;
+# the forward pass is a hand-written f32 matrix-vector product over weights
+# baked in at compile time. See the crate docs for why that matters.
+[dependencies]
+duels-core = { path = "../duels-core" }
+
+# `rand` is a *dev*-dependency only: the tests drive real games and the
+# determinization-invariance test needs `Observation::sample_state`, both of
+# which take an explicitly seeded `StdRng`. Same arrangement, for the same
+# reason, as `duels-eval` and `duels-strategy`.
+[dev-dependencies]
+rand = { workspace = true }

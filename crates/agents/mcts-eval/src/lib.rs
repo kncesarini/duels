@@ -1065,6 +1065,8 @@ mod tests {
             LeafValue::Rollout,
             LeafValue::Static,
             LeafValue::Truncated { plies: 8 },
+            LeafValue::Learned,
+            LeafValue::LearnedBlend { weight: 0.5 },
         ]
         .into_iter()
         .enumerate()
@@ -1129,6 +1131,25 @@ mod tests {
         assert!(describe(LeafValue::Static).contains("leaf=static"));
         assert!(describe(LeafValue::Truncated { plies: 8 }).contains("leaf=truncated(8)"));
         assert!(describe(LeafValue::Blend { weight: 0.5 }).contains("leaf=blend(0.500)"));
+        assert!(describe(LeafValue::Learned).contains("leaf=learned"));
+        assert!(
+            describe(LeafValue::LearnedBlend { weight: 0.5 }).contains("leaf=learned_blend(0.500)")
+        );
+
+        // A learned leaf also has to record *which* weights it used: the
+        // shape alone would make two results files from either side of a
+        // retrain indistinguishable, which is the same failure the `eval=`
+        // tail exists to prevent for the hand-crafted evaluation.
+        let learned = describe(LeafValue::Learned);
+        assert!(
+            learned.contains(&format!("value={}", duels_value::default_weights_id())),
+            "the spec does not name the value network: {learned}"
+        );
+        // ...and the default configuration's spec string is untouched by any
+        // of this, because a learned leaf is strictly opt-in.
+        let default = describe(Config::default().leaf);
+        assert!(!default.contains("value="), "{default}");
+        assert!(!default.contains("learned"), "{default}");
     }
 
     /// A race variant must not change *what* the agent is allowed to do: full

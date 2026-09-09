@@ -5,6 +5,10 @@ members = [
     "crates/duels-agents-api",
     "crates/duels-strategy",
     "crates/duels-eval",
+    # A learned position value, below the agents next to `duels-eval`. Opt-in
+    # research work: nothing on any agent's default path reads it. See its
+    # crate docs, which hold the whole measurement record.
+    "crates/duels-value",
     "crates/duels-arena",
     "crates/duels-server",
     # Retired from the agent roster, kept as a test-only fixture: the

@@ -45,8 +45,10 @@
 //!   `rollout`, `race`, `chance_widen_c`, `chance_widen_alpha`,
 //!   `max_rollout_plies`, `time_check_interval`,
 //!   `root_determinizations`/`dets`, `prior`), plus the keys that are its
-//!   own: `leaf` (`rollout`, `static`, `truncated:<plies>` or
-//!   `blend:<weight>` — `blend:0.5` by default) and `base`
+//!   own: `leaf` (`rollout`, `static`, `truncated:<plies>`,
+//!   `blend:<weight>` — `blend:0.5` by default — and the two opt-in
+//!   `duels-value` learned leaves, `learned` and `learned_blend:<weight>`)
+//!   and `base`
 //!   (`default`, or `rollout` for [`duels_agent_mcts_eval::Config::rollout_base`],
 //!   the pure-playout `c = 1.0` control that is `mcts-uct` move for move).
 //!   By default this agent tracks `duels_eval::Config::default()` live
@@ -521,22 +523,39 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                         }
                         LeafValue::Blend { weight }
                     }
+                    // The learned leaves (`duels-value`) mirror `static` and
+                    // `blend`, and their blend weight is range-checked for
+                    // exactly the same reason.
+                    Some(("learned_blend" | "lblend", w)) => {
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-eval: leaf blend weight must be in [0, 1], got \"{w}\" \
+                                 (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        LeafValue::LearnedBlend { weight }
+                    }
                     None => match v {
                         "rollout" | "off" => LeafValue::Rollout,
                         "static" => LeafValue::Static,
                         "trunc" | "truncated" => LeafValue::Truncated { plies: 8 },
                         "blend" => LeafValue::Blend { weight: 0.5 },
+                        "learned" => LeafValue::Learned,
+                        "learned_blend" | "lblend" => LeafValue::LearnedBlend { weight: 0.5 },
                         other => {
                             return Err(format!(
                                 "mcts-eval: unknown leaf \"{other}\" (expected \"rollout\", \
-                                 \"static\", \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                                 \"static\", \"truncated[:<plies>]\", \"blend[:<weight>]\", \
+                                 \"learned\", or \"learned_blend[:<weight>]\")"
                             ))
                         }
                     },
                     Some((other, _)) => {
                         return Err(format!(
                             "mcts-eval: leaf \"{other}\" takes no parameter (only \
-                             \"truncated:<plies>\" and \"blend:<weight>\" do)"
+                             \"truncated:<plies>\", \"blend:<weight>\" and \
+                             \"learned_blend:<weight>\" do)"
                         ))
                     }
                 };
@@ -1187,6 +1206,11 @@ mod tests {
             ("truncated", LeafValue::Truncated { plies: 8 }),
             ("blend:0.3", LeafValue::Blend { weight: 0.3 }),
             ("blend", LeafValue::Blend { weight: 0.5 }),
+            // The two opt-in `duels-value` learned leaves.
+            ("learned", LeafValue::Learned),
+            ("learned_blend", LeafValue::LearnedBlend { weight: 0.5 }),
+            ("learned_blend:0.3", LeafValue::LearnedBlend { weight: 0.3 }),
+            ("lblend:0.7", LeafValue::LearnedBlend { weight: 0.7 }),
         ] {
             let cfg = parse_mcts_eval_config(&format!("leaf={value}")).unwrap();
             assert_eq!(cfg.leaf, want, "leaf={value}");
@@ -1204,9 +1228,17 @@ mod tests {
         assert!(parse_mcts_eval_config("leaf=blend:-0.5").is_err());
         assert!(parse_mcts_eval_config("leaf=blend:0.0").is_ok());
         assert!(parse_mcts_eval_config("leaf=blend:1.0").is_ok());
+        // ...and the learned blend is range-checked for exactly the same
+        // reason, so the check cannot be added to one and forgotten on the
+        // other.
+        assert!(parse_mcts_eval_config("leaf=learned_blend:1.5").is_err());
+        assert!(parse_mcts_eval_config("leaf=learned_blend:-0.5").is_err());
+        assert!(parse_mcts_eval_config("leaf=learned:3").is_err());
 
         for (spec, want) in [
             ("mcts-eval:leaf=static", "leaf=static"),
+            ("mcts-eval:leaf=learned", "leaf=learned"),
+            ("mcts-eval:leaf=lblend:0.25", "leaf=learned_blend(0.250)"),
             ("mcts-eval:leaf=trunc:8", "leaf=truncated(8)"),
             ("mcts-eval:leaf=blend:0.3", "leaf=blend(0.300)"),
         ] {

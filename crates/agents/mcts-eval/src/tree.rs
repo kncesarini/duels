@@ -289,7 +289,19 @@ impl Config {
             } else {
                 "unused".to_string()
             },
-        )
+        ) + &match self.leaf.needs_learned_net() {
+            // Appended only for the opt-in learned leaves, so the default
+            // configuration's params string — and therefore every existing
+            // results file's — is byte-for-byte what it was.
+            //
+            // The identity is the shape plus a content hash of the embedded
+            // weights, for exactly the reason the `eval=` tail above is the
+            // whole `duels_eval::Config`: a retrain at the same width is the
+            // same shape and completely different behaviour, so recording only
+            // "learned" would make two results files indistinguishable.
+            true => format!(";value={}", duels_value::default_weights_id()),
+            false => String::new(),
+        }
     }
 }
 
@@ -412,6 +424,19 @@ pub(crate) struct Tree {
     /// `tests::only_the_rollout_leaf_builds_no_evaluation_root` pins which
     /// variants build one.
     pub eval_root: Option<duels_eval::Root>,
+    /// The **learned** value network, parsed **once per tree** and only when
+    /// [`Config::leaf`] is one of the opt-in learned variants.
+    ///
+    /// `None` on every default search, which is the point: this field costs
+    /// nothing and changes nothing unless a learned leaf is explicitly asked
+    /// for. `tests::only_a_learned_leaf_parses_the_value_network` pins that.
+    ///
+    /// Parsed per tree rather than per process for the same reason
+    /// `duels-eval`'s config is read in `Tree::new` rather than at agent
+    /// construction: a `duels-server` room lives for hours, and a lazily
+    /// cached global would be one more piece of hidden state in something this
+    /// crate works hard to keep a pure function of its inputs.
+    pub learned_net: Option<duels_value::Net>,
 }
 
 impl Tree {
@@ -444,6 +469,7 @@ impl Tree {
             .leaf
             .needs_eval_root()
             .then(|| duels_eval::Root::new(&state, state.current_player(), cfg.eval_config()));
+        let learned_net = cfg.leaf.needs_learned_net().then(duels_value::default_net);
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,
@@ -453,6 +479,7 @@ impl Tree {
             simulations: 0,
             rankings: 0,
             eval_root,
+            learned_net,
         };
         let root = decision_node(state, actions, rng);
         tree.nodes.push(root);
@@ -822,6 +849,22 @@ impl Tree {
                     None => played,
                 }
             }
+            // The two learned variants mirror `Static` and `Blend` exactly,
+            // including the fall-back-to-playout arm for a tree built without
+            // the network (which `Tree::new` cannot do for these variants) and
+            // the ordering that keeps the playout's draws where `Rollout`
+            // would have them.
+            LeafValue::Learned => self
+                .learned_from(node)
+                .unwrap_or_else(|| self.rollout_from(node, rng)),
+            LeafValue::LearnedBlend { weight } => {
+                let learned = self.learned_from(node);
+                let played = self.rollout_from(node, rng);
+                match learned {
+                    Some(s) => weight * s + (1.0 - weight) * played,
+                    None => played,
+                }
+            }
         }
     }
 
@@ -846,6 +889,13 @@ impl Tree {
     fn static_from(&self, node: NodeId) -> Option<f64> {
         let root = self.eval_root.as_ref()?;
         Some(leaf::static_value(&self.nodes[node as usize].state, root))
+    }
+
+    /// [`leaf::learned_value`] of `node`, or `None` if this tree has no value
+    /// network.
+    fn learned_from(&self, node: NodeId) -> Option<f64> {
+        let net = self.learned_net.as_ref()?;
+        Some(leaf::learned_value(&self.nodes[node as usize].state, net))
     }
 
     /// One selection / expansion / playout / backpropagation cycle.
@@ -1628,20 +1678,26 @@ mod tests {
         );
     }
 
-    /// Which variants pay for an evaluation root: only [`LeafValue::Rollout`]
-    /// builds none, and every other variant — the default included — builds
-    /// exactly one, for the tree's own root position.
+    /// Which variants pay for which per-tree fixture: the three that read the
+    /// hand-crafted evaluation build exactly one [`duels_eval::Root`], the two
+    /// learned ones parse exactly one [`duels_value::Net`], and
+    /// [`LeafValue::Rollout`] pays for neither. No variant pays for both.
     #[test]
-    fn only_the_rollout_leaf_builds_no_evaluation_root() {
+    fn each_leaf_builds_only_the_fixtures_it_reads() {
         let (state, actions) = mid_game(2);
-        // The default really is one of the variants that pays.
+        // The default really is one of the variants that pays for a `Root`,
+        // and pays for no value network.
         assert!(Config::default().leaf.needs_eval_root());
+        assert!(!Config::default().leaf.needs_learned_net());
         assert!(!Config::rollout_base().leaf.needs_eval_root());
-        for (leaf, wants_root) in [
-            (LeafValue::Rollout, false),
-            (LeafValue::Static, true),
-            (LeafValue::Truncated { plies: 8 }, true),
-            (LeafValue::Blend { weight: 0.5 }, true),
+        assert!(!Config::rollout_base().leaf.needs_learned_net());
+        for (leaf, wants_root, wants_net) in [
+            (LeafValue::Rollout, false, false),
+            (LeafValue::Static, true, false),
+            (LeafValue::Truncated { plies: 8 }, true, false),
+            (LeafValue::Blend { weight: 0.5 }, true, false),
+            (LeafValue::Learned, false, true),
+            (LeafValue::LearnedBlend { weight: 0.5 }, false, true),
         ] {
             let mut rng = StdRng::seed_from_u64(9);
             let tree = Tree::new(
@@ -1658,6 +1714,93 @@ mod tests {
                 wants_root,
                 "{leaf:?} built the wrong number of evaluation roots"
             );
+            assert_eq!(
+                tree.learned_net.is_some(),
+                wants_net,
+                "{leaf:?} parsed the wrong number of value networks"
+            );
+        }
+    }
+
+    /// The learned leaves are opt-in, and "opt-in" has to mean *bit-identical
+    /// when not opted into*. Adding a `LeafValue` variant and a `Tree` field
+    /// must not move the default search by a single simulation, so the whole
+    /// default tree is grown twice — once on this build, once against an
+    /// explicit spelling-out of today's default — and compared node for node.
+    ///
+    /// This is the weaker, cheap half of the guarantee; the strong half is
+    /// that the default path never reaches `learned_from` at all, which
+    /// `each_leaf_builds_only_the_fixtures_it_reads` establishes by proving no
+    /// network is even parsed.
+    #[test]
+    fn the_default_search_is_untouched_by_the_learned_variants() {
+        let (state, actions) = mid_game(11);
+        let grow = |leaf| {
+            let mut rng = StdRng::seed_from_u64(0x1EA2_F1ED);
+            let mut tree = Tree::new(
+                state,
+                actions.clone(),
+                Config {
+                    leaf,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            for _ in 0..400 {
+                tree.simulate(&mut rng);
+            }
+            (
+                tree.nodes.len(),
+                tree.simulations,
+                tree.nodes[0].visits,
+                tree.nodes[0].value_sum.to_bits(),
+            )
+        };
+        assert_eq!(
+            grow(Config::default().leaf),
+            grow(LeafValue::Blend { weight: 0.5 }),
+            "the default leaf and its explicit spelling grew different trees"
+        );
+        // ...and a learned leaf really is a different search, so the equality
+        // above is not vacuous.
+        assert_ne!(
+            grow(Config::default().leaf),
+            grow(LeafValue::Learned),
+            "the learned leaf searched identically to the default"
+        );
+    }
+
+    /// A learned leaf value has to be a probability, whatever the network says
+    /// about a position: that is what makes it commensurable with the playout
+    /// values the same tree backs up, and it is the shape invariant that
+    /// stands in for freezing the numbers (the same choice `mcts-eval` made
+    /// for its `duels-eval` leaf).
+    #[test]
+    fn every_learned_leaf_value_is_a_probability() {
+        for seed in 0..12u64 {
+            let (state, actions) = mid_game(seed);
+            let mut rng = StdRng::seed_from_u64(seed ^ 0x1A5E);
+            let mut tree = Tree::new(
+                state,
+                actions,
+                Config {
+                    leaf: LeafValue::Learned,
+                    ..Config::default()
+                },
+                &mut rng,
+            );
+            for _ in 0..200 {
+                tree.simulate(&mut rng);
+            }
+            for (i, node) in tree.nodes.iter().enumerate() {
+                if node.visits > 0 {
+                    let mean = node.mean();
+                    assert!(
+                        mean.is_finite() && (0.0..=1.0).contains(&mean),
+                        "seed {seed} node {i}: backed-up mean {mean}"
+                    );
+                }
+            }
         }
     }
 

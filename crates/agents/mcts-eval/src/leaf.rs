@@ -167,6 +167,25 @@ pub(crate) fn static_value(state: &GameState, root: &duels_eval::Root) -> f64 {
     duels_eval::win_probability(state, Player::One, root)
 }
 
+/// The **learned** static value of `state` on this tree's `[0, 1]` scale, also
+/// always from [`Player::One`]'s perspective.
+///
+/// The scalar is `duels_value`'s four-way head collapsed to
+/// `P(military) + P(science) + P(civilian)` — see
+/// [`duels_value::Dist::win_probability`]. No sigmoid calibration is applied
+/// on the way out, and none is needed: unlike [`static_value`], whose input is
+/// a victory-point-scale number that has to be squashed by a fitted
+/// temperature, this model was trained as a classifier on real outcomes and so
+/// emits a probability directly.
+///
+/// Consumes no randomness, exactly like [`static_value`], which is what keeps
+/// [`LeafValue::Learned`]'s RNG stream a property of the tree's chance nodes
+/// alone.
+#[inline]
+pub(crate) fn learned_value(state: &GameState, net: &duels_value::Net) -> f64 {
+    f64::from(net.win_probability(state, Player::One))
+}
+
 /// What the search backs up from a leaf it has just added to the tree.
 ///
 /// [`LeafValue::Blend`] at `weight = 0.5` is [`crate::Config::default`] and is
@@ -263,16 +282,55 @@ pub enum LeafValue {
         /// How much of the static value to mix in, on `[0, 1]`.
         weight: f64,
     },
+    /// Score the leaf with [`duels_value`]'s **learned** network — no playout,
+    /// no `duels_eval::Root`, and no randomness consumed.
+    ///
+    /// The learned analogue of [`Static`](LeafValue::Static), and it exists to
+    /// answer the same question that variant answered for the hand-crafted
+    /// evaluation: *is this a good value signal at all, before the
+    /// complementarity question a blend introduces?* Opt-in, never the
+    /// default, and `duels_value`'s crate docs record what it measured.
+    Learned,
+    /// `weight * Learned + (1 - weight) * Rollout`, both computed — the
+    /// learned analogue of [`Blend`](LeafValue::Blend).
+    ///
+    /// The blend exists because this project has already established, for the
+    /// hand-crafted evaluation, that a pure static leaf loses badly to a
+    /// blended one for a reason specific to this game: a playout discovers
+    /// military tempo that a position-shaped judgement cannot. Nothing about
+    /// a *learned* static value escapes that limitation — it is still a
+    /// function of the position alone — so the same mixture is the obvious
+    /// second thing to try, and the same `c = c₀·(1 - weight)` rescaling
+    /// argument from [`Blend`](LeafValue::Blend) applies unchanged.
+    LearnedBlend {
+        /// How much of the learned value to mix in, on `[0, 1]`.
+        weight: f64,
+    },
 }
 
 impl LeafValue {
     /// Whether this variant needs a [`duels_eval::Root`] built for the tree.
     ///
-    /// Only [`LeafValue::Rollout`] answers `false`, and it is not the default
-    /// here: this crate normally builds exactly one `Root` per search.
+    /// Answered by naming the variants that read the hand-crafted evaluation
+    /// rather than by excluding the ones that do not: the learned variants
+    /// need no `Root` either, and a negation would have silently started
+    /// building one for them.
     #[inline]
     pub fn needs_eval_root(&self) -> bool {
-        !matches!(self, LeafValue::Rollout)
+        matches!(
+            self,
+            LeafValue::Static | LeafValue::Truncated { .. } | LeafValue::Blend { .. }
+        )
+    }
+
+    /// Whether this variant needs a [`duels_value::Net`] built for the tree.
+    ///
+    /// Parsing the embedded weights is about a hundred kilobytes of work, so
+    /// it is paid once per tree next to the `Root`, and only when a learned
+    /// leaf is actually configured.
+    #[inline]
+    pub fn needs_learned_net(&self) -> bool {
+        matches!(self, LeafValue::Learned | LeafValue::LearnedBlend { .. })
     }
 
     /// A compact, stable description for [`crate::Config::describe`].
@@ -282,6 +340,8 @@ impl LeafValue {
             LeafValue::Static => "static".to_string(),
             LeafValue::Truncated { plies } => format!("truncated({plies})"),
             LeafValue::Blend { weight } => format!("blend({weight:.3})"),
+            LeafValue::Learned => "learned".to_string(),
+            LeafValue::LearnedBlend { weight } => format!("learned_blend({weight:.3})"),
         }
     }
 }

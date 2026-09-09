@@ -11,6 +11,10 @@ duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-eval = { path = "../duels-eval" }
+# Read by `examples/feature_dump.rs`, which turns a `value_corpus.rs` corpus
+# into a `duels-value` training matrix. A normal dependency rather than a
+# dev-dependency only because cargo examples are built from `[dependencies]`.
+duels-value = { path = "../duels-value" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 duels-agent-mcts-eval = { path = "../agents/mcts-eval" }

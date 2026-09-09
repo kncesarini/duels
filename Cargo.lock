@@ -389,6 +389,7 @@ dependencies = [
  "duels-core",
  "duels-eval",
  "duels-strategy",
+ "duels-value",
  "rand 0.8.8",
 ]
 
@@ -447,6 +448,7 @@ dependencies = [
  "duels-core",
  "duels-eval",
  "duels-strategy",
+ "duels-value",
  "rand 0.8.8",
  "rayon",
  "serde",
@@ -508,6 +510,14 @@ dependencies = [
  "duels-agents-api",
  "duels-core",
  "proptest",
+ "rand 0.8.8",
+]
+
+[[package]]
+name = "duels-value"
+version = "0.1.0"
+dependencies = [
+ "duels-core",
  "rand 0.8.8",
 ]
 
