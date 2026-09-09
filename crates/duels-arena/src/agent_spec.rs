@@ -414,9 +414,10 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                     "v6" => duels_eval::Config::v6(),
                     "v7" => duels_eval::Config::v7(),
                     "v8" => duels_eval::Config::v8(),
+                    "v9" => duels_eval::Config::v9(),
                     other => {
                         return Err(format!(
-                            "mcts-eval: unknown eval generation \"{other}\" (expected v1-v8)"
+                            "mcts-eval: unknown eval generation \"{other}\" (expected v1-v9)"
                         ))
                     }
                 });
@@ -657,6 +658,7 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                 "v6" => cfg = PhasedConfig::v6(),
                 "v7" => cfg = PhasedConfig::v7(),
                 "v8" => cfg = PhasedConfig::v8(),
+                "v9" => cfg = PhasedConfig::v9(),
                 "default" => cfg = PhasedConfig::default(),
                 other => return Err(format!("phased: unknown base \"{other}\"")),
             },
@@ -1249,12 +1251,20 @@ mod tests {
             ("v6", duels_eval::Config::v6()),
             ("v7", duels_eval::Config::v7()),
             ("v8", duels_eval::Config::v8()),
+            ("v9", duels_eval::Config::v9()),
         ] {
             let cfg = parse_mcts_eval_config(&format!("eval={v}")).unwrap();
             assert_eq!(cfg.eval_override, Some(want), "eval={v}");
         }
+        // `v9` is round ten's control — the generation whose `menu.lambda` the
+        // round moved — so it has to parse, and it has to be distinguishable
+        // from the live default it was measured against.
+        assert_ne!(
+            parse_mcts_eval_config("eval=v9").unwrap().eval_override,
+            Some(duels_eval::Config::default())
+        );
         assert!(parse_mcts_eval_config("eval=v0").is_err());
-        assert!(parse_mcts_eval_config("eval=v9").is_err());
+        assert!(parse_mcts_eval_config("eval=v10").is_err());
         assert!(parse_mcts_eval_config("eval=default").is_err());
         assert!(parse_mcts_eval_config("eval=live").is_err());
 
@@ -1347,13 +1357,14 @@ mod tests {
         // The round-three keys, and their "off" values reproducing v2's --
         // round four's `pending=unresolved` and round five's six included,
         // since `v2()` is built on `v3()` on `v4()` and so carries every later
-        // option at its own off value too.
+        // option at its own off value too. Round ten's `lambda=0.6` is in every
+        // one of these strings for the same reason.
         let off = parse_phased_config(
             "rails=off,imminent=0,shieldprice=onesided,horizon=supply,lockin=0,band=2.0,\
              pending=unresolved,guild=unpriced,guildproj=0,menufloor=none,afford=0,\
              supply=raw,yellow=0,wprem=0,science_ladder=1,chaineq=1,bill=3,\
              development=0.3333333333333333,pairthreat=1,dead=1,\
-             ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18",
+             ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18,lambda=0.6",
         )
         .unwrap();
         assert_eq!(off, PhasedConfig::v2());
@@ -1376,7 +1387,7 @@ mod tests {
                 "pending=unresolved,wonder=flat,destroyrepl=off,wprem=0,guild=unpriced,guildproj=0,\
                  menufloor=none,afford=0,supply=raw,yellow=0,science_ladder=1,chaineq=1,bill=3,\
                  development=0.3333333333333333,pairthreat=1,dead=1,\
-                 ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18"
+                 ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18,lambda=0.6"
             )
             .unwrap(),
             PhasedConfig::v3()
@@ -1398,7 +1409,7 @@ mod tests {
                 "guild=unpriced,guildproj=0,menufloor=none,afford=0,supply=raw,yellow=0,wprem=0,\
                  science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
                  pairthreat=1,dead=1,ladder4=12,ladder5=18,\
-                 temp1=47.57,temp2=43.75,temp3=25.18"
+                 temp1=47.57,temp2=43.75,temp3=25.18,lambda=0.6"
             )
             .unwrap(),
             PhasedConfig::v4()
@@ -1429,7 +1440,7 @@ mod tests {
             parse_phased_config(
                 "wprem=0,science_ladder=1,chaineq=1,bill=3,development=0.3333333333333333,\
                  pairthreat=1,dead=1,ladder4=12,ladder5=18,\
-                 temp1=47.57,temp2=43.75,temp3=25.18"
+                 temp1=47.57,temp2=43.75,temp3=25.18,lambda=0.6"
             )
             .unwrap(),
             PhasedConfig::v5(),
@@ -1439,20 +1450,24 @@ mod tests {
         // top two science ladder rungs and the three leaf temperatures.
         assert_eq!(parse_phased_config("base=v7").unwrap(), PhasedConfig::v7());
         assert_eq!(
-            parse_phased_config("ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18")
-                .unwrap(),
+            parse_phased_config(
+                "ladder4=12,ladder5=18,temp1=47.57,temp2=43.75,temp3=25.18,lambda=0.6"
+            )
+            .unwrap(),
             PhasedConfig::v7(),
             "the ladder's top rungs and the leaf temperature are the only \
              things round eight changed"
         );
         // Round nine's two options. **It did not move the default** -- it
-        // measured both and left them off -- so unlike every block above this
-        // one there is no "off" string to reproduce a previous generation
-        // with, and `base=v8` is still `default()`. What the keys are for is
-        // reaching the options from a spec string at all, which is how the
-        // round's own transfer checks against `alphabeta` and `mcts-uct` were
-        // run. `pref` is read only under `wonder=rationed`.
+        // measured both and left them off -- so unlike every other block here
+        // there is no "off" string to reproduce a previous generation with,
+        // and `base=v9` is `base=v8`. What the keys are for is reaching the
+        // options from a spec string at all, which is how the round's own
+        // transfer checks against `alphabeta` and `mcts-uct` were run. `pref`
+        // is read only under `wonder=rationed`.
         assert_eq!(parse_phased_config("base=v8").unwrap(), PhasedConfig::v8());
+        assert_eq!(parse_phased_config("base=v9").unwrap(), PhasedConfig::v9());
+        assert_eq!(PhasedConfig::v8(), PhasedConfig::v9());
         assert_eq!(
             parse_phased_config("wonder=flat,wonder_potential=0.5,reach=optimistic,pref=1")
                 .unwrap(),
@@ -1460,6 +1475,23 @@ mod tests {
             "round nine's options are off in the default, so naming their off \
              values has to be a no-op"
         );
+        assert_eq!(
+            parse_phased_config(
+                "wonder=flat,wonder_potential=0.5,reach=optimistic,pref=1,lambda=0.6"
+            )
+            .unwrap(),
+            PhasedConfig::v9(),
+            "...and naming them alongside round ten's off value has to reach \
+             round nine's configuration"
+        );
+        // Round ten's one key, and its "off" value reproducing v9's: the
+        // opponent-menu weight, 0.6 -> the fitted 0.408.
+        assert_eq!(
+            parse_phased_config("lambda=0.6").unwrap(),
+            PhasedConfig::v9(),
+            "the opponent-menu weight is the only thing round ten changed"
+        );
+        assert_ne!(PhasedConfig::v9(), PhasedConfig::default());
         let on = parse_phased_config("wonder=rationed,reach=structure,pref=0.875").unwrap();
         assert_eq!(on.wonder_model, WonderModel::Rationed);
         assert_eq!(on.eval.science.reach_model, ReachModel::Structure);

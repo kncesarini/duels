@@ -274,9 +274,15 @@ fn the_generation_chain_is_still_a_chain_of_distinct_configurations() {
             );
         }
     }
-    // `v8` is *defined* as the default, so this is a tautology and is here to
-    // fail loudly if a later round ever re-points it without adding `v9`.
-    assert_eq!(Config::v8(), Config::default());
+    // `v9` is the newest link, defined as a delta from the default, so this is
+    // a tautology and is here to fail loudly if a later round ever re-points it
+    // without adding `v10`. It read `assert_eq!(Config::v8(), ...)` until round
+    // ten moved the default and added `v9`, which is the contract under
+    // `Config::v9` working as intended.
+    assert_ne!(Config::v9(), Config::default());
+    // `v9` is left out of the loop above because round nine adopted neither of
+    // the two options it built, so its snapshot really is round eight's.
+    assert_eq!(Config::v8(), Config::v9());
     // ...and `params_string` has to be able to tell the two apart, or two
     // results files from either side of this round would be indistinguishable.
     assert_ne!(
