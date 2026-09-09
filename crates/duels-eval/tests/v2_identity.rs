@@ -36,6 +36,7 @@ use duels_core::testing::StateBuilder;
 use duels_core::{engine, Action, GameState, Player};
 use duels_eval::{
     expected_value, menu, terms, Config, EvalWeights, MenuWeights, MilSmoothing, Root,
+    MENU_LAMBDA_V9,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -369,13 +370,21 @@ fn config_v2_switches_off_every_round_three_option() {
     // against `Config::v3().eval` rather than `EvalWeights::default()`, because
     // from round five on the *current* defaults include weights this snapshot
     // has to hold at zero. `tests/v4_identity.rs` is where those are pinned.
+    //
+    // The menu weight is spelled out for the same reason: round ten cut it,
+    // and a snapshot from round two has to carry the value the term shipped
+    // with. `tests/v9_identity.rs` is where that is pinned for the whole
+    // chain.
     assert_eq!(
         v2.eval,
         EvalWeights {
             military_band: 2.0,
             imminent: 0.0,
             production_lock_in: 0.0,
-            menu: MenuWeights::default(),
+            menu: MenuWeights {
+                lambda: MENU_LAMBDA_V9,
+                ..MenuWeights::default()
+            },
             ..Config::v3().eval
         }
     );

@@ -195,6 +195,7 @@ fn apply(cfg: &mut Config, key: &str, raw: &str) -> Result<(), String> {
             "v6" => Config::v6(),
             "v7" => Config::v7(),
             "v8" => Config::v8(),
+            "v9" => Config::v9(),
             "default" => Config::default(),
             other => return Err(format!("unknown base \"{other}\"")),
         };

@@ -16,10 +16,17 @@
 //!   +2.6) and moves the calibration it was built for by under a victory
 //!   point.
 //!
-//! So there is no new generation, `Config::v8()` is still the default, and what
-//! this file has to prove is the *other* identity: that the two new options
-//! really are off, and that the one place round nine changed a function's
-//! **shape** is bit-identical on the branch it kept.
+//! So there is no new generation, and what this file has to prove is the
+//! *other* identity: that the two new options really are off, and that the one
+//! place round nine changed a function's **shape** is bit-identical on the
+//! branch it kept.
+//!
+//! **Round ten moved the default**, so `Config::v8()` is no longer an alias
+//! for it and round nine's configuration now has a name of its own,
+//! [`Config::v9`] — numerically the same as `v8()`, because round nine changed
+//! nothing. Round ten's own delta is one scalar and is pinned by
+//! `tests/v9_identity.rs`; everything this file asserts about the two
+//! round-nine options is untouched by it, because they are still off.
 //!
 //! # What needs a verbatim copy, and what does not
 //!
@@ -103,8 +110,10 @@ fn walk(seed: u64, mut visit: impl FnMut(&GameState)) {
 }
 
 /// The two round-nine options, and the field only one of them reads, at the
-/// values that make them inert.
-fn round_eight_values() -> Config {
+/// values that make them inert — written out over today's default, so that
+/// "round nine's options are off" stays a claim about the shipping
+/// configuration as later rounds move other weights.
+fn round_nine_options_off() -> Config {
     Config {
         eval: EvalWeights {
             wonder_potential: 0.5,
@@ -120,29 +129,42 @@ fn round_eight_values() -> Config {
     }
 }
 
-/// The default carries the round-eight values, and `v8()` is still the
-/// newest link in the generation chain.
+/// Round nine's configuration is the round-eight one, and it is the two of
+/// them together that [`Config::v9`] snapshots.
 #[test]
-fn the_default_is_still_the_round_eight_configuration() {
-    let d = Config::default();
-    assert_eq!(d.wonder_model, WonderModel::Flat);
-    assert_eq!(d.eval.wonder_potential.to_bits(), 0.5f64.to_bits());
-    assert_eq!(d.eval.wonder_p_build_ref.to_bits(), 1.0f64.to_bits());
-    assert_eq!(d.eval.science.reach_model, ReachModel::Optimistic);
+fn round_nines_configuration_is_still_the_round_eight_one() {
+    let nine = Config::v9();
+    assert_eq!(nine.wonder_model, WonderModel::Flat);
+    assert_eq!(nine.eval.wonder_potential.to_bits(), 0.5f64.to_bits());
+    assert_eq!(nine.eval.wonder_p_build_ref.to_bits(), 1.0f64.to_bits());
+    assert_eq!(nine.eval.science.reach_model, ReachModel::Optimistic);
     // ...and the round-eight numbers underneath are untouched, so "round nine
     // moved nothing" is a claim about the whole configuration and not only
     // about the two fields it added.
-    assert_eq!(d.eval.science.ladder, [0.0, 1.0, 2.5, 6.0, 30.0, 54.0]);
+    assert_eq!(nine.eval.science.ladder, [0.0, 1.0, 2.5, 6.0, 30.0, 54.0]);
     assert_eq!(
-        d.eval.win_probability_temperature,
+        nine.eval.win_probability_temperature,
         [
             duels_eval::WIN_PROBABILITY_TEMPERATURE_AGE_I,
             duels_eval::WIN_PROBABILITY_TEMPERATURE_AGE_II,
             duels_eval::WIN_PROBABILITY_TEMPERATURE_AGE_III,
         ]
     );
-    assert_eq!(d, round_eight_values());
-    assert_eq!(Config::v8(), d);
+    // Round nine adopted neither of its two candidates, so its snapshot and
+    // round eight's are one configuration.
+    assert_eq!(Config::v8(), nine);
+    // Round ten moved the default, so neither of them is it any more.
+    assert_ne!(nine, Config::default());
+
+    // The two options are nonetheless still off in the shipping
+    // configuration, which is what keeps everything below a claim about the
+    // default rather than about a frozen snapshot.
+    let d = Config::default();
+    assert_eq!(d.wonder_model, WonderModel::Flat);
+    assert_eq!(d.eval.wonder_potential.to_bits(), 0.5f64.to_bits());
+    assert_eq!(d.eval.wonder_p_build_ref.to_bits(), 1.0f64.to_bits());
+    assert_eq!(d.eval.science.reach_model, ReachModel::Optimistic);
+    assert_eq!(d, round_nine_options_off());
 }
 
 /// The `Optimistic` reachability model has to be round eight's walk exactly,
@@ -181,7 +203,7 @@ fn the_optimistic_reach_model_is_round_eights_walk_bit_for_bit() {
 /// reading of the `match` arms.
 #[test]
 fn the_two_round_nine_options_are_off_and_change_nothing() {
-    let literal = round_eight_values();
+    let literal = round_nine_options_off();
     // `wonder_p_build_ref` is read only inside the rationed arm, so moving it
     // has to be inert under the default too — otherwise "off" is not off.
     let ref_moved = Config {
@@ -535,8 +557,9 @@ fn balance_is_still_reachable_only_through_the_law_token() {
 }
 
 /// Every generation snapshot — the whole chain, the newest link included —
-/// carries round nine's options at their off values, so a round-ten default
-/// move that turned one of them on would have a `v9()` one `..` away.
+/// carries round nine's options at their off values. Round ten moved the
+/// default without turning either of them on, which is why `v9()` was one
+/// `..` away when it came to be written.
 #[test]
 fn every_snapshot_still_switches_off_everything_round_nine_added() {
     for older in [
@@ -548,6 +571,7 @@ fn every_snapshot_still_switches_off_everything_round_nine_added() {
         Config::v6(),
         Config::v7(),
         Config::v8(),
+        Config::v9(),
     ] {
         assert_eq!(older.wonder_model, WonderModel::Flat);
         assert_eq!(older.eval.wonder_potential.to_bits(), 0.5f64.to_bits());
