@@ -620,8 +620,10 @@ fn force_outcome(state: &mut GameState, outcome: &Outcome) -> Result<(), &'stati
             } else {
                 &mut plain_pool
             };
-            assignment[i] =
-                Some(pool.pop().ok_or("ran out of candidate cards while forcing an outcome")?);
+            assignment[i] = Some(
+                pool.pop()
+                    .ok_or("ran out of candidate cards while forcing an outcome")?,
+            );
         }
     } else {
         // Pre-R-110 fallback: only the guild count is honoured, so a guild can
@@ -2108,7 +2110,10 @@ mod tests {
     /// `check`, together with the position it came from. Asserts the walk
     /// actually reached Age III chance nodes with a purple back among the
     /// slots being uncovered, since that is the only place R-110 has teeth.
-    fn for_each_chance_action(seeds: std::ops::Range<u64>, mut check: impl FnMut(&GameState, Action)) {
+    fn for_each_chance_action(
+        seeds: std::ops::Range<u64>,
+        mut check: impl FnMut(&GameState, Action),
+    ) {
         let mut rng = rng();
         let mut purple_backed_reveals = 0;
         for seed in seeds {
@@ -2124,10 +2129,8 @@ mod tests {
                     if slots.is_empty() {
                         continue;
                     }
-                    purple_backed_reveals += slots
-                        .iter()
-                        .filter(|&&s| mask & (1u32 << s) != 0)
-                        .count();
+                    purple_backed_reveals +=
+                        slots.iter().filter(|&&s| mask & (1u32 << s) != 0).count();
                     check(&st, a);
                 }
                 let a = legal[(seed as usize + 7) % legal.len()];
@@ -2184,7 +2187,11 @@ mod tests {
             assert_eq!(oa.len(), ob.len(), "different support sizes for {a:?}");
             for ((ea, pa), (eb, pb)) in oa.iter().zip(ob.iter()) {
                 assert_eq!(ea, eb, "different outcome enumerated for {a:?}");
-                assert_eq!(pa.to_bits(), pb.to_bits(), "different probability for {ea:?}");
+                assert_eq!(
+                    pa.to_bits(),
+                    pb.to_bits(),
+                    "different probability for {ea:?}"
+                );
             }
         });
     }

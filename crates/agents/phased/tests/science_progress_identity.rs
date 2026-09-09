@@ -142,18 +142,25 @@ fn leaf_progress() -> Config {
 /// Both of `p_build_identity.rs`'s pinned configurations are checked, for the
 /// same reason it checks both: `v9()` is what round nine's digest was recorded
 /// under, and `default()` is the shipping path round ten moved.
+///
+/// Both digests were re-recorded when `duels_core::engine`'s R-105/R-110
+/// chance model was sharpened; `p_build_identity.rs`'s copy of this claim
+/// carries the reasoning. In short: `expected_value` averages over
+/// `engine::chance_outcomes`, so a rules-level change to the reveal
+/// distribution moves `phased`'s decisions under every `Config` generation at
+/// once, and neither claim this test makes is weakened by that.
 #[test]
 fn the_default_configuration_is_unchanged_by_the_round_eleven_option() {
     let (decisions, hash) = self_play_digest(Config::v9());
     assert_eq!(
         (decisions, hash),
-        (865, 0x58e8_6d3d_4266_1389),
+        (867, 0x737d_0393_7152_9674),
         "round nine's evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
     let (decisions, hash) = self_play_digest(Config::default());
     assert_eq!(
         (decisions, hash),
-        (856, 0x7d61_4d78_2e87_ef73),
+        (857, 0xf022_060d_ad98_73ab),
         "the default evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
 }

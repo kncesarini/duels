@@ -147,25 +147,41 @@ fn rationed() -> Config {
 /// has nothing to do with `p_build` and everything to do with a different
 /// evaluation choosing different moves. Pinning the round-ten default
 /// alongside it keeps the shipping path guarded going forward.
+///
+/// **Both digests were re-recorded once more when the R-105/R-110 chance
+/// model was sharpened.** That change is in `duels_core::engine`, not in
+/// `duels-eval` at all: `expected_value` averages over
+/// `engine::chance_outcomes`, so conditioning the reveal distribution on the
+/// public per-slot guild mask moves what `phased` computes for any Age III
+/// action that uncovers a slot, under *every* `Config` generation at once.
+/// This test firing was the intended signal — it is the only place in the
+/// repo that would have noticed a rules-level chance-model change reaching an
+/// agent's decisions — and the re-record is not a weakening of either claim:
+/// `Config::v9` and `Config::default` still differ from each other by exactly
+/// the evaluation, and `WonderModel::Rationed` below still has to differ from
+/// `Flat`.
 #[test]
 fn the_default_configuration_is_unchanged_by_the_p_build_fix() {
     // Recorded from the pre-fix tree (`651d451`), over the same twelve seeds,
     // and reproduced exactly after the fix -- under the configuration that
-    // tree shipped, which is now `Config::v9()`.
+    // tree shipped, which is now `Config::v9()`. Re-recorded from
+    // `(865, 0x58e8_6d3d_4266_1389)` when the chance model was sharpened.
     let (decisions, hash) = self_play_digest(Config::v9());
     assert_eq!(
         (decisions, hash),
-        (865, 0x58e8_6d3d_4266_1389),
+        (867, 0x737d_0393_7152_9674),
         "round nine's evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
     // ...and the shipping default, pinned from round ten on. A later round
     // that moves `Config::default` is expected to fail here and re-record it,
     // exactly as round ten did: this is the guard that a *silent* change to
     // the evaluation cannot reach an agent's decisions unnoticed.
+    // Re-recorded from `(856, 0x7d61_4d78_2e87_ef73)` for the same
+    // chance-model reason as the digest above.
     let (decisions, hash) = self_play_digest(Config::default());
     assert_eq!(
         (decisions, hash),
-        (856, 0x7d61_4d78_2e87_ef73),
+        (857, 0xf022_060d_ad98_73ab),
         "the default evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
 }
