@@ -538,10 +538,102 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                      use \"eval=vN\" (e.g. \"eval=v6\"), not this key."
                     .to_string())
             }
-            other => return Err(format!("mcts-eval: unknown key \"{other}\"")),
+            // Anything left is tried as a `duels-eval` scalar, by the same key
+            // names `phased` already accepts, applied on top of whatever
+            // generation `eval=` selected (or on top of today's live default
+            // when no `eval=` key was given). This is what lets a candidate
+            // *weight vector* -- as opposed to a frozen generation -- be A/B
+            // tested inside the search that actually consumes it, instead of
+            // only through `phased`'s 1-ply argmax.
+            //
+            // Note the asymmetry with omitting the key entirely: touching any
+            // eval scalar necessarily pins `eval_override`, so the agent stops
+            // tracking `duels-eval` live. That is correct for a measurement
+            // -- a fitted vector *is* a frozen evaluation -- but it means
+            // these keys are for experiments, never for a shipped default.
+            other => {
+                let eval = &mut cfg
+                    .eval_override
+                    .get_or_insert_with(duels_eval::Config::default)
+                    .eval;
+                if !apply_eval_config_key(eval, other, v)? {
+                    return Err(format!("mcts-eval: unknown key \"{other}\""));
+                }
+            }
         }
     }
     Ok(cfg)
+}
+
+/// Applies one `key=value` pair to a [`duels_eval::Config`], returning whether
+/// the key was recognised.
+///
+/// The key names are exactly [`parse_phased_config`]'s, which is the point:
+/// a weight vector written for one agent has to mean the same thing in the
+/// other, or an A/B across the two measures two different candidates. The
+/// duplication against `parse_phased_config`'s own arms is the same accepted
+/// cost as `eval_weights_parser!`'s across `greedy` and `greedy-ev`, and
+/// `mcts_eval_shares_phaseds_eval_key_names` holds the two in agreement.
+fn apply_eval_config_key(
+    eval: &mut duels_eval::EvalWeights,
+    k: &str,
+    v: &str,
+) -> Result<bool, String> {
+    match k {
+        "menu_lambda" | "lambda" => eval.menu.lambda = parse_field(k, v)?,
+        "menu_tau" | "tau" => eval.menu.tau = parse_field(k, v)?,
+        "chain_equity" | "chaineq" => eval.chain_equity = parse_field(k, v)?,
+        "resource_bill" | "bill" => eval.resource_bill = parse_field(k, v)?,
+        "military_band" | "band" => eval.military_band = parse_field(k, v)?,
+        "military_loot" | "loot" => eval.military_loot = parse_field(k, v)?,
+        "military_sigma_scale" | "kappa" => eval.military_sigma_scale = parse_field(k, v)?,
+        "military_sigma_min" => eval.military_sigma_min = parse_field(k, v)?,
+        "military_logistic_scale" => eval.military_logistic_scale = parse_field(k, v)?,
+        "coin_smooth_beta" | "beta" => eval.coin_smooth_beta = parse_field(k, v)?,
+        "coin_smooth_ref" | "cref" => eval.coin_smooth_ref = parse_field(k, v)?,
+        "military_position" => eval.military_position = parse_field(k, v)?,
+        "military_endgame_urgency" | "urgency" => {
+            eval.military_endgame_urgency = parse_field(k, v)?
+        }
+        "coins_div3" => eval.coins_div3 = parse_field(k, v)?,
+        "vp_projection" => eval.vp_projection = parse_field(k, v)?,
+        "development" => eval.development = parse_field(k, v)?,
+        "science_ladder" => eval.science_ladder = parse_field(k, v)?,
+        "science_pair_threat" | "pairthreat" => {
+            eval.science.pair_threat_weight = parse_field(k, v)?
+        }
+        "dead_race_scale" | "dead" => eval.science.dead_race_scale = parse_field(k, v)?,
+        "ladder1" => eval.science.ladder[1] = parse_field(k, v)?,
+        "ladder2" => eval.science.ladder[2] = parse_field(k, v)?,
+        "ladder3" => eval.science.ladder[3] = parse_field(k, v)?,
+        "ladder4" => eval.science.ladder[4] = parse_field(k, v)?,
+        "ladder5" => eval.science.ladder[5] = parse_field(k, v)?,
+        "temp1" => eval.win_probability_temperature[0] = parse_field(k, v)?,
+        "temp2" => eval.win_probability_temperature[1] = parse_field(k, v)?,
+        "temp3" => eval.win_probability_temperature[2] = parse_field(k, v)?,
+        "token_equity" | "tokeneq" => eval.token_equity = parse_field(k, v)?,
+        "to_move" | "tomove" => eval.to_move = parse_field(k, v)?,
+        "value_scale" | "scale" => eval.value_scale = parse_field(k, v)?,
+        "deny" => eval.deny = parse_field(k, v)?,
+        "deny_chain_gift" => eval.deny_chain_gift = parse_field(k, v)?,
+        "wonder_potential" => eval.wonder_potential = parse_field(k, v)?,
+        "guild_projection" | "guildproj" => eval.guild_projection = parse_field(k, v)?,
+        "yellow_equity" | "yellow" => eval.yellow_equity = parse_field(k, v)?,
+        "yellow_discard_rate" | "discardrate" => eval.yellow_discard_rate = parse_field(k, v)?,
+        "wonder_turns_per_wonder" | "wturns" => eval.wonder_turns_per_wonder = parse_field(k, v)?,
+        "wonder_p_build_ref" | "pref" => eval.wonder_p_build_ref = parse_field(k, v)?,
+        "wonder_extra_turn_vp" | "wextra" => eval.wonder_extra_turn_vp = parse_field(k, v)?,
+        "wonder_extra_turn_premium" | "wprem" => {
+            eval.wonder_extra_turn_premium = parse_field(k, v)?
+        }
+        "imminent" => eval.imminent = parse_field(k, v)?,
+        "production_lock_in" | "lockin" => eval.production_lock_in = parse_field(k, v)?,
+        "start1" => eval.next_age_start[0] = parse_field(k, v)?,
+        "start2" => eval.next_age_start[1] = parse_field(k, v)?,
+        "start3" => eval.next_age_start[2] = parse_field(k, v)?,
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 /// Parse a `phased:...` parameter list into a [`PhasedConfig`].
@@ -900,6 +992,58 @@ mod tests {
         assert_eq!(cfg.rollout, RolloutWeights::UNIFORM);
         assert_eq!(cfg.race, RaceWeights::MEDIUM);
         assert_eq!(cfg.root_determinizations, 4);
+    }
+
+    /// The eval-scalar keys are strictly opt-in: a spec that names none of
+    /// them must leave `eval_override` `None`, which is what keeps `mcts-eval`
+    /// tracking `duels-eval` live exactly as its crate docs promise. This is
+    /// the "off value is bit-identical" obligation for this feature.
+    #[test]
+    fn eval_scalar_keys_are_opt_in_and_do_not_pin_anything_by_themselves() {
+        for spec in ["", "c=0.5", "base=rollout", "leaf=blend:0.3,race=mild"] {
+            assert_eq!(
+                parse_mcts_eval_config(spec).unwrap().eval_override,
+                None,
+                "spec {spec:?} must not pin an eval generation"
+            );
+        }
+        // ...and naming one pins today's live default with just that field moved.
+        let cfg = parse_mcts_eval_config("menu_lambda=0.408").unwrap();
+        let mut want = duels_eval::Config::default();
+        want.eval.menu.lambda = 0.408;
+        assert_eq!(cfg.eval_override, Some(want));
+        // An eval scalar layers on top of an explicit generation, like
+        // `phased`'s keys layer on top of its `base=`.
+        let cfg = parse_mcts_eval_config("eval=v6,to_move=0.0").unwrap();
+        let mut want = duels_eval::Config::v6();
+        want.eval.to_move = 0.0;
+        assert_eq!(cfg.eval_override, Some(want));
+        // A genuinely unknown key still fails rather than being swallowed.
+        assert!(parse_mcts_eval_config("no_such_key=1.0").is_err());
+    }
+
+    /// A weight vector has to mean the same thing to both consumers of
+    /// `duels-eval`, or an A/B run across the two agents silently measures two
+    /// different candidates. Every key here is one of the 18 scalars the
+    /// regression fit reports.
+    #[test]
+    fn mcts_eval_shares_phaseds_eval_key_names() {
+        let spec = "vp_projection=2.121753,coins_div3=2.851599,development=0.069698,\
+                    chain_equity=0.249180,resource_bill=2.009706,science_ladder=0.731634,\
+                    military_band=6.167215,military_loot=-6.316501,\
+                    military_endgame_urgency=0.979549,start1=2.461020,start2=5.139748,\
+                    start3=4.272387,wonder_potential=0.304082,guild_projection=2.693124,\
+                    yellow_equity=2.320637,token_equity=0.655919,to_move=1.589933,\
+                    menu_lambda=0.407872";
+        let from_mcts = parse_mcts_eval_config(spec)
+            .unwrap()
+            .eval_override
+            .unwrap()
+            .eval;
+        let from_phased = parse_phased_config(spec).unwrap().eval;
+        assert_eq!(from_mcts, from_phased);
+        // And the vector really did move off the shipped weights.
+        assert_ne!(from_mcts, duels_eval::Config::default().eval);
     }
 
     /// The race key has to reach every shipped variant *and* show up in the
