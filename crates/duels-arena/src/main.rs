@@ -9,7 +9,9 @@
 //!     --seeds 1,10000 --budgets nodes:2000,time_ms:100 --games 400 \
 //!     [--label <NAME>] [--out-dir arena/results/experiments] \
 //!     [--sprt-elo0 0] [--sprt-elo1 20] [--alpha 0.05] [--beta 0.05] \
-//!     [--early-stop] [--check-every 50] [--dry-run]
+//!     [--early-stop] [--check-every 50] [--dry-run] \
+//!     [--gate science_share>=0.8x,military_share<=1.5x | --gate none] \
+//!     [--gate-min-events 5] [--gate-z 1.645]
 //!
 //! duels-arena pairings [--format matrix|lines]
 //! duels-arena leaderboard --results-dir <DIR> \
@@ -25,6 +27,15 @@
 //! each budget, and one machine-readable summary
 //! (`<out-dir>/<label>/summary.json`) as the verdict. See
 //! `duels_arena::experiment`.
+//!
+//! It prints **two** verdicts, and both matter. `elo verdict` is the
+//! per-budget SPRT conjunction over strength. `mechanism verdict` judges *how*
+//! the candidate wins — its victory-kind and race-exposure profile against the
+//! control's — under the bounds `--gate` pre-registers (a sensible default
+//! gate applies when the flag is omitted; `--gate none` opts out). Neither
+//! verdict summarizes the other: "stronger on aggregate Elo, but by the wrong
+//! mechanism" is a real outcome here, which is exactly why they are two
+//! fields. See `duels_arena::mechanism`.
 //!
 //! `pairings`, `leaderboard` and `champion` exist for the nightly round-robin
 //! workflow (`.github/workflows/nightly-arena.yml`) and the `ai-candidate`
@@ -66,6 +77,7 @@ use duels_arena::leaderboard;
 use duels_arena::match_runner::{
     parse_budget, play_paired_match, race_exposure, tally, victory_breakdown, VictoryBreakdown,
 };
+use duels_arena::mechanism;
 use duels_arena::results_io::write_results;
 use duels_arena::sprt::{sprt, SprtParams};
 
@@ -81,6 +93,14 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
+    // `--help` anywhere means "explain, don't run". Handled before dispatch
+    // because the subcommand parsers treat every `--flag` as taking a value,
+    // so `duels-arena experiment --help` used to fail with the unhelpful
+    // "--help needs a value".
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         Some("match") => run_match(&args[1..]),
         Some("experiment") => run_experiment(&args[1..]),
@@ -107,6 +127,7 @@ fn print_usage() {
          [--seeds <RANGES>] [--budgets <B[,B...]>] [--games <N per cell>]\n        \
          [--label <NAME>] [--out-dir <DIR>] [--sprt-elo0 <F>] [--sprt-elo1 <F>]\n        \
          [--alpha <F>] [--beta <F>] [--early-stop] [--check-every <N>] [--dry-run]\n        \
+         [--gate <BOUNDS|none>] [--gate-min-events <F>] [--gate-z <F>]\n        \
          This project's whole measurement protocol in one command: every\n        \
          (seed range x budget) cell played as a paired-seed match, Elo and\n        \
          SPRT per cell and pooled across seed ranges within each budget, and\n        \
@@ -115,7 +136,27 @@ fn print_usage() {
          seeds) and/or explicit half-open ranges (\"1..201\", which name their\n        \
          own length); ranges must be disjoint. --games is per cell, so the\n        \
          total is ranges x budgets x games. --dry-run prints the cell plan\n        \
-         and its cost without playing anything.\n\n    \
+         and its cost without playing anything.\n        \
+         It reports TWO verdicts and both should be read: the Elo verdict\n        \
+         (the per-budget SPRT conjunction) and the mechanism verdict, which\n        \
+         judges *how* the candidate wins. --gate pre-registers the mechanism\n        \
+         bounds, e.g.\n          \
+         --gate science_share>=0.8x,military_share<=1.5x\n        \
+         Each bound is <metric><op><threshold>, op is >= or <=, and a\n        \
+         trailing \"x\" makes the threshold a multiple of the control's own\n        \
+         share instead of an absolute one. Bounds are one-sided on purpose:\n        \
+         a floor catches a candidate getting worse without objecting to one\n        \
+         that improved. Metrics: military_share, science_share,\n        \
+         civilian_share, tiebreak_share (each as a share of that side's own\n        \
+         wins), military_exposure, science_exposure (that side's wins that\n        \
+         came out of an exposed race). Without --gate this default gate\n        \
+         applies, so forgetting the flag is not the same as no check:\n          \
+         --gate {gate}\n        \
+         Pass \"--gate none\" to disable it deliberately. A bound whose events\n        \
+         are too rare at the sample size played reads Inconclusive, never a\n        \
+         silent pass: --gate-min-events (default {min_events}) sets that\n        \
+         evidence floor and --gate-z (default {z}) how many standard errors\n        \
+         a violation needs before it counts. See duels_arena::mechanism.\n\n    \
          duels-arena pairings [--format matrix|lines]\n        \
          Every round-robin pairing on the leaderboard ladder. \"matrix\" emits\n        \
          the GitHub Actions job matrix the nightly workflow fans out over.\n\n    \
@@ -137,7 +178,10 @@ fn print_usage() {
          load from other processes on the same machine -- see the\n\
          \"quiet machine\" note in duels_arena's crate docs before trusting a\n\
          small-sample time_ms comparison.\n",
-        KNOWN_AGENTS.join(", ")
+        KNOWN_AGENTS.join(", "),
+        gate = mechanism::DEFAULT_GATE,
+        min_events = mechanism::DEFAULT_MIN_EXPECTED_EVENTS,
+        z = mechanism::DEFAULT_Z_CRITICAL,
     );
 }
 
@@ -352,6 +396,32 @@ fn experiment_plan(flags: &Flags) -> Result<experiment::ExperimentPlan, String> 
         None => experiment::default_label(&candidate, &control),
     };
 
+    // Absent `--gate`, the default gate applies: forgetting the flag must not
+    // be silently equivalent to no mechanism check at all. `--gate none`
+    // disables it deliberately. See `duels_arena::mechanism::DEFAULT_GATE`.
+    let mut gate =
+        mechanism::MechanismGate::parse(flags.optional("gate").unwrap_or(mechanism::DEFAULT_GATE))?;
+    if let Some(g) = gate.as_mut() {
+        g.min_expected_events =
+            flags.parsed("gate-min-events", mechanism::DEFAULT_MIN_EXPECTED_EVENTS)?;
+        g.z_critical = flags.parsed("gate-z", mechanism::DEFAULT_Z_CRITICAL)?;
+        // Explicitly `is_sign_negative`-free and NaN-rejecting: a NaN knob
+        // would silently make every comparison in the gate false.
+        if !g.min_expected_events.is_finite()
+            || !g.z_critical.is_finite()
+            || g.min_expected_events < 0.0
+            || g.z_critical < 0.0
+        {
+            return Err(
+                "--gate-min-events and --gate-z must be finite, non-negative numbers".to_string(),
+            );
+        }
+    } else if flags.optional("gate-min-events").is_some() || flags.optional("gate-z").is_some() {
+        return Err(
+            "--gate-min-events / --gate-z tune a gate, but --gate none disabled it".to_string(),
+        );
+    }
+
     Ok(experiment::ExperimentPlan {
         cells: experiment::plan_cells(&ranges, &budgets),
         candidate,
@@ -360,6 +430,7 @@ fn experiment_plan(flags: &Flags) -> Result<experiment::ExperimentPlan, String> 
         label,
         early_stop,
         check_every_games: check_every,
+        gate,
     })
 }
 
@@ -405,6 +476,17 @@ fn run_experiment(args: &[String]) -> Result<(), String> {
         "sprt: H0 elo={:.1} vs H1 elo={:.1} (alpha={}, beta={})",
         plan.sprt.elo0, plan.sprt.elo1, plan.sprt.alpha, plan.sprt.beta
     );
+    match &plan.gate {
+        Some(g) => println!(
+            "mechanism gate: {} (evidence floor {:.0} expected events, {:.3} standard errors)\n\
+             note: the mechanism verdict is reported separately from the elo verdict and neither \
+             summarizes the other - read both.",
+            g.spec, g.min_expected_events, g.z_critical
+        ),
+        None => {
+            println!("mechanism gate: none (--gate none) - this run will judge aggregate elo only")
+        }
+    }
     if plan
         .cells
         .iter()
@@ -436,7 +518,16 @@ fn run_experiment(args: &[String]) -> Result<(), String> {
         md_path.display(),
         summary.cells.len()
     );
-    println!("verdict: {:?}", summary.verdict);
+    println!("elo verdict: {:?}", summary.verdict);
+    match &summary.mechanism {
+        Some(m) => {
+            println!("mechanism verdict: {:?} (gate {})", m.verdict, m.gate);
+            for c in &m.checks {
+                println!("  [{}] {} {:?} -- {}", c.budget, c.bound, c.outcome, c.note);
+            }
+        }
+        None => println!("mechanism verdict: none (no gate was evaluated)"),
+    }
     Ok(())
 }
 
@@ -766,6 +857,67 @@ mod tests {
             "200",
         ]));
         assert!(err.contains("overlap"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn experiment_defaults_to_the_default_gate_and_takes_none_to_opt_out() {
+        let plan_of = |extra: &[&str]| {
+            let mut args = experiment_args(&["--candidate", "random", "--control", "greedy"]);
+            args.extend(extra.iter().map(|s| s.to_string()));
+            experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
+        };
+
+        // No --gate at all is *not* "no check": the default gate applies.
+        let default = plan_of(&[]).unwrap();
+        let gate = default.gate.expect("a default gate should be in force");
+        assert_eq!(gate.spec, mechanism::DEFAULT_GATE);
+        assert_eq!(
+            gate.min_expected_events,
+            mechanism::DEFAULT_MIN_EXPECTED_EVENTS
+        );
+        assert_eq!(gate.z_critical, mechanism::DEFAULT_Z_CRITICAL);
+
+        // An explicit gate replaces it wholesale, in the order written.
+        let explicit = plan_of(&["--gate", "science_share>=0.8x,military_share<=1.5x"]).unwrap();
+        let gate = explicit.gate.unwrap();
+        assert_eq!(gate.bounds.len(), 2);
+        assert_eq!(gate.bounds[0].label(), "science_share>=0.8x");
+        assert_eq!(gate.bounds[1].label(), "military_share<=1.5x");
+
+        // Opting out is explicit and spelled out in the plan.
+        assert_eq!(plan_of(&["--gate", "none"]).unwrap().gate, None);
+
+        // The two knobs are wired through...
+        let tuned = plan_of(&["--gate-min-events", "12", "--gate-z", "2.33"]).unwrap();
+        let gate = tuned.gate.unwrap();
+        assert_eq!(gate.min_expected_events, 12.0);
+        assert_eq!(gate.z_critical, 2.33);
+
+        // ...and a malformed gate, or a knob with no gate to tune, is an
+        // error rather than a silently ignored flag.
+        assert!(plan_of(&["--gate", "frobnicate>=1x"]).is_err());
+        assert!(plan_of(&["--gate", ""]).is_err());
+        assert!(plan_of(&["--gate-min-events", "-1"]).is_err());
+        let err = plan_of(&["--gate", "none", "--gate-z", "2.0"]).unwrap_err();
+        assert!(err.contains("disabled it"), "unexpected: {err}");
+    }
+
+    /// `--help` used to die in the flag parser ("--help needs a value")
+    /// because every subcommand parser treats a `--flag` as taking one.
+    #[test]
+    fn help_anywhere_prints_usage_instead_of_failing_the_flag_parser() {
+        for args in [
+            vec!["experiment", "--help"],
+            vec!["match", "--help"],
+            vec!["experiment", "--candidate", "random", "-h"],
+            vec!["--help"],
+            vec!["help"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(String::from).collect();
+            run(&args).unwrap_or_else(|e| panic!("{args:?} should print usage, got: {e}"));
+        }
+        // Without a --help it still parses flags strictly.
+        assert!(run(&["experiment".to_string()]).is_err());
     }
 
     /// `--dry-run` must not play a single game, so it is safe to ask a big
