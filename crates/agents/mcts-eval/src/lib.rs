@@ -567,6 +567,33 @@
 //! a science-biased rollout finds more science wins largely by trading away
 //! civilian ones (84.3% -> 78.4%).
 //!
+//! ## The R-105/R-110 chance-model fix, for the record
+//!
+//! Measured in the same round and at the same budget, because it changes what
+//! *this* agent's chance nodes sample and so needed the same protocol —
+//! though it is a `duels_core` correctness fix rather than a knob here, and it
+//! shipped on being correct rather than on this number.
+//!
+//! `engine::chance_outcomes` and `force_outcome` used to reason from the
+//! *count* of hidden guilds while R-110 had already made the per-slot purple
+//! back public. So a chance node uncovering a purple-backed slot enumerated
+//! ordinary cards for it, and a re-derived layout could move a guild between
+//! two slots that both stayed face down. Both are now conditioned on the mask,
+//! exactly as `sample_state` already was.
+//!
+//! | | games | W-L-D | Elo | 95% CI |
+//! |---|---:|---|---:|---|
+//! | seeds `1..401` | 800 | 411-387-2 | +10.4 | [-13.7, +34.5] |
+//! | seeds `200001..200401` | 800 | 391-409-0 | -7.8 | [-31.9, +16.3] |
+//! | **pooled** | **1600** | **802-796-2** | **+1.3** | **[-15.7, +18.3]** |
+//!
+//! `+1.3`, i.e. nothing, which is the answer the change's own prior predicted:
+//! only Age III has guilds and only a reveal of a covered slot is touched at
+//! all. Worth keeping the two cells rather than only the pooled row, because
+//! they are this round's cleanest illustration of why one seed range is not
+//! evidence — `+10.4` and then `-7.8`, a sign flip, and the first range alone
+//! would have read as a promising `+10`.
+//!
 //! # The other knobs
 //!
 //! Every remaining [`Config`] field is `mcts-uct`'s, at `mcts-uct`'s tuned
