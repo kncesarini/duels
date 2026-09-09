@@ -15,16 +15,16 @@
 //!
 //! The distribution is re-derived here rather than reused, so it is pinned
 //! down by statistical tests against `engine::chance_outcomes` below. The
-//! derivation: the `slots` face-down slots of the current age hold `ng` guild
-//! cards and `nn = slots - ng` non-guild cards (`ng` is public — exactly
-//! three guilds are dealt into Age III). Which slots are the guild slots is a
-//! uniform subset, and the cards are a uniform injection from
-//! `unseen_guilds` (size `ug`) and `unseen_plain` (size `un`) — both pools
-//! larger than their slot counts, because three cards of the age went back in
-//! the box unseen and stay candidates all age. So for one slot the card is a
-//! guild with probability `ng / slots` and then uniform over the `ug`
-//! candidates; for two slots the types are drawn without replacement and the
-//! cards are distinct uniform draws from their pools.
+//! derivation: *which* face-down slots hold a guild is public (R-110 — a
+//! guild's purple card back is visible to both players), exposed as
+//! `HiddenInfo::hidden_guild_slots`. So a slot's class is not drawn at all;
+//! only the identity within the class is. A guild-backed slot's card is
+//! uniform over `unseen_guilds` (size `ug`), a plain-backed slot's over
+//! `unseen_plain` (size `un`) — both pools larger than their slot counts,
+//! because three cards of the age went back in the box unseen and stay
+//! candidates all age. Two slots that share a class are drawn from the one
+//! pool without replacement; two that do not are independent draws from
+//! disjoint pools.
 
 use duels_core::data::{CardId, TokenId};
 use duels_core::engine::{self, Outcome, RevealSlots};
@@ -134,43 +134,15 @@ fn sample_library(
     )
 }
 
-/// The candidate cards behind the current age's face-down slots, with the
-/// per-kind quotas that make an assignment publicly consistent.
-struct Pools {
-    guild: Vec<CardId>,
-    plain: Vec<CardId>,
-    guilds_left: u32,
-    plains_left: u32,
-}
-
-impl Pools {
-    /// Draw the card behind one specific face-down slot, given that `left`
-    /// face-down slots (including this one) are still unassigned. Returns the
-    /// card and the probability of having drawn it.
-    fn draw(&mut self, left: u32, rng: &mut StdRng) -> Option<(CardId, f64)> {
-        if left == 0 {
-            return None;
-        }
-        let take_guild = if self.guilds_left == 0 {
-            false
-        } else if self.plains_left == 0 {
-            true
-        } else {
-            rng.gen_bool(f64::from(self.guilds_left) / f64::from(left))
-        };
-        let (pool, quota) = if take_guild {
-            (&mut self.guild, &mut self.guilds_left)
-        } else {
-            (&mut self.plain, &mut self.plains_left)
-        };
-        if pool.is_empty() {
-            return None;
-        }
-        let p = f64::from(*quota) / f64::from(left) / pool.len() as f64;
-        *quota -= 1;
-        let card = pool.swap_remove(rng.gen_range(0..pool.len()));
-        Some((card, p))
+/// Draw one card uniformly out of `pool`, returning it with the probability
+/// of having drawn it. `None` for an empty pool.
+fn draw_one(pool: &mut Vec<CardId>, rng: &mut StdRng) -> Option<(CardId, f64)> {
+    if pool.is_empty() {
+        return None;
     }
+    let p = 1.0 / pool.len() as f64;
+    let card = pool.swap_remove(rng.gen_range(0..pool.len()));
+    Some((card, p))
 }
 
 fn sample_reveals(state: &GameState, action: Action, rng: &mut StdRng) -> (RevealSlots, f64) {
@@ -179,27 +151,34 @@ fn sample_reveals(state: &GameState, action: Action, rng: &mut StdRng) -> (Revea
         return ([None, None], 1.0);
     };
     let info = engine::hidden_info(state);
-    let total = info.hidden_slots.count_ones();
-    let guilds_left = info.hidden_guild_count;
-    let mut pools = Pools {
-        guild: info.unseen_guilds,
-        plain: info.unseen_plain,
-        guilds_left,
-        plains_left: total.saturating_sub(guilds_left),
-    };
+    let is_guild_slot = |slot: u8| info.hidden_guild_slots & (1u32 << slot) != 0;
+    let mut guild = info.unseen_guilds;
+    let mut plain = info.unseen_plain;
 
-    // Unreachable under the real rules (a face-down slot always has
-    // candidates); falling back to the trivial outcome keeps the search
-    // correct-by-the-engine rather than panicking, because a trivial forced
-    // outcome makes `apply_with_outcome` reveal whatever the state's own
-    // determinized layout holds.
-    let Some((c0, p0)) = pools.draw(total, rng) else {
+    // Unreachable under the real rules (a face-down slot's own card is unseen,
+    // so its class pool holds at least it); falling back to the trivial
+    // outcome keeps the search correct-by-the-engine rather than panicking,
+    // because a trivial forced outcome makes `apply_with_outcome` reveal
+    // whatever the state's own determinized layout holds.
+    let pool0 = if is_guild_slot(s0) {
+        &mut guild
+    } else {
+        &mut plain
+    };
+    let Some((c0, p0)) = draw_one(pool0, rng) else {
         return ([None, None], 1.0);
     };
     let mut out = [Some((s0, c0)), None];
     let mut p = p0;
     if let Some(s1) = slots[1] {
-        match pools.draw(total - 1, rng) {
+        // Drawing `c0` out of its pool above is exactly what makes two slots
+        // of the same class a without-replacement draw.
+        let pool1 = if is_guild_slot(s1) {
+            &mut guild
+        } else {
+            &mut plain
+        };
+        match draw_one(pool1, rng) {
             Some((c1, p1)) => {
                 out[1] = Some((s1, c1));
                 p *= p1;
@@ -329,6 +308,53 @@ mod tests {
             }
         }
         assert!(chance_nodes > 100, "expected plenty of chance actions");
+    }
+
+    /// R-110: a guild's purple card back is public, so a purple-backed slot
+    /// can only reveal a guild and a plain-backed one can only reveal an
+    /// ordinary card. `assert_matches_engine` above would also catch this
+    /// (a wrong-class card is outside the engine's support), but only on the
+    /// two positions it happens to find — and neither is in Age III, the only
+    /// age with guilds in it. This walks until it has seen both kinds of back.
+    #[test]
+    fn sampled_reveals_respect_the_public_guild_mask() {
+        let mut rng = StdRng::seed_from_u64(99);
+        let (mut purple, mut plain) = (0u32, 0u32);
+        for seed in 0..16u64 {
+            let mut st = engine::new_game(seed);
+            for _ in 0..400 {
+                let legal = legal_actions(&st);
+                if legal.is_empty() {
+                    break;
+                }
+                let mask = engine::hidden_info(&st).hidden_guild_slots;
+                for &a in &legal {
+                    if !resolves_randomness(&st, a) {
+                        continue;
+                    }
+                    for _ in 0..8 {
+                        let (o, _) = sample(&st, a, &mut rng);
+                        for (slot, card) in o.reveals.iter().flatten().copied() {
+                            let want = mask & (1u32 << slot) != 0;
+                            assert_eq!(
+                                card.def().is_guild(),
+                                want,
+                                "slot {slot} sampled {card:?} against a mask of {mask:#b}"
+                            );
+                            if want {
+                                purple += 1;
+                            } else {
+                                plain += 1;
+                            }
+                        }
+                    }
+                }
+                let a = legal[rng.gen_range(0..legal.len())];
+                engine::apply_unchecked(&mut st, a, &mut rng);
+            }
+        }
+        assert!(purple > 0, "never sampled a purple-backed slot");
+        assert!(plain > 0, "never sampled a plain-backed slot");
     }
 
     #[test]
