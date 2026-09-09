@@ -225,6 +225,64 @@ pub fn race_exposure(records: &[GameRecord]) -> RaceExposure {
     out
 }
 
+/// One side's wins, split by whether the game they came out of had a race in
+/// play at some point.
+///
+/// This is the *per-side* companion to [`RaceExposure`]. That struct counts
+/// games, and a game is one shared object: both agents in a match play it, so
+/// its exposure flags are identical for both and cannot say which agent's play
+/// the race belonged to. Asking instead "of the games **this side** won, how
+/// many were races?" gives each side its own number, which is what
+/// [`crate::mechanism`] needs in order to have a control to compare a
+/// candidate against.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SideWinRaceExposure {
+    /// Games this side won, of any kind — the denominator. Equals that side's
+    /// [`VictoryBreakdown::total`] over the same records.
+    pub wins: u32,
+    /// Of those wins, how many happened in a game where the military race was
+    /// exposed (see [`GameRecord::military_race_exposed`]).
+    pub military: u32,
+    /// Of those wins, how many happened in a game where the science race was
+    /// exposed (see [`GameRecord::science_race_exposed`]).
+    pub science: u32,
+}
+
+/// Both sides' [`SideWinRaceExposure`], from the "role A" / "role B"
+/// perspective (see [`GameRecord::agent_a_seat`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WinRaceExposure {
+    /// Role A's wins, split by race exposure.
+    pub a: SideWinRaceExposure,
+    /// Role B's wins, likewise.
+    pub b: SideWinRaceExposure,
+}
+
+/// Compute [`WinRaceExposure`] over `records`. Draws contribute to neither
+/// side, so `a.wins + b.wins + draws == records.len()` — the same accounting
+/// [`victory_breakdown`] follows.
+pub fn win_race_exposure(records: &[GameRecord]) -> WinRaceExposure {
+    let mut out = WinRaceExposure::default();
+    for r in records {
+        let Some(winner) = r.result.winner() else {
+            continue;
+        };
+        let side = if winner == r.agent_a_seat {
+            &mut out.a
+        } else {
+            &mut out.b
+        };
+        side.wins += 1;
+        if r.military_race_exposed {
+            side.military += 1;
+        }
+        if r.science_race_exposed {
+            side.science += 1;
+        }
+    }
+    out
+}
+
 /// Everything [`play_one_game`] learns about one finished game, before it is
 /// attached to a `seed`/`agent_a_seat` and turned into a [`GameRecord`].
 struct OneGameOutcome {
@@ -537,6 +595,33 @@ mod tests {
         // Every record is accounted for by exactly one of: A's breakdown, B's
         // breakdown, or a draw.
         assert_eq!(vb.a.total() + vb.b.total() + t.draws, t.total());
+    }
+
+    #[test]
+    fn per_side_win_race_exposure_splits_the_same_games_by_who_won_them() {
+        let seeds: Vec<u64> = (0..40).collect();
+        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let t = tally(&records);
+        let vb = victory_breakdown(&records);
+        let re = race_exposure(&records);
+        let wre = win_race_exposure(&records);
+
+        // The denominators agree with the two aggregates already derived from
+        // the same records, which is what lets `mechanism::MechanismCounts`
+        // assemble itself from both.
+        assert_eq!(wre.a.wins, t.a_wins);
+        assert_eq!(wre.b.wins, t.b_wins);
+        assert_eq!(wre.a.wins, vb.a.total());
+        assert_eq!(wre.b.wins, vb.b.total());
+        assert_eq!(wre.a.wins + wre.b.wins + t.draws, records.len() as u32);
+
+        // A side's exposed wins are a subset of its wins...
+        assert!(wre.a.military <= wre.a.wins);
+        assert!(wre.b.science <= wre.b.wins);
+        // ...and the two sides' exposed wins together never exceed the
+        // match-level exposed-game count, since a draw can also be exposed.
+        assert!(wre.a.military + wre.b.military <= re.military_games);
+        assert!(wre.a.science + wre.b.science <= re.science_games);
     }
 
     #[test]
