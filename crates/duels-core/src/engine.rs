@@ -388,61 +388,43 @@ fn slots_revealed_by(state: &GameState, action: Action) -> Vec<u8> {
         .collect()
 }
 
-fn perm(n: u32, k: u32) -> f64 {
-    if k > n {
-        return 0.0;
-    }
-    let mut out = 1.0;
-    for i in 0..k {
-        out *= f64::from(n - i);
-    }
-    out
-}
-
-fn comb(n: u32, k: u32) -> f64 {
-    if k > n {
-        return 0.0;
-    }
-    let k = k.min(n - k);
-    let mut out = 1.0;
-    for i in 0..k {
-        out *= f64::from(n - i) / f64::from(i + 1);
-    }
-    out
-}
-
-/// Probability that a specific set of `a` guild and `b` non-guild cards sits
-/// in `a + b` specific face-down slots.
-fn assignment_probability(h: &HiddenInfo, a: u32, b: u32) -> f64 {
-    let slots = h.hidden_slots.count_ones();
-    let ug = h.unseen_guilds.len() as u32;
-    let un = h.unseen_plain.len() as u32;
-    let ng = h.hidden_guild_count;
-    if ng > slots {
-        return 0.0;
-    }
-    let nn = slots - ng;
-    if a > ng || b > nn {
-        return 0.0;
-    }
-    let k = a + b;
-    let denom = comb(slots, ng) * perm(ug, ng) * perm(un, nn);
-    if denom == 0.0 {
-        return 0.0;
-    }
-    let numer = comb(slots - k, ng - a) * perm(ug - a, ng - a) * perm(un - b, nn - b);
-    numer / denom
-}
-
 /// Every way the randomness triggered by `action` could resolve, with
 /// probabilities computed from public knowledge only.
 ///
 /// Returns a single trivial outcome with probability 1 when the action
 /// resolves no randomness. Probabilities sum to 1 (up to floating-point
 /// rounding).
+///
+/// # What the distribution conditions on (R-105)
+///
+/// Everything public about the face-down slots, which since R-110 includes
+/// *which* of them hold a guild: a guild's purple card back is visible to
+/// both players. So a slot in [`HiddenInfo::hidden_guild_slots`] can only
+/// reveal a guild, a slot outside it can only reveal an ordinary card, and
+/// the identity within that class is a uniform draw from the matching unseen
+/// pool — the same conditioning [`crate::Observation::sample_state`] already
+/// applies (R-111). Because the classes are fixed per slot rather than
+/// distributed over the slots by a count, the enumeration needs no
+/// combinatorics: one slot is `1/|pool|` per card, and two slots are
+/// `1/(n·(n-1))` when they share a class and `1/(n₀·n₁)` when they do not.
+///
+/// This conditioning is what makes the distribution *accurate*; it does not
+/// make it leak. Every input is read off [`hidden_info`], whose fields are all
+/// public, so two determinizations of the same
+/// [`Observation`](crate::Observation) produce the same distribution — which
+/// `engine::tests::chance_outcomes_are_invariant_across_determinizations`
+/// asserts directly.
 pub fn chance_outcomes(state: &GameState, action: Action) -> Vec<(Outcome, f64)> {
     let reveal_slots = slots_revealed_by(state, action);
     let info = hidden_info(state);
+    let is_guild_slot = |slot: u8| info.hidden_guild_slots & (1u32 << slot) != 0;
+    let pool_for = |slot: u8| -> &[CardId] {
+        if is_guild_slot(slot) {
+            &info.unseen_guilds
+        } else {
+            &info.unseen_plain
+        }
+    };
 
     // The reveal half.
     let mut reveal_options: Vec<(RevealSlots, f64)> = Vec::new();
@@ -450,40 +432,40 @@ pub fn chance_outcomes(state: &GameState, action: Action) -> Vec<(Outcome, f64)>
         0 => reveal_options.push(([None, None], 1.0)),
         1 => {
             let slot = reveal_slots[0];
-            for (card, is_guild) in info
-                .unseen_guilds
-                .iter()
-                .map(|c| (*c, true))
-                .chain(info.unseen_plain.iter().map(|c| (*c, false)))
-            {
-                let p = if is_guild {
-                    assignment_probability(&info, 1, 0)
-                } else {
-                    assignment_probability(&info, 0, 1)
-                };
-                if p > 0.0 {
+            let pool = pool_for(slot);
+            if pool.is_empty() {
+                // Unreachable under the real rules: a face-down slot's own
+                // card is by definition unseen, so its class pool holds at
+                // least it. Falling back to the trivial outcome keeps the
+                // probabilities summing to 1 rather than returning nothing.
+                reveal_options.push(([None, None], 1.0));
+            } else {
+                let p = 1.0 / pool.len() as f64;
+                for &card in pool {
                     reveal_options.push(([Some((slot, card)), None], p));
                 }
             }
         }
         _ => {
             let (s0, s1) = (reveal_slots[0], reveal_slots[1]);
-            let pool: Vec<(CardId, bool)> = info
-                .unseen_guilds
-                .iter()
-                .map(|c| (*c, true))
-                .chain(info.unseen_plain.iter().map(|c| (*c, false)))
-                .collect();
-            for &(c0, g0) in &pool {
-                for &(c1, g1) in &pool {
-                    if c0 == c1 {
-                        continue;
-                    }
-                    let a = u32::from(g0) + u32::from(g1);
-                    let b = 2 - a;
-                    let p = assignment_probability(&info, a, b);
-                    if p > 0.0 {
-                        reveal_options.push(([Some((s0, c0)), Some((s1, c1))], p));
+            let (p0, p1) = (pool_for(s0), pool_for(s1));
+            // Same class means one pool drawn from twice without replacement;
+            // different classes means two disjoint pools, so `c0 != c1` below
+            // never fires and the count is the plain product.
+            let support = if is_guild_slot(s0) == is_guild_slot(s1) {
+                p0.len() * p0.len().saturating_sub(1)
+            } else {
+                p0.len() * p1.len()
+            };
+            if support == 0 {
+                reveal_options.push(([None, None], 1.0));
+            } else {
+                let p = 1.0 / support as f64;
+                for &c0 in p0 {
+                    for &c1 in p1 {
+                        if c0 != c1 {
+                            reveal_options.push(([Some((s0, c0)), Some((s1, c1))], p));
+                        }
                     }
                 }
             }
@@ -541,6 +523,22 @@ pub fn chance_outcomes(state: &GameState, action: Action) -> Vec<(Outcome, f64)>
 /// still-hidden slot's current card wherever that is consistent, so the
 /// perturbation stays as small as the constraints allow, and reassigns the
 /// rest deterministically.
+///
+/// # Preserving the public guild mask (R-105, R-110)
+///
+/// The re-derivation must not move a guild between two slots that both stay
+/// face down: which face-down slots are guilds is *public* (R-110), so doing
+/// so would silently rewrite public information. Every slot that stays hidden
+/// therefore keeps the class its own card back already shows, and only the
+/// identity within that class can move.
+///
+/// That is achievable exactly when the forced reveals agree with the mask,
+/// which is all [`chance_outcomes`] can produce. A hand-built outcome that
+/// puts a guild behind a plain back cannot preserve both the mask and the
+/// three-guild deal at once, so it falls back to the pre-R-110 rule —
+/// honour the guild *count* only — rather than failing. That keeps this
+/// function total for callers that construct outcomes themselves, and is the
+/// only path on which the mask can still shift.
 fn force_outcome(state: &mut GameState, outcome: &Outcome) -> Result<(), &'static str> {
     let forced: Vec<(u8, CardId)> = outcome.reveals.iter().flatten().copied().collect();
     if forced.is_empty() {
@@ -589,37 +587,78 @@ fn force_outcome(state: &mut GameState, outcome: &Outcome) -> Result<(), &'stati
     let deck = *state.age_deck(age);
     let mut assignment: Vec<Option<CardId>> = vec![None; remaining.len()];
 
-    // Keep each slot's current card where the quota and the pool allow it.
-    for (i, &slot) in remaining.iter().enumerate() {
-        let current = deck[slot as usize];
-        let is_guild = current.def().is_guild();
-        let (pool, quota) = if is_guild {
-            (&mut guild_pool, &mut guilds_needed)
-        } else {
-            (&mut plain_pool, &mut plains_needed)
-        };
-        if *quota == 0 {
-            continue;
+    // Do the forced reveals agree with the public per-slot guild mask? They
+    // always do when the outcome came from `chance_outcomes`.
+    let mask_consistent = forced.iter().all(|&(slot, card)| {
+        (info.hidden_guild_slots & (1u32 << slot) != 0) == card.def().is_guild()
+    });
+
+    if mask_consistent {
+        // Every slot that stays hidden keeps its own class, so the public mask
+        // is untouched on exactly the slots that remain public knowledge.
+        let wants_guild = |slot: u8| info.hidden_guild_slots & (1u32 << slot) != 0;
+        // Keep each slot's current card unless a forced reveal claimed it.
+        for (i, &slot) in remaining.iter().enumerate() {
+            let current = deck[slot as usize];
+            let pool = if wants_guild(slot) {
+                &mut guild_pool
+            } else {
+                &mut plain_pool
+            };
+            if let Some(at) = pool.iter().position(|&c| c == current) {
+                pool.swap_remove(at);
+                assignment[i] = Some(current);
+            }
         }
-        if let Some(at) = pool.iter().position(|&c| c == current) {
-            pool.swap_remove(at);
-            *quota -= 1;
-            assignment[i] = Some(current);
+        // Backfill the rest from that slot's own class pool.
+        for (i, &slot) in remaining.iter().enumerate() {
+            if assignment[i].is_some() {
+                continue;
+            }
+            let pool = if wants_guild(slot) {
+                &mut guild_pool
+            } else {
+                &mut plain_pool
+            };
+            assignment[i] =
+                Some(pool.pop().ok_or("ran out of candidate cards while forcing an outcome")?);
         }
-    }
-    // Fill whatever is left, guilds first.
-    for slot in assignment.iter_mut() {
-        if slot.is_some() {
-            continue;
+    } else {
+        // Pre-R-110 fallback: only the guild count is honoured, so a guild can
+        // move between two slots that both stay face down.
+        //
+        // Keep each slot's current card where the quota and the pool allow it.
+        for (i, &slot) in remaining.iter().enumerate() {
+            let current = deck[slot as usize];
+            let is_guild = current.def().is_guild();
+            let (pool, quota) = if is_guild {
+                (&mut guild_pool, &mut guilds_needed)
+            } else {
+                (&mut plain_pool, &mut plains_needed)
+            };
+            if *quota == 0 {
+                continue;
+            }
+            if let Some(at) = pool.iter().position(|&c| c == current) {
+                pool.swap_remove(at);
+                *quota -= 1;
+                assignment[i] = Some(current);
+            }
         }
-        let card = if guilds_needed > 0 {
-            guilds_needed -= 1;
-            guild_pool.pop()
-        } else {
-            plains_needed = plains_needed.saturating_sub(1);
-            plain_pool.pop()
-        };
-        *slot = Some(card.ok_or("ran out of candidate cards while forcing an outcome")?);
+        // Fill whatever is left, guilds first.
+        for slot in assignment.iter_mut() {
+            if slot.is_some() {
+                continue;
+            }
+            let card = if guilds_needed > 0 {
+                guilds_needed -= 1;
+                guild_pool.pop()
+            } else {
+                plains_needed = plains_needed.saturating_sub(1);
+                plain_pool.pop()
+            };
+            *slot = Some(card.ok_or("ran out of candidate cards while forcing an outcome")?);
+        }
     }
 
     let mut new_deck = deck;
@@ -2063,6 +2102,125 @@ mod tests {
             assert!(outcomes.iter().all(|(_, p)| *p > 0.0));
             apply(&mut st, a, &mut rng).unwrap();
         }
+    }
+
+    /// Walk seeded games and hand every chance action of every position to
+    /// `check`, together with the position it came from. Asserts the walk
+    /// actually reached Age III chance nodes with a purple back among the
+    /// slots being uncovered, since that is the only place R-110 has teeth.
+    fn for_each_chance_action(seeds: std::ops::Range<u64>, mut check: impl FnMut(&GameState, Action)) {
+        let mut rng = rng();
+        let mut purple_backed_reveals = 0;
+        for seed in seeds {
+            let mut st = new_game(seed);
+            for _ in 0..400 {
+                let legal = legal_actions(&st);
+                if legal.is_empty() {
+                    break;
+                }
+                let mask = hidden_info(&st).hidden_guild_slots;
+                for &a in &legal {
+                    let slots = slots_revealed_by(&st, a);
+                    if slots.is_empty() {
+                        continue;
+                    }
+                    purple_backed_reveals += slots
+                        .iter()
+                        .filter(|&&s| mask & (1u32 << s) != 0)
+                        .count();
+                    check(&st, a);
+                }
+                let a = legal[(seed as usize + 7) % legal.len()];
+                apply(&mut st, a, &mut rng).unwrap();
+            }
+        }
+        assert!(
+            purple_backed_reveals > 0,
+            "the walk never uncovered a purple-backed slot, so it proves nothing"
+        );
+    }
+
+    /// R-105 / R-110. A guild's purple card back is public, so a guild-backed
+    /// slot can only reveal a guild and a plain-backed slot can only reveal an
+    /// ordinary card. Before this was fixed, `chance_outcomes` reasoned from
+    /// the guild *count* and offered an ordinary card for a purple-backed slot
+    /// at nonzero probability.
+    #[test]
+    fn chance_outcomes_respect_the_public_guild_mask() {
+        for_each_chance_action(0..12, |st, a| {
+            let mask = hidden_info(st).hidden_guild_slots;
+            let outcomes = chance_outcomes(st, a);
+            let total: f64 = outcomes.iter().map(|(_, p)| p).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-9,
+                "probabilities summed to {total} for {a:?}"
+            );
+            for (o, p) in &outcomes {
+                assert!(*p > 0.0, "a zero-probability outcome: {o:?}");
+                for (slot, card) in o.reveals.iter().flatten().copied() {
+                    assert_eq!(
+                        card.def().is_guild(),
+                        mask & (1u32 << slot) != 0,
+                        "slot {slot} offers {card:?} against a mask of {mask:#b}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// R-105. The distribution is computed from public information only, so
+    /// two determinizations of the same `Observation` must produce the same
+    /// one — bit-for-bit on the probabilities, not merely the same support.
+    /// This is what makes conditioning on the guild mask a sharpening rather
+    /// than a leak.
+    #[test]
+    fn chance_outcomes_are_invariant_across_determinizations() {
+        for_each_chance_action(20..28, |st, a| {
+            let obs = st.observation();
+            let mut ra = StdRng::seed_from_u64(0xA11CE);
+            let mut rb = StdRng::seed_from_u64(0xB0B);
+            let (da, db) = (obs.sample_state(&mut ra), obs.sample_state(&mut rb));
+            let (oa, ob) = (chance_outcomes(&da, a), chance_outcomes(&db, a));
+            assert_eq!(oa.len(), ob.len(), "different support sizes for {a:?}");
+            for ((ea, pa), (eb, pb)) in oa.iter().zip(ob.iter()) {
+                assert_eq!(ea, eb, "different outcome enumerated for {a:?}");
+                assert_eq!(pa.to_bits(), pb.to_bits(), "different probability for {ea:?}");
+            }
+        });
+    }
+
+    /// R-105 / R-110. Forcing an outcome re-derives the hidden layout, and
+    /// that re-derivation must not move a guild between two slots that both
+    /// stay face down: the mask is public, so shifting it would silently
+    /// rewrite public information.
+    #[test]
+    fn forcing_an_outcome_preserves_the_public_guild_mask() {
+        for_each_chance_action(30..38, |st, a| {
+            let before = hidden_info(st).hidden_guild_slots;
+            let age = st.age();
+            // Every 13th outcome: the support runs to hundreds for a two-slot
+            // reveal, and forcing each one is not free.
+            for (o, _) in chance_outcomes(st, a).into_iter().step_by(13) {
+                let mut next = *st;
+                apply_with_outcome(&mut next, a, &o).expect("an enumerated outcome is forceable");
+                if next.age() != age {
+                    // The age ended and the whole structure was re-dealt;
+                    // there is no old mask to compare against.
+                    continue;
+                }
+                let after = hidden_info(&next);
+                assert_eq!(
+                    after.hidden_guild_slots,
+                    before & after.hidden_slots,
+                    "the guild mask moved on slots that stayed face down, forcing {o:?}"
+                );
+                assert_eq!(
+                    after.hidden_guild_slots.count_ones(),
+                    after.hidden_guild_count,
+                    "the mask and the guild count disagree after forcing {o:?}"
+                );
+            }
+        });
     }
 
     #[test]
