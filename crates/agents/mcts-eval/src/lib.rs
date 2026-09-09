@@ -474,6 +474,99 @@
 //! cargo run --release -p duels-eval --example calibrate -- 200
 //! ```
 //!
+//! # Re-measured at the production budget
+//!
+//! Every knob above was tuned at `Nodes(2000)`. `duels-server` hands this
+//! agent `Budget::TimeMs(1000)` in a live room, more than an order of
+//! magnitude away, and this section is what happens when the candidates that
+//! looked promising at the small budget are re-asked at a large one. The
+//! short version: **a small budget systematically overstates how much the
+//! rollout-policy knobs are worth**, because most of what they buy is
+//! something a deeper tree finds on its own.
+//!
+//! ## Why a node budget stands in for the wall-clock one
+//!
+//! A `TimeMs` comparison cannot be trusted on a shared machine. The "quiet
+//! machine" note in `duels_arena` is there because this project has thrown
+//! away results to exactly that, and this round was measured with three other
+//! agents' arena runs on the same box. A node budget is immune in the way
+//! that matters: contention makes a `Nodes` run *slower*, never *wrong*,
+//! because the simulations per decision are fixed by the budget instead of by
+//! whatever the scheduler handed out.
+//!
+//! So the protocol is a node budget picked to stand in for the production
+//! one. Self-play cost, measured on a quiet machine:
+//!
+//! | budget | wall clock per game |
+//! |---|---|
+//! | `Nodes(32000)` | **21.7 s** |
+//! | `TimeMs(1000)` | **68.6 s** |
+//!
+//! That table is a finding in its own right and worth reading before reusing
+//! the number. `Nodes(32000)` was chosen because an earlier estimate put
+//! `TimeMs(1000)` at 32-34k simulations; on this machine today it buys about
+//! **three times** that. So `Nodes(32000)` is a *conservative* stand-in — the
+//! right order of magnitude and sixteen times the budget every figure above
+//! was tuned at, but about a third of what the server actually spends. Read
+//! each row below as "at 16x the tuning budget"; a null there is strong
+//! evidence against a candidate at production scale without being proof.
+//!
+//! ## The rollout-policy knobs, at 16x the budget they were tuned at
+//!
+//! 1600 games per arm, two disjoint seed ranges (`1..401` and
+//! `200001..200401`, 800 games each), paired-seed and seat-swapped, candidate
+//! against [`Config::default`]. SPRT H0 = 0 vs H1 = 20 Elo, alpha = beta =
+//! 0.05. The mechanism gate was pre-registered as
+//! `civilian_share>=0.8x,science_share>=0.8x,military_share>=0.8x` — floors on
+//! all three lanes, because both candidates claim to change *how* the search
+//! wins and a floor objects to a lane getting worse without objecting to one
+//! that improved.
+//!
+//! | candidate | pooled Elo | 95% CI | cells | Elo verdict | gate |
+//! |---|---|---|---|---|---|
+//! | [`RaceWeights::TIER1_ONLY`] | **+6.3** | [-10.7, +23.3] | +3.9 / +8.7 | Inconclusive | Pass |
+//! | [`RolloutWeights::SMART`] | **+10.9** | [-6.2, +27.9] | +6.1 / +15.6 | Inconclusive | Pass |
+//!
+//! **[`RaceWeights::TIER1_ONLY`] does not reproduce at this budget.** Its
+//! `+26.1` Elo — measured over 1200 games at `Nodes(2000)`, quoted in its own
+//! documentation and in "The other knobs" below — becomes `+6.3` with an
+//! interval that comfortably contains zero. The two figures are not in
+//! conflict; they are the same effect at two budgets, and the mechanism says
+//! why it shrinks. Tier 1 is the *terminal rails*: a rollout that never misses
+//! a win already available. That is worth a lot when the tree is shallow
+//! enough that a rollout is most of what the search knows, and progressively
+//! less as the tree itself gets deep enough to see the win without help. Its
+//! military share does rise (14.7% against 12.5%), so it is still doing what
+//! it says — it just no longer buys Elo for it.
+//!
+//! **[`RolloutWeights::SMART`] was rejected on far too little data, and the
+//! honest re-read is still not an accept.** The standing verdict in
+//! `rollout`'s module docs came from two 40-game `TimeMs` runs on a loaded
+//! machine (47.5% and 50.0%), which at n=40 is a ~7.9-point standard error —
+//! wide enough to hide anything smaller than 55 Elo. At 1600 games it
+//! measures `+10.9` and reproduces its sign on both ranges, so "statistically
+//! indistinguishable from a coin flip" was an artefact of the sample size, not
+//! a finding. But `+10.9 [-6.2, +27.9]` is not an accept either, and it costs
+//! 10-25% throughput at a wall-clock budget, which this node-budget row does
+//! not charge it for. **Still non-default, now for a defensible reason.**
+//!
+//! The sharper result is the mechanism, which nothing at n=40 could have seen:
+//!
+//! | arm | military | science | civilian | tiebreak |
+//! |---|---|---|---|---|
+//! | `rollout=smart` | 13.5% | **6.2%** | 78.4% | 1.9% |
+//! | `Config::default` | 13.0% | **1.9%** | 84.3% | 0.8% |
+//!
+//! `SMART`'s per-card multipliers are exactly "prefer a build that grants a
+//! new scientific symbol or completes a pair", and they **triple** the share
+//! of wins that arrive as a scientific victory (z = 7.9) while leaving
+//! military alone. So the knob does what it was designed to do, at the
+//! mechanism level, unambiguously — and converts almost none of it into Elo.
+//! That is a cleaner statement of the same lesson the pure-static leaf
+//! taught: this game punishes a policy that commits to one win condition, and
+//! a science-biased rollout finds more science wins largely by trading away
+//! civilian ones (84.3% -> 78.4%).
+//!
 //! # The other knobs
 //!
 //! Every remaining [`Config`] field is `mcts-uct`'s, at `mcts-uct`'s tuned
@@ -481,9 +574,12 @@
 //! being restated here:
 //!
 //! - [`Config::race`] — [`RaceWeights::TIER1_ONLY`]'s terminal rails,
-//!   `+26.1` Elo, additive with this crate's leaf value (see the composition
-//!   table above), and non-default because the hypothesis it was built to test
-//!   did not survive.
+//!   `+26.1` Elo **at `Nodes(2000)`**, additive with this crate's leaf value
+//!   (see the composition table above), and non-default because the hypothesis
+//!   it was built to test did not survive. Re-measured at `Nodes(32000)` it is
+//!   `+6.3 [-10.7, +23.3]` over 1600 games and no longer distinguishable from
+//!   zero — see "Re-measured at the production budget" above before quoting
+//!   the `+26.1` at any budget near the server's.
 //! - [`Config::prior`] — [`PriorMode`], `duels-strategy` steering the tree.
 //!   Reproducibly steers visits towards races; reproducibly fails to convert
 //!   that into Elo (`+11.7` at `Nodes` with an interval containing zero,
