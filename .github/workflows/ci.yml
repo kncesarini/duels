@@ -139,7 +139,30 @@ jobs:
       - name: Install Playwright browsers
         if: steps.filter.outputs.web == 'true'
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        # `ubuntu-latest` ships Google Chrome preinstalled, with its own apt
+        # source (dl.google.com/linux/chrome-stable/deb) preconfigured. We
+        # don't use system Chrome - `playwright install --with-deps` only
+        # needs Ubuntu's own library packages to run its bundled Chromium -
+        # but that command still `apt-get update`s every configured source,
+        # including Google's, and that repo has been intermittently serving
+        # an InRelease/Packages pair whose hashes don't match ("Hash Sum
+        # mismatch"), which fails the whole apt-get update (and so the whole
+        # install) even though nothing we do actually reads from it. Drop
+        # the source before touching apt, and retry with backoff in case of
+        # any other transient mirror hiccup (e.g. the Azure archive mirror).
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          for attempt in 1 2 3 4 5; do
+            echo "Install attempt $attempt"
+            if sudo apt-get update && npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed; clearing apt cache and backing off"
+            sudo rm -rf /var/lib/apt/lists/*
+            sleep $((attempt * 15))
+          done
+          echo "::error::Failed to install Playwright browsers after 5 attempts"
+          exit 1
       - name: Play a full game end to end through the UI
         if: steps.filter.outputs.web == 'true'
         working-directory: web
