@@ -117,6 +117,25 @@
 //! `Rationed` is not the default — but the rule is worth stating where it gets
 //! violated, which is here rather than in `duels-eval`.
 //!
+//! **The rule's hardest case, and why it is a `Config` option rather than a
+//! fix.** `duels_eval::TermWeights` — the commitment blend's per-term
+//! multipliers — is a quantity about the position by the rule above, and the
+//! `Root` this tree shares does hold it. `duels-eval` root-fixes it
+//! *deliberately*, though, and has a test pinning that: at one ply a weight
+//! that moved with the candidate action would credit a committing move twice,
+//! once through the term's contents and again through the multiplier on them.
+//! So this is not a `p_build`-shaped defect with an obvious repair — the same
+//! reading is right for `phased` and stale for this tree.
+//!
+//! `duels_eval::ScienceProgress` is round ten's answer for the one factor of
+//! it that can be re-read cheaply (the science weight's progress half, at the
+//! cost of one `distinct_science()` per `player_value` — a whole `Root`
+//! rebuild is six and a half evaluations and is what the cost table above
+//! rules out). It is **off by default**; see that enum's docs and this crate's
+//! `Config` for whether measurement moved it. The rest of the blend's weights
+//! remain root-fixed here, and are the known residue of the cheap
+//! integration, alongside the calibration staleness above.
+//!
 //! # Where the perspective flip is (and is not)
 //!
 //! [`static_value`] always evaluates for [`Player::One`], because that is the

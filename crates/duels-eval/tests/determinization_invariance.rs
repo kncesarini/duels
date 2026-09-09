@@ -35,7 +35,8 @@ use duels_core::{engine, Action, GameState, Player};
 use duels_eval::{
     evaluate, expected_value, rail_owner, win_probability, Blend, CoinModel, Config, CountPricing,
     EconomyModel, EvalWeights, GuildPricing, MenuFloor, MenuShieldPricing, MilitaryModel,
-    PendingModel, RailModel, ReachModel, Root, ScienceWeights, SupplyModel, WonderModel,
+    PendingModel, RailModel, ReachModel, Root, ScienceProgress, ScienceWeights, SupplyModel,
+    WonderModel,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -460,6 +461,32 @@ fn the_property_holds_under_every_model_combination() {
                     ..Config::default()
                 });
             }
+        }
+    }
+    // Round ten's one option. `ScienceProgress::Leaf` re-reads
+    // `distinct_science()` off the state being scored — a count of the
+    // mover's *own built cards*, which is public — and feeds it back through
+    // the root's Hill shape. It is swept against both reach models and a
+    // ladder that pays from the first symbol, because the multiplier it moves
+    // sits on top of exactly the rung the reachability walk gates: if either
+    // could see a face-down identity, the product would.
+    for science_progress in [ScienceProgress::Root, ScienceProgress::Leaf] {
+        for reach_model in [ReachModel::Optimistic, ReachModel::Structure] {
+            configs.push(Config {
+                blend: Blend {
+                    science_progress,
+                    ..Blend::default()
+                },
+                eval: EvalWeights {
+                    science: ScienceWeights {
+                        reach_model,
+                        ladder: [0.0, 5.0, 10.0, 20.0, 40.0, 80.0],
+                        ..Config::default().eval.science
+                    },
+                    ..Config::default().eval
+                },
+                ..Config::default()
+            });
         }
     }
     for (i, config) in configs.iter().enumerate() {
