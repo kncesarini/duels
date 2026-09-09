@@ -8,7 +8,7 @@ server-authoritative game server, and a TypeScript/React web client.
 ## Status: M2 (playable slice)
 
 A person can now play a full game of 7 Wonders Duel end to end in a browser,
-human vs. the random bot or hot-seat (two humans, one tab). `duels-core`
+human vs. an AI opponent or hot-seat (two humans, one tab). `duels-core`
 (M1) is a complete, tested implementation of the base game; everything
 downstream — the server, agents, the web client — reads state from it and
 submits `Action`s back, never implementing rules logic itself.
@@ -22,7 +22,11 @@ submits `Action`s back, never implementing rules logic itself.
   - `crates/duels-agents-api` — the `Agent` trait contract that AI/bot
     players implement against (`CONTRACT_VERSION = 2`).
   - `crates/agents/random` — `RandomAgent`, the first concrete `Agent`:
-    uniformly picks among the actions it's offered.
+    uniformly picks among the actions it's offered. Retired from the agent
+    roster and kept only as a **test fixture** — the correctness floor other
+    agents are measured against; a dev-dependency, not registered anywhere.
+  - `crates/agents/phased`, `alphabeta`, `mcts-uct`, `mcts-eval` — the four
+    agents on the ladder, weakest first. `mcts-eval` is the champion.
   - `crates/duels-arena` — the tournament runner: paired-seed seat-swapped
     matches, logistic Elo (pairwise and jointly over a whole round robin),
     SPRT, and the leaderboard published at
@@ -133,6 +137,11 @@ crates/
     src/catalog.rs            static card/wonder/token/military reference data
   agents/
     random/                 RandomAgent: uniformly picks among legal actions
+                              (retired from the roster; a test fixture only)
+    phased/                 1-ply agent over duels-eval
+    alphabeta/              expectimax + alpha-beta, simulation leaves
+    mcts-uct/               chance-node MCTS, playout leaves; the Elo anchor
+    mcts-eval/              MCTS with a playout/duels-eval blended leaf; the champion
 web/                        Vite + React 18 + TypeScript + Zustand + Tailwind client
   src/generated/            TypeScript bindings generated from duels-core/duels-server
   e2e/                      Playwright spec: full game through the rendered UI

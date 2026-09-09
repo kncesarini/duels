@@ -1,8 +1,10 @@
 //! `duels-arena`: the tournament runner and statistical comparison framework
 //! for `Agent` implementations.
 //!
-//! - [`agent_registry`] looks up a boxed `Agent` by bare name (`"random"`
-//!   today; add one match arm per new agent crate as it lands).
+//! - [`agent_registry`] looks up a boxed `Agent` by bare name (`"phased"`,
+//!   `"mcts-uct"`, ...; add one match arm per new agent crate as it lands).
+//!   Being registered there *is* what puts an agent on the roster — the
+//!   retired ones are absent, deliberately.
 //! - [`agent_spec`] generalizes that into a *specification string* — a bare
 //!   name, or a name plus `key=value` parameters
 //!   (`"mcts-uct:exploration=1.2"`) that build one specific agent crate's own

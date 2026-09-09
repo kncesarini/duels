@@ -228,5 +228,6 @@ for AI training.
    still-hidden slots when it re-derives a layout. Neither is a leak and
    neither can produce an illegal state; both are avoidable inaccuracies.
    Fixing them is a behaviour change to every chance-node agent
-   (`greedy-ev`, `alphabeta`, `mcts-uct`, `mcts-eval`) and so belongs in its
+   (`alphabeta`, `mcts-uct`, `mcts-eval`, and `phased` through
+   `duels-eval`) and so belongs in its
    own arena-measured PR, not in the one that added the field.

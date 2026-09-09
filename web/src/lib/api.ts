@@ -38,7 +38,7 @@ export function fetchCatalog(): Promise<Catalog> {
 }
 
 /** Every agent name `POST /rooms` will accept for an agent seat, in the
- * order the opponent picker should offer them (`"random"` first). Backed by
+ * order the opponent picker should offer them (`"phased"` first). Backed by
  * `duels-server`'s `room::KNOWN_AGENTS` so the UI never hand-maintains its
  * own copy that could drift from what the server actually knows how to
  * construct. */

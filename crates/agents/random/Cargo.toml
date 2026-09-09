@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "The first concrete Agent: uniformly picks among the legal actions it is given."
+description = "Test-only fixture (retired from the agent roster): an Agent that uniformly picks among the legal actions it is given, used as the correctness floor other agents are measured against."
 
 [dependencies]
 duels-core = { path = "../../duels-core" }

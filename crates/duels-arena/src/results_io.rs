@@ -80,7 +80,7 @@ mod tests {
         ));
         let path = dir.join("results.json");
 
-        let records = play_paired_match("random", "random", &[1, 2], Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &[1, 2], Budget::Nodes(1)).unwrap();
         write_results(&path, &records).expect("write should create parent dirs and succeed");
 
         let back = read_results(&path).expect("read back what was just written");

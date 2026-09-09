@@ -1,5 +1,5 @@
 //! End-to-end test: spin up the real server on an ephemeral port, create a
-//! human-vs-`random` room over REST, then drive the human seat over a raw
+//! human-vs-`phased` room over REST, then drive the human seat over a raw
 //! WebSocket connection with a scripted "always pick `legal[0]`" policy
 //! until the game reaches a [`duels_core::GameResult`].
 //!
@@ -28,7 +28,7 @@ async fn spawn_server() -> SocketAddr {
 }
 
 #[tokio::test]
-async fn a_full_game_against_the_random_bot_reaches_a_result() {
+async fn a_full_game_against_the_cheapest_bot_reaches_a_result() {
     let addr = spawn_server().await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
@@ -39,7 +39,7 @@ async fn a_full_game_against_the_random_bot_reaches_a_result() {
             seats: [
                 SeatSpec::Human,
                 SeatSpec::Agent {
-                    name: "random".to_string(),
+                    name: "phased".to_string(),
                 },
             ],
             seed: Some(20260904),
@@ -139,18 +139,19 @@ async fn creating_a_room_with_an_unknown_agent_is_rejected() {
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 }
 
-/// Smoke-tests every non-`random` agent `room::KNOWN_AGENTS` lists: creates a
-/// human-vs-agent room and drives a handful of human decisions ("always pick
-/// `legal[0]`"), checking that the agent seat actually replies with a fresh
-/// `State` broadcast each time rather than erroring or hanging. Doesn't play
-/// to completion (unlike the `random` test above) since `alphabeta` and
-/// `mcts-uct` run a real, if bounded, search per move under the server's
-/// interactive `Budget` and this only needs to prove the wiring works.
+/// Smoke-tests every agent `room::KNOWN_AGENTS` lists except `phased`:
+/// creates a human-vs-agent room and drives a handful of human decisions
+/// ("always pick `legal[0]`"), checking that the agent seat actually replies
+/// with a fresh `State` broadcast each time rather than erroring or hanging.
+/// Doesn't play to completion (unlike the `phased` test above) since
+/// `alphabeta`, `mcts-uct` and `mcts-eval` run a real, if bounded, search per
+/// move under the server's interactive `Budget` and this only needs to prove
+/// the wiring works.
 #[tokio::test]
-async fn every_known_agent_besides_random_can_play_a_few_turns() {
+async fn every_known_agent_besides_the_cheapest_can_play_a_few_turns() {
     for name in duels_server::room::KNOWN_AGENTS
         .iter()
-        .filter(|n| **n != "random")
+        .filter(|n| **n != "phased")
     {
         let addr = spawn_server().await;
         let base = format!("http://{addr}");
@@ -210,7 +211,7 @@ async fn every_known_agent_besides_random_can_play_a_few_turns() {
 }
 
 #[tokio::test]
-async fn get_agents_lists_random_first_and_every_known_agent() {
+async fn get_agents_lists_the_cheapest_first_and_every_known_agent() {
     let addr = spawn_server().await;
     let base = format!("http://{addr}");
     let client = reqwest::Client::new();
@@ -224,7 +225,9 @@ async fn get_agents_lists_random_first_and_every_known_agent() {
         .await
         .expect("decode agent list");
 
-    assert_eq!(agents.first().map(String::as_str), Some("random"));
+    // The picker is ordered weakest/cheapest first; `random`, `greedy` and
+    // `greedy-ev` were retired, so that is now `phased`.
+    assert_eq!(agents.first().map(String::as_str), Some("phased"));
     for name in duels_server::room::KNOWN_AGENTS {
         assert!(
             agents.iter().any(|a| a == name),
@@ -273,7 +276,7 @@ async fn player_views_price_every_slot_for_both_seats() {
             seats: [
                 SeatSpec::Human,
                 SeatSpec::Agent {
-                    name: "random".to_string(),
+                    name: "phased".to_string(),
                 },
             ],
             seed: Some(7),

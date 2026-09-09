@@ -2,22 +2,23 @@
 //!
 //! A tiny `match` on a string name, not a plugin system: the brief for this
 //! crate explicitly asks for the cheapest thing that lets sibling agent
-//! crates (`greedy`, `alphabeta`, `mcts-uct`, ...) be wired in with one new
+//! crates (`phased`, `alphabeta`, `mcts-uct`, ...) be wired in with one new
 //! arm each, once they exist. Mirrors `duels-server`'s `room::make_agent`.
+//!
+//! Registration here is what makes an agent part of the roster: it is what
+//! `agent_spec` bare names resolve through, and
+//! `leaderboard::tests::the_ladder_is_exactly_the_registered_agents` pins
+//! [`KNOWN_AGENTS`] and `leaderboard::LADDER` to each other. `random`,
+//! `greedy`, `greedy-ev` and `strategist` were retired from the roster and so
+//! are absent here; `duels-agent-random`'s crate survives as a
+//! *dev-dependency* test fixture and deliberately cannot be named through
+//! this function. See `docs/milestones.md`.
 
 use duels_agents_api::Agent;
 
 /// Every agent name this build of `duels-arena` knows how to construct, for
 /// `--help` text and error messages.
-pub const KNOWN_AGENTS: &[&str] = &[
-    "random",
-    "greedy",
-    "greedy-ev",
-    "phased",
-    "alphabeta",
-    "mcts-uct",
-    "mcts-eval",
-];
+pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval"];
 
 /// Construct the named `Agent`, seeded from `seed`.
 ///
@@ -25,9 +26,6 @@ pub const KNOWN_AGENTS: &[&str] = &[
 /// crate needs to change.
 pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String> {
     match name {
-        "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
-        "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
-        "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
         "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
@@ -44,24 +42,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn random_is_registered() {
-        let agent = make_agent("random", 1).expect("random should be a known agent");
-        assert_eq!(agent.spec().name, "random");
-    }
-
-    #[test]
-    fn greedy_ev_is_registered() {
-        let agent = make_agent("greedy-ev", 1).expect("greedy-ev should be a known agent");
-        assert_eq!(agent.spec().name, "greedy-ev");
-    }
-
-    #[test]
-    fn strategist_is_retired() {
-        // Retired: its research question (whether `duels-strategy`'s prior
-        // helps `greedy-ev`) was answered statistically indistinguishable.
-        // See `docs/milestones.md`.
-        assert!(make_agent("strategist", 1).is_err());
-        assert!(!KNOWN_AGENTS.contains(&"strategist"));
+    fn the_retired_agents_are_retired() {
+        // `strategist`: its research question (whether `duels-strategy`'s
+        // prior helps `greedy-ev`) was answered statistically
+        // indistinguishable. `random`, `greedy` and `greedy-ev`: retired for
+        // measured strength far below the rest of the roster, the same
+        // reason. `greedy`, `greedy-ev` and `strategist` are gone from the
+        // workspace entirely; `duels-agent-random` survives as a
+        // *dev-dependency* test fixture, which is exactly why this asserts
+        // that the name is still rejected here. See `docs/milestones.md`.
+        for retired in ["random", "greedy", "greedy-ev", "strategist"] {
+            assert!(
+                make_agent(retired, 1).is_err(),
+                "{retired} should not be constructible"
+            );
+            assert!(!KNOWN_AGENTS.contains(&retired), "{retired} still listed");
+        }
     }
 
     #[test]
@@ -90,6 +86,6 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("nonexistent"));
-        assert!(err.contains("random"));
+        assert!(err.contains("phased"));
     }
 }

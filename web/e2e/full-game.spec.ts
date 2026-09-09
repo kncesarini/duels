@@ -57,7 +57,7 @@ async function takeATurn(page: Page): Promise<boolean> {
   return false;
 }
 
-test("plays a full game against the random bot, from the home screen to the end screen", async ({ page }) => {
+test("plays a full game against the default bot, from the home screen to the end screen", async ({ page }) => {
   test.setTimeout(180_000);
 
   await page.goto("/");

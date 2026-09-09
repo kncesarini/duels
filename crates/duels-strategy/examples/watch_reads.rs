@@ -8,14 +8,13 @@
 //!
 //! ```text
 //! cargo run --release -p duels-strategy --example watch_reads
-//! cargo run --release -p duels-strategy --example watch_reads -- 7 greedy random
-//! cargo run --release -p duels-strategy --example watch_reads -- 7 greedy random --quiet
+//! cargo run --release -p duels-strategy --example watch_reads -- 7
+//! cargo run --release -p duels-strategy --example watch_reads -- 7 --quiet
 //! cargo run --release -p duels-strategy --example watch_reads -- --calibration
 //! ```
 //!
-//! Arguments, all optional: `seed`, `player-one agent`, `player-two agent`
-//! (`greedy` or `random`), and `--quiet` to print only the turns where a
-//! classification changed.
+//! Arguments, all optional: `seed`, then `--quiet` to print only the turns
+//! where a classification changed.
 //!
 //! `--calibration` skips the game entirely and renders the hand-built
 //! positions from `tests/threat_calibration.rs` instead — the four-symbol
@@ -23,12 +22,21 @@
 //! so the numbers those tests assert can be read in context rather than as
 //! bare floats in an assertion message.
 //!
-//! The default pairing is `greedy` vs `random`, which is the matchup that
-//! motivated this crate: `greedy` carries explicit military-race terms in its
-//! evaluation and still loses to `random` by military supremacy in roughly one
-//! game in ten, because a one-ply evaluation cannot see a race two moves out.
+//! # Why both seats are random
+//!
+//! The matchup that motivated this crate was `greedy` vs `random`: `greedy`
+//! carried explicit military-race terms in its evaluation and still lost to
+//! `random` by military supremacy in roughly one game in ten, because a
+//! one-ply evaluation cannot see a race two moves out. That finding is why
+//! `action_prior` exists and it still stands — but `greedy` has since been
+//! retired from the roster (see `docs/milestones.md`), and this crate sits
+//! *below* `duels-eval` in the layering, so `phased` is not available to it
+//! either: dev-depending on any surviving agent would close a dependency
+//! cycle. Both seats are therefore driven by `duels-agent-random`, the one
+//! agent crate below this one. The reads being narrated do not depend on who
+//! is moving, so this is still the diagnostic it was; the games are just
+//! weaker.
 
-use duels_agent_greedy::GreedyAgent;
 use duels_agent_random::RandomAgent;
 use duels_agents_api::{Agent, Budget};
 use duels_core::data::Science;
@@ -42,15 +50,8 @@ use duels_strategy::{
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-fn make_agent(name: &str, seed: u64) -> Box<dyn Agent> {
-    match name {
-        "random" => Box::new(RandomAgent::new(seed)),
-        "greedy" => Box::new(GreedyAgent::new(seed)),
-        other => {
-            eprintln!("unknown agent {other:?}; using greedy");
-            Box::new(GreedyAgent::new(seed))
-        }
-    }
+fn make_agent(seed: u64) -> Box<dyn Agent> {
+    Box::new(RandomAgent::new(seed))
 }
 
 fn military_label(s: MilitaryStatus) -> &'static str {
@@ -559,17 +560,14 @@ fn main() {
     }
     let mut args = std::env::args().skip(1);
     let seed: u64 = args.next().and_then(|a| a.parse().ok()).unwrap_or(11);
-    let one = args.next().unwrap_or_else(|| "greedy".to_string());
-    let two = args.next().unwrap_or_else(|| "random".to_string());
     let quiet = std::env::args().any(|a| a == "--quiet");
 
-    let mut agents: [Box<dyn Agent>; 2] =
-        [make_agent(&one, seed ^ 0xA1), make_agent(&two, seed ^ 0xB2)];
+    let mut agents: [Box<dyn Agent>; 2] = [make_agent(seed ^ 0xA1), make_agent(seed ^ 0xB2)];
     let mut state = engine::new_game(seed);
     let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
 
     println!("=======================================================================");
-    println!(" watch_reads: seed {seed}   P1 = {one}   P2 = {two}");
+    println!(" watch_reads: seed {seed}   P1 = random   P2 = random");
     if quiet {
         println!(" --quiet: printing only the turns where a classification changed");
     }

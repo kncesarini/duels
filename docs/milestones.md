@@ -17,8 +17,8 @@ milestone table is too coarse to show.
 | **M0** Scaffold | workspace, CI, contracts, ADRs | ✅ Done |
 | **M1** Rules engine | `duels-core`: legality, cost, effects, scoring, property tests | ✅ Done |
 | **M2a** UI shell | React client, all screens | ✅ Done (rebuilt to the table design, PR #28) |
-| **M2b** Server + playable | axum rooms, WebSocket, `random` agent, e2e | ✅ Done |
-| **M3** Classical AIs | `greedy`, `alphabeta` | ✅ Done — plus `greedy-ev`, `strategist`, `phased` beyond original scope |
+| **M2b** Server + playable | axum rooms, WebSocket, `random` agent, e2e | ✅ Done — `random` has since been retired from the roster (see Current work); the e2e plays against `phased` |
+| **M3** Classical AIs | `greedy`, `alphabeta` | ✅ Done — plus `greedy-ev`, `strategist`, `phased` beyond original scope; `greedy`, `greedy-ev` and `strategist` have since been retired (see Current work) |
 | **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — `mcts-eval` (below) has since surpassed it as the strongest agent measured |
 | **M6a** Arena skeleton | runner, paired seeds, Elo/SPRT | ✅ Done |
 | **M6b** Arena live | real agents, leaderboard, nightly workflow, `ai-candidate` gate | ✅ Done (PR #35) — nightly opens a PR that needs a manual close/reopen to trigger `gate` (deliberate: avoids adding a PAT secret, keeping ADR 0004's CI-stays-secret-free stance) |
@@ -58,11 +58,55 @@ ML"). Done, then promoted further than originally scoped:
 - PR 2 (optional) — a `duels-eval`-priced rollout policy for `mcts-eval`, only if there's
   appetite; not started.
 
-**Agent roster** — `strategist` retired (its research question, whether `duels-strategy`'s
-prior helps `greedy-ev`, was answered: statistically indistinguishable). Removed from
-`LADDER`, `agent_registry`/`duels-server::room`'s `KNOWN_AGENTS`, the web UI's opponent
-picker, and the workspace entirely (its crate is deleted). `random` and `greedy` are
-staying — `greedy` is the Elo leaderboard's anchor, and both serve as the easy end of the
-web UI's opponent picker. The ladder is now seven agents: `random`, `greedy`, `greedy-ev`,
-`phased`, `alphabeta`, `mcts-uct`, `mcts-eval` (`leaderboard::CHAMPION`, moved from
-`mcts-uct` once `mcts-eval` measured ~+100 Elo stronger).
+**Agent roster** — the whole 1-ply floor tier is retired. `strategist` went first (its
+research question, whether `duels-strategy`'s prior helps `greedy-ev`, was answered:
+statistically indistinguishable), and then `random`, `greedy` and `greedy-ev`, on the
+project owner's explicit decision, for measured strength far below the rest of the roster:
+the last full refit had all three within a 200-Elo band, scoring 0.0%–0.5% against every
+top-half agent, so they cost the nightly fifteen of its twenty-one pairings and told it
+nothing. **This supersedes the earlier note here that `random` and `greedy` were staying
+as the anchor and the easy end of the opponent picker** — that policy is withdrawn, not
+misread. Each was removed from `LADDER`, `agent_registry`/`duels-server::room`'s
+`KNOWN_AGENTS`, the web UI's opponent picker, and `agent_spec`'s parameter parsers.
+`greedy` and `greedy-ev`'s crates are deleted outright; **`crates/agents/random` survives
+as a test-only fixture** (see "the one crate that stayed" below). The ladder is now four
+agents and six pairings: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`
+(`leaderboard::CHAMPION`).
+
+**The Elo anchor moved from `greedy` to `mcts-uct`, and the scale changed with it.**
+Deleting `greedy` removed `ANCHOR_AGENT` entirely, so the joint Bradley-Terry fit needed a
+new pin. The rationale in `leaderboard::ANCHOR_AGENT`'s own docs is what decided it: the
+anchor must be a *never-changing* baseline, because every other agent's rating then moves
+only when that agent's strength moves. The positionally obvious replacement is `phased`
+(weakest survivor, 1-ply, budget-invariant), and it is the wrong one — `phased`'s `Config`
+*is* `duels_eval::Config`, read live from `Config::default()`, and `duels-eval` is re-tuned
+in numbered rounds (ten so far, the tenth landing in #56). Anchoring there would shift every
+rating on the board on every tuning round. `mcts-uct` does not depend on `duels-eval` at
+all, its default `PriorMode::None` does not consult `duels-strategy` either, its
+`Config::default()` is frozen and guarded by `mcts-eval`'s move-for-move ablation control,
+and it is already this project's canonical yardstick. `ANCHOR_ELO` stays at 1000; only
+*which* agent sits there changed. Consequence, stated plainly: **every Elo number in
+`arena/leaderboard.md`/`.json` predating this was measured against `greedy` = 1000 and is
+not comparable to anything measured after it.** The next nightly round robin refits from
+scratch against the new anchor; nothing rescales the old numbers, and with the anchor now
+second of four rather than second-from-bottom of seven, ratings below 1000 are expected.
+Those two files were left as the nightly last generated them (they are generated artifacts,
+and #55 set the same precedent) — they will be stale, listing retired agents, until that
+run lands.
+
+**The one crate that stayed, and why.** `crates/agents/random` is retired from the roster
+but not deleted: a uniform-random opponent is the yardstick four surviving crates measure a
+correctness floor against ("a search agent that does not comfortably beat a random player
+has a bug, not bad luck") — `alphabeta`'s `tests/vs_random.rs`, `mcts-uct` and `mcts-eval`'s
+in-crate `beats_a_random_opponent` tests and `vs_random` example, `phased`'s
+`phased_convincingly_beats_random`, `duels-arena`'s `age_start_policy` wrapper tests (which
+need a cheap *stateful, RNG-consuming* inner agent and scan up to 200 whole games), and
+`duels-strategy`'s `watch_reads` example, which sits below `duels-eval` in the layering and
+so cannot dev-depend on any surviving agent without closing a cycle. Those assertions are
+*about* a random baseline; substituting a stronger agent would not make them stricter, it
+would make them mean something else. It is now a **dev-dependency everywhere** — no shipped
+binary links it, `make_agent("random")` and the spec string `random` are both errors, and
+`agent_registry::tests::the_retired_agents_are_retired` pins that. Treat it as a fixture in
+the same class as `duels_core::testing::StateBuilder`. Two knock-on losses worth knowing:
+the web UI's easy end is now `phased`, and `duels-strategy`'s `watch_reads` diagnostic
+drives both seats randomly instead of `greedy` vs `random`.

@@ -9,12 +9,18 @@
 //!
 //! # Why a prior and not an evaluation
 //!
-//! `duels-agent-greedy` already carries explicit military-race terms in its
-//! evaluation function, and it still loses to `duels-agent-random` by military
+//! `duels-agent-greedy` carried explicit military-race terms in its
+//! evaluation function, and it still lost to `duels-agent-random` by military
 //! supremacy in about one game in ten. A one-ply evaluation cannot see a race
 //! that closes three moves out: by the time the pawn is close enough for a
 //! positional term to notice, the shields that would have denied it are gone.
 //! That is a search problem, not a scoring problem.
+//!
+//! (Both of those agents have since been retired from the roster —
+//! `duels-agent-greedy` deleted, `duels-agent-random` kept only as a test
+//! fixture; see `docs/milestones.md`. The measurement that motivated this
+//! crate is a historical record, not a claim about the current ladder, and
+//! the conclusion it supports is unchanged.)
 //!
 //! # The magnitudes
 //!

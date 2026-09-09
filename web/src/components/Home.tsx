@@ -6,9 +6,6 @@ import { useGameStore } from "../store";
  * itself), so a new agent crate shows up in the picker the moment the server
  * knows about it, even before this map is updated. */
 const AGENT_LABELS: Record<string, string> = {
-  random: "Random — plays at chance",
-  greedy: "Greedy — one ply, no search",
-  "greedy-ev": "Greedy EV — one ply, averaged",
   phased: "Phased — shifts priorities by age",
   alphabeta: "Alpha-Beta — searches, thinks up to 1s",
   "mcts-uct": "MCTS — searches with playouts, thinks up to 1s",
@@ -25,11 +22,11 @@ export default function Home() {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [seedInput, setSeedInput] = useState("");
-  const [selectedAgent, setSelectedAgent] = useState("random");
+  const [selectedAgent, setSelectedAgent] = useState("phased");
 
   const seed = seedInput.trim() === "" ? undefined : Number(seedInput.trim());
   const busy = status === "connecting";
-  // `agents` defaults to `["random"]` until `GET /agents` resolves, and a
+  // `agents` defaults to `["phased"]` until `GET /agents` resolves, and a
   // previously selected agent could in principle disappear from a later
   // fetch; fall back to the first known agent rather than submitting a name
   // the server no longer lists.
