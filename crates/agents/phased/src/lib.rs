@@ -55,9 +55,9 @@ pub use duels_eval::{
     blend, evaluate, expected_value, menu, rail_owner, rail_value, rails, terms, Blend, ChainTable,
     CoinModel, Commitment, Config, DevSupply, EconomyModel, EvalWeights, GuildPricing, GuildTable,
     MenuFloor, MenuOptions, MenuShieldPricing, MenuTables, MenuWeights, MilSmoothing,
-    MilitaryModel, PendingModel, RailModel, Root, ScienceWeights, SupplyModel, TakeContext,
-    TakeValue, TermWeights, WonderBudget, WonderModel, DESTROY_REPLACE_SHARE, MAX_PENDING_DEPTH,
-    MAX_UNITS,
+    MilitaryModel, PendingModel, RailModel, Root, ScienceProgress, ScienceWeights, SupplyModel,
+    TakeContext, TakeValue, TermWeights, WonderBudget, WonderModel, DESTROY_REPLACE_SHARE,
+    MAX_PENDING_DEPTH, MAX_UNITS,
 };
 
 /// Scores within this distance of the best are treated as tied, and one is
