@@ -129,9 +129,10 @@ fn the_replay_matches_the_servers_own_stream() {
 ///
 /// As of round nine: `value = -18.4436` victory points and
 /// `win_probability = 0.3321`, which is the `-18.44` / `0.332` the export
-/// carried. Those are *not* asserted — a `duels-eval` round is allowed to move
-/// them, and pinning them would turn this file into a golden-values test for
-/// the whole evaluation. What is asserted is the position.
+/// carried. As of round ten: `-19.7525` and `0.3212`, the menu weight having
+/// come down. Those are *not* asserted — a `duels-eval` round is allowed to
+/// move them, and pinning them would turn this file into a golden-values test
+/// for the whole evaluation. What is asserted is the position.
 #[test]
 fn the_flagged_position_reconstructs() {
     let state = replay(1, &flagged_moves());
@@ -169,12 +170,40 @@ fn every_action_looks_worse_than_standing_still_and_the_menu_is_why() {
         best < standing,
         "the anomaly is gone: best action {best} against a standing {standing}"
     );
-    // ...and it is not a rounding artefact — the export's 0.332 against
-    // 0.236-0.270 is about eight points of win probability.
+    // ...and it is not a rounding artefact. **Round ten shrank it by about
+    // half**, which is what a 32% cut to the menu weight does to an anomaly
+    // the menu is the whole of: the export's `0.332` against `0.270` — a gap
+    // of `0.062`, which `Config::v9()` still reproduces to the fourth
+    // decimal — is now `0.321` against `0.290`, a gap of `0.032`.
+    //
+    // The threshold is `0.02` rather than the `0.05` round nine could assert,
+    // and this is deliberately *not* a quiet relaxation: the reason it moved
+    // is round ten's own headline change, so the round-nine reading is pinned
+    // alongside it. What that turns this test into is a measurement of the
+    // mitigation — the anomaly is still there and still menu-shaped, and it is
+    // now half the size.
     let age = state.age();
+    let gap = win_probability_from_value(standing, age) - win_probability_from_value(best, age);
     assert!(
-        win_probability_from_value(standing, age) - win_probability_from_value(best, age) > 0.05,
-        "the gap is too small to be the thing that was flagged"
+        gap > 0.02,
+        "the gap is too small to be the thing that was flagged: {gap}"
+    );
+    let r9 = Root::new(&state, me, Config::v9());
+    let standing_v9 = evaluate(&state, me, &r9);
+    let best_v9 = legal
+        .iter()
+        .map(|&a| expected_value(&state, a, me, &r9))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let gap_v9 =
+        win_probability_from_value(standing_v9, age) - win_probability_from_value(best_v9, age);
+    assert!(
+        gap_v9 > 0.05,
+        "round nine's menu weight no longer reproduces the flagged gap: {gap_v9}"
+    );
+    assert!(
+        gap < gap_v9,
+        "round ten was supposed to shrink this anomaly, not grow it: {gap} \
+         against round nine's {gap_v9}"
     );
 
     // The same position with the opponent-menu term switched off on both
@@ -239,6 +268,14 @@ fn every_action_looks_worse_than_standing_still_and_the_menu_is_why() {
 /// at `-7.85` against a standing `-19.21` — an eleven-point gain for seven
 /// coins, of which ten is `terms::resource_bill` and four
 /// `terms::development_value`.
+///
+/// **Round ten's lower menu weight moves both readings by the same `+2.19`**,
+/// to `-12.51` against `-19.21`, leaving the `6.70`-point preference between
+/// them untouched to the second decimal. That is worth recording rather than
+/// glossing: unlike the anomaly in the test above, this half of the flag is
+/// *not* a menu artefact — the five candidates here all hand the turn to the
+/// same opponent menu, so the term is common to them and cancels out of the
+/// comparison entirely.
 #[test]
 fn the_wonder_build_outranks_every_card_build_at_the_flagged_decision() {
     let mut moves = flagged_moves();

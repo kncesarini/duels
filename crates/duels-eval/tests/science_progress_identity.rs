@@ -1,6 +1,6 @@
-//! The bit-identity guard for this crate's **tenth** round of work.
+//! The bit-identity guard for this crate's **eleventh** round of work.
 //!
-//! # What round ten is, and what it deliberately is not
+//! # What round eleven is, and what it deliberately is not
 //!
 //! [`duels_eval::TermWeights::science`] — the multiplier on the science-ladder
 //! term — is built once in `Root::new` from the *root* position's
@@ -8,7 +8,7 @@
 //! `Root`. For `phased` that is a move stale; for `mcts-eval`, which builds one
 //! `Root` per search tree, it is however many plies deep the leaf is.
 //!
-//! Round ten adds [`ScienceProgress::Leaf`], which re-reads the progress half
+//! Round eleven adds [`ScienceProgress::Leaf`], which re-reads the progress half
 //! of `c_sci` from the state being scored while leaving the magnitude half
 //! (`M_sci^alpha_m`) root-fixed, and **leaves the default alone**. Like round
 //! nine, this file therefore proves the *other* identity rather than
@@ -29,7 +29,7 @@
 //! # What is proved here
 //!
 //! * [`the_option_is_off_by_default_and_in_every_generation_snapshot`] — the
-//!   default and `v1`-`v8` all read [`ScienceProgress::Root`], so no pinned
+//!   default and `v1`-`v9` all read [`ScienceProgress::Root`], so no pinned
 //!   generation's arithmetic moved.
 //! * [`scoring_the_root_position_itself_is_bit_identical_under_both_readings`]
 //!   — the load-bearing identity. Where the scored state *is* the root, the
@@ -104,11 +104,12 @@ fn the_option_is_off_by_default_and_in_every_generation_snapshot() {
         ("v6", Config::v6()),
         ("v7", Config::v7()),
         ("v8", Config::v8()),
+        ("v9", Config::v9()),
     ] {
         assert_eq!(
             config.blend.science_progress,
             ScienceProgress::Root,
-            "{name} does not read the root's science progress, so round ten \
+            "{name} does not read the root's science progress, so round eleven \
              silently redefined a pinned generation"
         );
     }

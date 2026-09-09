@@ -1,7 +1,7 @@
-//! The bit-identity guard for `duels-eval`'s round-ten
+//! The bit-identity guard for `duels-eval`'s round-eleven
 //! [`ScienceProgress`] option, from the caller's side.
 //!
-//! # What round ten did, and why it is an option
+//! # What round eleven did, and why it is an option
 //!
 //! `duels_eval::TermWeights::science` — the multiplier on the science-ladder
 //! term — is built once in `Root::new` from the root position's
@@ -39,7 +39,7 @@
 //!
 //! # What is pinned here
 //!
-//! * [`the_default_configuration_is_unchanged_by_the_round_ten_option`] — the
+//! * [`the_default_configuration_is_unchanged_by_the_round_eleven_option`] — the
 //!   load-bearing no-regression claim. `ScienceProgress::Root` is the default,
 //!   `player_value` still spells it as the same bare `w.science`, so every
 //!   decision of every game must be move-for-move what it was before. `phased`
@@ -55,14 +55,18 @@
 //!   default stayed put and why this option is aimed at a search that scores
 //!   leaves ten plies out, not at `phased`.
 //!
-//! # How the pinned constant was obtained
+//! # How the pinned constants were obtained
 //!
-//! The default hash is `p_build_identity.rs`'s, unchanged: the two files drive
-//! the same twelve seeds through the same harness on the same default config,
-//! so a round-ten change to the default path would break both. Keeping the
-//! literal here rather than importing it is deliberate — a shared constant
-//! that some future round updates in one place would quietly re-baseline both
-//! guards at once.
+//! From `p_build_identity.rs`, unchanged: the two files drive the same twelve
+//! seeds through the same harness, so a change to either configuration's
+//! decisions breaks both. **Two** pairs are pinned here for the same reason
+//! that file pins two — `Config::v9()` is the configuration round nine's
+//! recording was taken under, and `Config::default()` is round ten's fitted
+//! `MenuWeights::lambda`, which plays 856 decisions rather than 865 for
+//! reasons that have nothing to do with this option. Keeping the literals
+//! here rather than importing them is deliberate: a shared constant that some
+//! future round updates in one place would quietly re-baseline both guards at
+//! once.
 
 use duels_agent_phased::{expected_value, Blend, Config, PhasedAgent, Root, ScienceProgress};
 use duels_agents_api::{Agent, Budget};
@@ -119,7 +123,7 @@ fn self_play_digest(config: Config) -> (u64, u64) {
     (decisions, h)
 }
 
-/// The round-ten option switched on, with nothing else changed.
+/// The round-eleven option switched on, with nothing else changed.
 fn leaf_progress() -> Config {
     let d = Config::default();
     Config {
@@ -134,14 +138,22 @@ fn leaf_progress() -> Config {
 /// **The no-regression claim.** `ScienceProgress::Root` is the default and is
 /// spelled as the same expression it always was, so adding the option cannot
 /// have moved a single decision on the path both shipping consumers use.
+///
+/// Both of `p_build_identity.rs`'s pinned configurations are checked, for the
+/// same reason it checks both: `v9()` is what round nine's digest was recorded
+/// under, and `default()` is the shipping path round ten moved.
 #[test]
-fn the_default_configuration_is_unchanged_by_the_round_ten_option() {
-    let (decisions, hash) = self_play_digest(Config::default());
-    // The same pair `p_build_identity.rs` pins for the default path, recorded
-    // from the pre-round-ten tree over the same twelve seeds.
+fn the_default_configuration_is_unchanged_by_the_round_eleven_option() {
+    let (decisions, hash) = self_play_digest(Config::v9());
     assert_eq!(
         (decisions, hash),
         (865, 0x58e8_6d3d_4266_1389),
+        "round nine's evaluation moved: {decisions} decisions, hash {hash:#018x}"
+    );
+    let (decisions, hash) = self_play_digest(Config::default());
+    assert_eq!(
+        (decisions, hash),
+        (856, 0x7d61_4d78_2e87_ef73),
         "the default evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
 }
@@ -160,7 +172,7 @@ fn the_default_configuration_is_unchanged_by_the_round_ten_option() {
 /// out of six moves `c_sci` by a fraction of that — so a single move's worth
 /// of progress moves the science multiplier by a few percent at most, and a
 /// few percent of one term never flipped a one-ply argmax across all twelve
-/// games of [`the_default_configuration_is_unchanged_by_the_round_ten_option`]'s
+/// games of [`the_default_configuration_is_unchanged_by_the_round_eleven_option`]'s
 /// harness. Ten plies of progress is a different quantity entirely, and that
 /// is what `mcts-eval` scores.
 #[test]
