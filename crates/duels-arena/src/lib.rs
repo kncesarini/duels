@@ -32,7 +32,14 @@
 //!   pooled across seed ranges within a budget — as one command producing one
 //!   machine-readable verdict. It is orchestration only: every game it plays
 //!   goes through [`match_runner`] and every statistic through [`elo`] /
-//!   [`sprt`].
+//!   [`sprt`] / [`mechanism`].
+//! - [`mechanism`] holds the *other* verdict an experiment reports: bounds,
+//!   pre-registered on the command line, on **how** the candidate wins
+//!   (victory kinds and race exposure, per side) relative to the control —
+//!   because "stronger on aggregate Elo, but by the wrong mechanism" has
+//!   already happened here and a pure Elo SPRT cannot say it. Deliberately a
+//!   separate verdict from the Elo one, and deliberately three-valued, so a
+//!   rare victory kind reads as "not enough evidence" rather than as a pass.
 //! - [`results_io`] serializes a match's [`match_runner::GameRecord`]s, plus
 //!   the derived tally/victory-breakdown/race-exposure summary, to a JSON
 //!   results file.
@@ -102,5 +109,6 @@ pub mod elo;
 pub mod experiment;
 pub mod leaderboard;
 pub mod match_runner;
+pub mod mechanism;
 pub mod results_io;
 pub mod sprt;

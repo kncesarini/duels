@@ -42,6 +42,23 @@
 //! conjunction over the per-budget pooled decisions rather than fitting
 //! anything across them.
 //!
+//! # Two verdicts, deliberately not one
+//!
+//! [`overall_verdict`] is, and stays, an **Elo-only** SPRT conjunction. It
+//! answers "is the candidate stronger?" and nothing else.
+//!
+//! Alongside it, [`ExperimentSummary::mechanism_verdict`] answers a separate
+//! question — "is it stronger *by the right mechanism*?" — from the
+//! victory-kind and race-exposure numbers this module has always reported but
+//! never judged. A [`crate::mechanism::MechanismGate`] holds the
+//! pre-registered bounds it checks; see that module's docs for the statistics
+//! and for the real investigation that motivated it.
+//!
+//! The two are separate fields on purpose. This project has already needed to
+//! say "stronger on aggregate Elo, but by the wrong mechanism", and folding
+//! the mechanism check into `verdict` would destroy exactly that sentence.
+//! **Read both.**
+//!
 //! # Early stopping
 //!
 //! `--early-stop` evaluates the SPRT after every chunk of games inside a cell
@@ -71,15 +88,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::elo::{fit_elo, EloEstimate};
 use crate::match_runner::{
-    parse_budget, play_paired_match, race_exposure, tally, GameRecord, MatchTally,
-    MatchVictoryBreakdown, RaceExposure,
+    parse_budget, play_paired_match, race_exposure, tally, win_race_exposure, GameRecord,
+    MatchTally, MatchVictoryBreakdown, RaceExposure, WinRaceExposure,
 };
+use crate::mechanism::{GateOutcome, MechanismCounts, MechanismGate, MechanismReport};
 use crate::results_io::write_results;
 use crate::sprt::{sprt, SprtDecision, SprtParams, SprtResult};
 
 /// Schema version of [`ExperimentSummary`], so a future consumer can tell an
 /// old summary file from a new one.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// `2` added the mechanism gate: [`CellSummary::win_race_exposure`] and its
+/// pooled counterpart, plus [`ExperimentSummary::mechanism_verdict`] and
+/// [`ExperimentSummary::mechanism`]. Every one of those fields is
+/// `#[serde(default)]`, so a schema-1 summary still deserializes — it simply
+/// reads as "no gate was evaluated".
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// H0 for an experiment's SPRT: "the candidate is no better than the
 /// control". Matches how this project has used SPRT by hand.
@@ -158,6 +182,11 @@ pub struct ExperimentPlan {
     /// Games between SPRT checks inside a cell. `None` plays each cell in one
     /// call (the only shape when `early_stop` is off).
     pub check_every_games: Option<u32>,
+    /// The pre-registered mechanism bounds to evaluate alongside the Elo
+    /// SPRT, or `None` for `--gate none`. This never affects
+    /// [`ExperimentSummary::verdict`] — see the module docs' "Two verdicts"
+    /// section.
+    pub gate: Option<MechanismGate>,
 }
 
 /// One cell's finished measurement.
@@ -188,6 +217,11 @@ pub struct CellSummary {
     pub victory_breakdown: MatchVictoryBreakdown,
     /// How many games came within reach of an instant win.
     pub race_exposure: RaceExposure,
+    /// Each side's wins split by whether the game they came from had a race in
+    /// play — the per-side quantity the mechanism gate's `*_exposure` metrics
+    /// read (see [`crate::mechanism`]).
+    #[serde(default)]
+    pub win_race_exposure: WinRaceExposure,
     /// Mean actions applied per game.
     pub avg_moves: f64,
     /// Mean wall-clock milliseconds per game.
@@ -221,6 +255,17 @@ pub struct PooledSummary {
     pub victory_breakdown: MatchVictoryBreakdown,
     /// Summed race exposure.
     pub race_exposure: RaceExposure,
+    /// Summed per-side win/race-exposure split, the mechanism gate's input at
+    /// this budget.
+    #[serde(default)]
+    pub win_race_exposure: WinRaceExposure,
+}
+
+impl PooledSummary {
+    /// This budget's pooled counts in the shape [`MechanismGate`] reads.
+    pub fn mechanism_counts(&self) -> MechanismCounts {
+        MechanismCounts::from_parts(&self.victory_breakdown, &self.win_race_exposure)
+    }
 }
 
 /// The one-word answer a consumer of the JSON can branch on.
@@ -271,7 +316,24 @@ pub struct ExperimentSummary {
     /// Per-budget pooled measurements, in the order the budgets were given.
     pub pooled: Vec<PooledSummary>,
     /// The conjunction over `pooled` — see [`overall_verdict`].
+    ///
+    /// **Elo only.** This field means exactly what it meant before the
+    /// mechanism gate existed: the per-budget SPRT conjunction over aggregate
+    /// Elo. A consumer that branches on it keeps branching on the same thing.
     pub verdict: Verdict,
+    /// The mechanism gate's verdict — "is it stronger *by the right
+    /// mechanism*?" — or `None` when no gate was evaluated (`--gate none`).
+    ///
+    /// Deliberately a **separate** field from `verdict`, and deliberately a
+    /// different type, so that "stronger on aggregate Elo, but by the wrong
+    /// mechanism" is expressible. Both should be checked; neither summarizes
+    /// the other. See the module docs' "Two verdicts" section.
+    #[serde(default)]
+    pub mechanism_verdict: Option<GateOutcome>,
+    /// Every mechanism check behind `mechanism_verdict`, with the counts and
+    /// statistics that produced each one.
+    #[serde(default)]
+    pub mechanism: Option<MechanismReport>,
     /// Games played across every cell.
     pub total_games: u32,
 }
@@ -417,6 +479,22 @@ fn add_victory_breakdown(
     }
 }
 
+/// Sum two [`WinRaceExposure`]s field by field.
+fn add_win_race_exposure(a: WinRaceExposure, b: WinRaceExposure) -> WinRaceExposure {
+    let side = |x: crate::match_runner::SideWinRaceExposure,
+                y: crate::match_runner::SideWinRaceExposure| {
+        crate::match_runner::SideWinRaceExposure {
+            wins: x.wins + y.wins,
+            military: x.military + y.military,
+            science: x.science + y.science,
+        }
+    };
+    WinRaceExposure {
+        a: side(a.a, b.a),
+        b: side(a.b, b.b),
+    }
+}
+
 /// Pool every cell of each budget into one figure per budget, refitting Elo
 /// and the SPRT on the summed counts. Budgets appear in the order their first
 /// cell does; cells of different budgets are never mixed (see the module
@@ -436,6 +514,7 @@ pub fn pool_by_budget(cells: &[CellSummary], params: &SprtParams) -> Vec<PooledS
             let mut tally = MatchTally::default();
             let mut vb = MatchVictoryBreakdown::default();
             let mut re = RaceExposure::default();
+            let mut wre = WinRaceExposure::default();
             let mut count = 0u32;
             for c in mine {
                 tally.a_wins += c.tally.a_wins;
@@ -445,6 +524,7 @@ pub fn pool_by_budget(cells: &[CellSummary], params: &SprtParams) -> Vec<PooledS
                 re.military_games += c.race_exposure.military_games;
                 re.science_games += c.race_exposure.science_games;
                 re.total_games += c.race_exposure.total_games;
+                wre = add_win_race_exposure(wre, c.win_race_exposure);
                 count += 1;
             }
             PooledSummary {
@@ -456,9 +536,26 @@ pub fn pool_by_budget(cells: &[CellSummary], params: &SprtParams) -> Vec<PooledS
                 tally,
                 victory_breakdown: vb,
                 race_exposure: re,
+                win_race_exposure: wre,
             }
         })
         .collect()
+}
+
+/// Evaluate `gate` over the pooled per-budget counts, one budget at a time —
+/// budgets are never mixed here for the same reason [`pool_by_budget`] never
+/// mixes them. `None` in, `None` out: `--gate none` records no mechanism
+/// verdict rather than a vacuous pass.
+pub fn mechanism_report(
+    gate: Option<&MechanismGate>,
+    pooled: &[PooledSummary],
+) -> Option<MechanismReport> {
+    let gate = gate?;
+    let per_budget: Vec<(String, MechanismCounts)> = pooled
+        .iter()
+        .map(|p| (p.budget.clone(), p.mechanism_counts()))
+        .collect();
+    Some(gate.evaluate(&per_budget))
 }
 
 /// The conjunction over the per-budget pooled decisions: [`Verdict::Reject`]
@@ -610,6 +707,7 @@ fn summarize_cell(
         sprt: sprt(t.a_wins, t.b_wins, t.draws, params),
         victory_breakdown: crate::match_runner::victory_breakdown(records),
         race_exposure: race_exposure(records),
+        win_race_exposure: win_race_exposure(records),
         avg_moves: per_game(total_moves as f64),
         avg_wall_ms: per_game(wall_ms_total as f64),
         wall_ms_total,
@@ -700,6 +798,8 @@ pub fn run(
 
     let pooled = pool_by_budget(&cells, &plan.sprt);
     let verdict = overall_verdict(&pooled);
+    let mechanism = mechanism_report(plan.gate.as_ref(), &pooled);
+    let mechanism_verdict = mechanism.as_ref().map(|m| m.verdict);
     let total_games = cells.iter().map(|c| c.games_played).sum();
 
     let mut seed_ranges: Vec<SeedRange> = Vec::new();
@@ -731,6 +831,8 @@ pub fn run(
         cells,
         pooled,
         verdict,
+        mechanism_verdict,
+        mechanism,
         total_games,
     })
 }
@@ -747,7 +849,7 @@ pub fn render_markdown(summary: &ExperimentSummary) -> String {
     out.push_str(&format!(
         "- Generated: `{}`\n- Candidate: `{}`\n- Control: `{}`\n- Budgets: {}\n- Seed ranges: \
          {}\n- SPRT: H0 elo={:.1} vs H1 elo={:.1} (alpha={}, beta={})\n- Early stopping: \
-         {}\n- Total games: {}\n- **Verdict: {:?}**\n\n",
+         {}\n- Total games: {}\n- **Elo verdict: {:?}**\n",
         summary.generated_at,
         summary.candidate,
         summary.control,
@@ -771,6 +873,17 @@ pub fn render_markdown(summary: &ExperimentSummary) -> String {
         summary.total_games,
         summary.verdict,
     ));
+    match &summary.mechanism {
+        Some(m) => out.push_str(&format!(
+            "- **Mechanism verdict: {:?}** (gate `{}`)\n\nThe two verdicts answer different \
+             questions and neither summarizes the other - check both.\n\n",
+            m.verdict, m.gate,
+        )),
+        None => out.push_str(
+            "- Mechanism verdict: none (no gate was evaluated)\n\nThis run judged aggregate Elo \
+             only. See `duels_arena::mechanism` for what a `--gate` would have checked.\n\n",
+        ),
+    }
 
     out.push_str("## Pooled across seed ranges, per budget\n\n");
     out.push_str("| Budget | Cells | Games | W-L-D | Elo | 95% CI | LLR | SPRT |\n");
@@ -847,6 +960,47 @@ pub fn render_markdown(summary: &ExperimentSummary) -> String {
         ));
     }
 
+    if let Some(m) = &summary.mechanism {
+        out.push_str(&format!(
+            "\n## Mechanism gate\n\n`{}` - each bound evaluated on that budget's pooled counts, \
+             never across budgets. Evidence floor: {:.0} expected events; significance: {:.3} \
+             standard errors.\n\n",
+            m.gate, m.min_expected_events, m.z_critical,
+        ));
+        out.push_str("| Budget | Outcome |\n| ------ | ------- |\n");
+        for b in &m.per_budget {
+            out.push_str(&format!("| `{}` | {:?} |\n", b.budget, b.outcome));
+        }
+        out.push_str(
+            "\n| Budget | Bound | Candidate | Control | Ratio | Required | z | Outcome | Why |\n",
+        );
+        out.push_str(
+            "| ------ | ----- | --------- | ------- | ----: | -------: | -: | ------- | --- |\n",
+        );
+        for c in &m.checks {
+            let opt = |v: Option<f64>| match v {
+                Some(x) => format!("{x:.2}"),
+                None => "n/a".to_string(),
+            };
+            out.push_str(&format!(
+                "| `{}` | `{}` | {:.1}% ({}/{}) | {:.1}% ({}/{}) | {} | {:.1}% | {} | {:?} | {} |\n",
+                c.budget,
+                c.bound,
+                100.0 * c.candidate_value,
+                c.candidate_events,
+                c.candidate_trials,
+                100.0 * c.control_value,
+                c.control_events,
+                c.control_trials,
+                opt(c.ratio),
+                100.0 * c.required_value,
+                opt(c.z),
+                c.outcome,
+                c.note,
+            ));
+        }
+    }
+
     out.push_str(
         "\n## How to read this\n\n\
          Elo is the candidate's rating minus the control's, fitted from the win/loss/draw counts \
@@ -858,7 +1012,15 @@ pub fn render_markdown(summary: &ExperimentSummary) -> String {
          \"reproduced on a second disjoint seed range\" figure - not an average of the cells. \
          Budgets are never pooled with each other: a change this project ships has to hold at \
          both a `Nodes` and a `TimeMs` budget, which is a conjunction rather than a mean, and \
-         the verdict above is that conjunction.\n\n\
+         the Elo verdict above is that conjunction.\n\n\
+         The **Elo verdict and the mechanism verdict are separate answers to separate \
+         questions**, and a reader has to look at both. The Elo verdict says whether the \
+         candidate is stronger; the mechanism verdict says whether it got there the same way \
+         the control did. \"Stronger on aggregate Elo, but by the wrong mechanism\" is a real \
+         outcome this project has hit, and it is why the two are not one boolean. A mechanism \
+         check reads `Inconclusive` when the events it is about are too rare at this sample \
+         size for the comparison to mean anything - that is an honest \"not enough evidence\", \
+         not a pass. See `duels_arena::mechanism`.\n\n\
          A `TimeMs` cell is wall-clock based and therefore load-sensitive - see the \"quiet \
          machine\" note in `duels_arena`'s crate docs before trusting a small-sample `TimeMs` \
          row.\n",
@@ -934,6 +1096,21 @@ mod tests {
                 military_games: l,
                 science_games: 0,
                 total_games: games,
+            },
+            // The mirror image of the victory breakdown above: the candidate's
+            // wins are civilian and never out of a race, the control's are
+            // military and always are.
+            win_race_exposure: WinRaceExposure {
+                a: crate::match_runner::SideWinRaceExposure {
+                    wins: w,
+                    military: 0,
+                    science: 0,
+                },
+                b: crate::match_runner::SideWinRaceExposure {
+                    wins: l,
+                    military: l,
+                    science: 0,
+                },
             },
             avg_moves: 40.0,
             avg_wall_ms: 1.0,
@@ -1132,6 +1309,18 @@ mod tests {
         assert_eq!(pooled[0].race_exposure.total_games, 20);
         // Every game is accounted for: wins + losses + draws.
         assert_eq!(pooled[0].tally.total(), 20);
+
+        // The per-side win/race-exposure split pools the same way, and its
+        // denominators stay in step with the victory breakdown's - which is
+        // what `mechanism_counts` relies on.
+        assert_eq!(pooled[0].win_race_exposure.a.wins, 9);
+        assert_eq!(pooled[0].win_race_exposure.b.wins, 9);
+        assert_eq!(pooled[0].win_race_exposure.b.military, 9);
+        let counts = pooled[0].mechanism_counts();
+        assert_eq!(counts.candidate.wins, pooled[0].victory_breakdown.a.total());
+        assert_eq!(counts.control.wins, pooled[0].victory_breakdown.b.total());
+        assert_eq!(counts.candidate.civilian_victory, 9);
+        assert_eq!(counts.control.military_exposed_wins, 9);
     }
 
     #[test]
@@ -1325,6 +1514,7 @@ mod tests {
             label: default_label("phased", "phased"),
             early_stop: false,
             check_every_games: None,
+            gate: MechanismGate::parse(crate::mechanism::DEFAULT_GATE).unwrap(),
         };
         assert_eq!(plan.cells.len(), 2);
 
@@ -1380,11 +1570,33 @@ mod tests {
         assert_eq!(back.cells.len(), summary.cells.len());
         assert_eq!(back.verdict, summary.verdict);
         assert_eq!(back.total_games, summary.total_games);
+        assert_eq!(back.mechanism_verdict, summary.mechanism_verdict);
+        assert_eq!(back.mechanism, summary.mechanism);
+
+        // Self-play under the default gate: whatever the mechanism verdict is,
+        // it must not be a rejection - the candidate *is* the control.
+        let mech = summary.mechanism.as_ref().expect("a gate was configured");
+        assert_eq!(summary.mechanism_verdict, Some(mech.verdict));
+        assert_ne!(
+            mech.verdict,
+            GateOutcome::Fail,
+            "self-play must never fail its own mechanism gate: {:?}",
+            mech.checks
+        );
+        assert_eq!(mech.gate, crate::mechanism::DEFAULT_GATE);
+        assert_eq!(
+            mech.per_budget.len(),
+            1,
+            "one row per budget, pooled the same way Elo is"
+        );
+        assert_eq!(mech.checks.len(), 3, "3 default bounds x 1 budget");
 
         let md = std::fs::read_to_string(&md_path).unwrap();
         assert!(md.contains("# Experiment: phased-vs-phased"));
         assert!(md.contains("nodes:1"));
-        assert!(md.contains("Verdict"));
+        assert!(md.contains("Elo verdict"));
+        assert!(md.contains("Mechanism verdict"));
+        assert!(md.contains("## Mechanism gate"));
         assert!(md.contains("2026-09-09T00:00:00Z"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1400,6 +1612,7 @@ mod tests {
             label: "empty".to_string(),
             early_stop: false,
             check_every_games: None,
+            gate: None,
         };
         assert!(run(
             &plan,
@@ -1408,6 +1621,118 @@ mod tests {
             &mut |_| {}
         )
         .is_err());
+    }
+
+    // --- the mechanism verdict, alongside the Elo one -------------------
+
+    /// The separation constraint, asserted directly: the Elo verdict and the
+    /// mechanism verdict are computed independently and can disagree in either
+    /// direction. `synthetic_cell` builds exactly the motivating profile - the
+    /// candidate wins only on civilian score, the control only by military
+    /// supremacy - so a gate on military share fails while the Elo SPRT
+    /// accepts.
+    #[test]
+    fn the_elo_verdict_and_the_mechanism_verdict_are_independent() {
+        let cells = vec![synthetic_cell(0, "nodes:2000", 1, 400, 200, 0)];
+        let pooled = pool_by_budget(&cells, &params());
+        assert_eq!(
+            overall_verdict(&pooled),
+            Verdict::Accept,
+            "400-200 is a clear H1 on aggregate Elo"
+        );
+
+        // ...and yet the candidate's military share is 0% against the
+        // control's 100%, which a floor on military share catches.
+        let gate = MechanismGate::parse("military_share>=0.5x").unwrap();
+        let report = mechanism_report(gate.as_ref(), &pooled).unwrap();
+        assert_eq!(report.verdict, GateOutcome::Fail);
+
+        // The mirror case: the same games under a gate the candidate passes.
+        let gate = MechanismGate::parse("civilian_share>=0.5x").unwrap();
+        let report = mechanism_report(gate.as_ref(), &pooled).unwrap();
+        assert_eq!(
+            report.verdict,
+            GateOutcome::Inconclusive,
+            "the control won nothing on civilian score, so there is no ratio to reference"
+        );
+
+        // Neither of those touched the Elo verdict.
+        assert_eq!(overall_verdict(&pooled), Verdict::Accept);
+        // And no gate at all records no mechanism verdict rather than a pass.
+        assert!(mechanism_report(None, &pooled).is_none());
+    }
+
+    #[test]
+    fn the_gate_is_evaluated_per_budget_and_never_across_them() {
+        // Clean at `nodes:2000`, the motivating profile at `time_ms:100`.
+        let cells = vec![
+            synthetic_cell(0, "nodes:2000", 1, 200, 200, 0),
+            synthetic_cell(1, "time_ms:100", 1, 200, 200, 0),
+        ];
+        let pooled = pool_by_budget(&cells, &params());
+        let gate = MechanismGate::parse("military_share<=1.5x,civilian_share>=0.5").unwrap();
+        let report = mechanism_report(gate.as_ref(), &pooled).unwrap();
+        assert_eq!(report.per_budget.len(), 2);
+        assert_eq!(report.checks.len(), 4, "2 bounds x 2 budgets");
+        assert_eq!(
+            report
+                .per_budget
+                .iter()
+                .map(|b| b.budget.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nodes:2000", "time_ms:100"],
+            "budgets keep pool_by_budget's order"
+        );
+        // Each check carries its own budget's counts, so nothing was merged.
+        for c in &report.checks {
+            assert_eq!(c.candidate_trials, 200);
+            assert_eq!(c.control_trials, 200);
+        }
+    }
+
+    /// A schema-1 summary (no mechanism fields at all) still reads back, as
+    /// "no gate was evaluated" rather than as a parse failure.
+    #[test]
+    fn an_older_summary_without_mechanism_fields_still_deserializes() {
+        let cells = vec![synthetic_cell(0, "nodes:2000", 1, 60, 40, 0)];
+        let pooled = pool_by_budget(&cells, &params());
+        let mut value = serde_json::to_value(ExperimentSummary {
+            schema: 1,
+            label: "old".to_string(),
+            generated_at: "2026-09-09T00:00:00Z".to_string(),
+            candidate: "cand".to_string(),
+            control: "ctrl".to_string(),
+            candidate_spec_params: String::new(),
+            control_spec_params: String::new(),
+            budgets: vec!["nodes:2000".to_string()],
+            seed_ranges: vec![SeedRange {
+                start: 1,
+                pairs: 50,
+            }],
+            sprt_params: params(),
+            early_stop: false,
+            verdict: overall_verdict(&pooled),
+            mechanism_verdict: None,
+            mechanism: None,
+            total_games: 100,
+            cells,
+            pooled,
+        })
+        .unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("mechanism_verdict");
+        obj.remove("mechanism");
+        for row in obj["cells"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("win_race_exposure");
+        }
+        for row in obj["pooled"].as_array_mut().unwrap() {
+            row.as_object_mut().unwrap().remove("win_race_exposure");
+        }
+        let back: ExperimentSummary = serde_json::from_value(value).unwrap();
+        assert_eq!(back.mechanism_verdict, None);
+        assert_eq!(back.mechanism, None);
+        assert_eq!(back.cells[0].win_race_exposure, WinRaceExposure::default());
+        assert_eq!(back.verdict, Verdict::Inconclusive);
     }
 
     #[test]
@@ -1440,6 +1765,8 @@ mod tests {
             sprt_params: params(),
             early_stop: false,
             verdict: overall_verdict(&pooled),
+            mechanism_verdict: None,
+            mechanism: None,
             total_games: cells.iter().map(|c| c.games_played).sum(),
             cells,
             pooled,
@@ -1451,7 +1778,34 @@ mod tests {
         // One row per cell in the per-cell table.
         assert_eq!(md.matches("\n| 1 | `nodes:2000`").count(), 1);
         assert_eq!(md.matches("\n| 3 | `time_ms:100`").count(), 1);
-        assert!(md.contains("Verdict"));
+        assert!(md.contains("Elo verdict"));
         assert!(md.contains("quiet"));
+        // No gate: the report says so out loud rather than omitting the line,
+        // so a reader is never left assuming a check happened.
+        assert!(md.contains("Mechanism verdict: none"));
+        assert!(!md.contains("## Mechanism gate"));
+
+        // With a gate, every check gets a row naming its budget and bound.
+        let gate = MechanismGate::parse("military_share<=1.5x,civilian_share>=0.25").unwrap();
+        let with_gate = ExperimentSummary {
+            mechanism_verdict: Some(
+                mechanism_report(gate.as_ref(), &summary.pooled)
+                    .unwrap()
+                    .verdict,
+            ),
+            mechanism: mechanism_report(gate.as_ref(), &summary.pooled),
+            ..summary
+        };
+        let md = render_markdown(&with_gate);
+        assert!(md.contains("## Mechanism gate"));
+        assert!(md.contains("Mechanism verdict"));
+        assert!(md.contains("`military_share<=1.5x`"));
+        assert!(md.contains("`civilian_share>=0.25`"));
+        assert_eq!(
+            md.matches("`civilian_share>=0.25`").count(),
+            2,
+            "one row per budget for that bound"
+        );
+        assert!(md.contains("check both"));
     }
 }
