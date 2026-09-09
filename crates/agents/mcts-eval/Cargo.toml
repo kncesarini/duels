@@ -18,6 +18,10 @@ duels-strategy = { path = "../../duels-strategy" }
 # rather than a dependency on it, per the "agent crates are self-contained"
 # invariant.
 duels-eval = { path = "../../duels-eval" }
+# The learned value (a feasibility spike), consumed only through the opt-in
+# `LeafValue::Learned` / `LeafValue::LearnedBlend` variants. Same layering
+# argument as `duels-eval` above: a library below the agents, not an agent.
+duels-value = { path = "../../duels-value" }
 rand = { workspace = true }
 
 [dev-dependencies]

@@ -1,0 +1,25 @@
+[package]
+name = "duels-value"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A learned 7 Wonders Duel position value: public-information features, a small trained network predicting the victory-kind-decomposed outcome distribution, and hand-rolled f32 inference. A library below the agents, not an agent."
+
+# Deliberately `duels-core` and nothing else. `features` and `predict` are
+# pure functions of the state they are handed, so this crate needs neither
+# `rand` nor `duels-agents-api` -- which is what lets any agent depend on it
+# without depending on another agent (see "the layering" in CLAUDE.md). It
+# does not depend on `duels-eval` either: the learned value is meant to be
+# measured as an *independent* signal, and an input feature borrowed from the
+# hand-crafted evaluation would make that comparison circular.
+[dependencies]
+duels-core = { path = "../duels-core" }
+
+# `rand` is a *dev*-dependency only: the tests drive real games and
+# `Observation::sample_state` takes an explicitly seeded `StdRng`.
+[dev-dependencies]
+rand = { workspace = true }
+# `examples/train.rs`, the offline trainer, parallelises its minibatch
+# gradients; nothing in the library proper uses it.
+rayon = "1"

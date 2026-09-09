@@ -263,16 +263,47 @@ pub enum LeafValue {
         /// How much of the static value to mix in, on `[0, 1]`.
         weight: f64,
     },
+    /// Score the leaf with [`duels_value::win_probability`] — the **learned**
+    /// value, a small network trained offline on actual game outcomes — and
+    /// nothing else. No playout, no `duels_eval::Root`, no randomness consumed.
+    ///
+    /// **A feasibility spike, opt-in only.** This is the "is the learned value
+    /// a good *value* signal at all?" arm: measured first and alone, before
+    /// the blend below, so the question is not confounded with the
+    /// complementarity a playout adds. See `duels-value`'s crate docs for
+    /// what it measured.
+    Learned,
+    /// `weight * Learned + (1 - weight) * Rollout`, both computed — the
+    /// learned analogue of [`Blend`](LeafValue::Blend).
+    ///
+    /// Kept as a separate variant rather than a third kind of static term
+    /// inside `Blend` so the existing variants' code paths are untouched byte
+    /// for byte. The same rescaling argument applies: pair a weight `w` with
+    /// `exploration = c₀·(1 - w)`.
+    LearnedBlend {
+        /// How much of the learned value to mix in, on `[0, 1]`.
+        weight: f64,
+    },
 }
 
 impl LeafValue {
     /// Whether this variant needs a [`duels_eval::Root`] built for the tree.
     ///
-    /// Only [`LeafValue::Rollout`] answers `false`, and it is not the default
-    /// here: this crate normally builds exactly one `Root` per search.
+    /// [`LeafValue::Rollout`] and the two learned variants answer `false`
+    /// (they never call `duels-eval`); everything else — including the
+    /// default — builds exactly one `Root` per search.
     #[inline]
     pub fn needs_eval_root(&self) -> bool {
-        !matches!(self, LeafValue::Rollout)
+        !matches!(
+            self,
+            LeafValue::Rollout | LeafValue::Learned | LeafValue::LearnedBlend { .. }
+        )
+    }
+
+    /// Whether this variant reads the learned value in `duels-value`.
+    #[inline]
+    pub fn uses_learned_value(&self) -> bool {
+        matches!(self, LeafValue::Learned | LeafValue::LearnedBlend { .. })
     }
 
     /// A compact, stable description for [`crate::Config::describe`].
@@ -282,8 +313,18 @@ impl LeafValue {
             LeafValue::Static => "static".to_string(),
             LeafValue::Truncated { plies } => format!("truncated({plies})"),
             LeafValue::Blend { weight } => format!("blend({weight:.3})"),
+            LeafValue::Learned => "learned".to_string(),
+            LeafValue::LearnedBlend { weight } => format!("learned-blend({weight:.3})"),
         }
     }
+}
+
+/// The learned value of `state` on this tree's `[0, 1]` scale, **always from
+/// [`Player::One`]'s perspective** — the same convention as [`static_value`].
+/// Consumes no randomness.
+#[inline]
+pub(crate) fn learned_value(state: &GameState) -> f64 {
+    duels_value::win_probability(state, Player::One)
 }
 
 #[cfg(test)]

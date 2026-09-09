@@ -521,22 +521,40 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                         }
                         LeafValue::Blend { weight }
                     }
+                    // The learned value's blend, range-checked for the same
+                    // reason as `blend` above.
+                    Some(("learned-blend" | "learned_blend", w)) => {
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-eval: leaf learned-blend weight must be in [0, 1], got \
+                                 \"{w}\" (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        LeafValue::LearnedBlend { weight }
+                    }
                     None => match v {
                         "rollout" | "off" => LeafValue::Rollout,
                         "static" => LeafValue::Static,
                         "trunc" | "truncated" => LeafValue::Truncated { plies: 8 },
                         "blend" => LeafValue::Blend { weight: 0.5 },
+                        "learned" => LeafValue::Learned,
+                        "learned-blend" | "learned_blend" => {
+                            LeafValue::LearnedBlend { weight: 0.5 }
+                        }
                         other => {
                             return Err(format!(
                                 "mcts-eval: unknown leaf \"{other}\" (expected \"rollout\", \
-                                 \"static\", \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                                 \"static\", \"truncated[:<plies>]\", \"blend[:<weight>]\", \
+                                 \"learned\", or \"learned-blend[:<weight>]\")"
                             ))
                         }
                     },
                     Some((other, _)) => {
                         return Err(format!(
                             "mcts-eval: leaf \"{other}\" takes no parameter (only \
-                             \"truncated:<plies>\" and \"blend:<weight>\" do)"
+                             \"truncated:<plies>\", \"blend:<weight>\" and \
+                             \"learned-blend:<weight>\" do)"
                         ))
                     }
                 };
@@ -988,6 +1006,39 @@ mod tests {
         assert_eq!(cfg.rollout, RolloutWeights::UNIFORM);
         assert_eq!(cfg.race, RaceWeights::MEDIUM);
         assert_eq!(cfg.root_determinizations, 4);
+    }
+
+    /// The learned-value leaf (`duels-value`) is reachable from a spec string
+    /// in both shapes, range-checked like `blend`, and leaves the default
+    /// untouched when not named.
+    #[test]
+    fn mcts_eval_learned_leaf_spellings() {
+        assert_eq!(
+            parse_mcts_eval_config("leaf=learned").unwrap().leaf,
+            LeafValue::Learned
+        );
+        assert_eq!(
+            parse_mcts_eval_config("leaf=learned-blend").unwrap().leaf,
+            LeafValue::LearnedBlend { weight: 0.5 }
+        );
+        assert_eq!(
+            parse_mcts_eval_config("leaf=learned-blend:0.3,c=0.7")
+                .unwrap()
+                .leaf,
+            LeafValue::LearnedBlend { weight: 0.3 }
+        );
+        assert!(parse_mcts_eval_config("leaf=learned-blend:1.5").is_err());
+        assert!(parse_mcts_eval_config("leaf=learned:0.5").is_err());
+        assert_eq!(
+            parse_mcts_eval_config("").unwrap().leaf,
+            MctsEvalConfig::default().leaf
+        );
+        // A learned leaf records the weights' provenance in the spec string,
+        // the way a `duels-eval` leaf records the whole evaluation config.
+        let spec = MctsEvalAgent::with_config(1, parse_mcts_eval_config("leaf=learned").unwrap())
+            .spec()
+            .params;
+        assert!(spec.contains("leaf=learned;eval=unused;value="), "{spec}");
     }
 
     /// The eval-scalar keys are strictly opt-in: a spec that names none of

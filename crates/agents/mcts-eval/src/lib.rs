@@ -474,6 +474,54 @@
 //! cargo run --release -p duels-eval --example calibrate -- 200
 //! ```
 //!
+//! ## A learned leaf value (`duels-value`): measured, not adopted
+//!
+//! [`LeafValue::Learned`] and [`LeafValue::LearnedBlend`] score a leaf with
+//! `duels_value::win_probability` — a small network trained offline on the
+//! actual outcomes of the 100,000-game `mcts-eval` self-play corpus, as a
+//! 4-way victory-kind classifier (see that crate's docs for the model, the
+//! training protocol and the held-out numbers). Both are **opt-in**, spelled
+//! `mcts-eval:leaf=learned` and `mcts-eval:leaf=learned-blend[:<w>]`; neither
+//! is a default, and nothing on the default path changed. The measurements
+//! below were taken at `Nodes(32000)` — a load-insensitive stand-in for the
+//! production wall-clock budget — with `duels-arena experiment`, two disjoint
+//! 100-game seed ranges each, paired and seat-swapped, against this crate's
+//! default (`blend:0.5, c=0.5`).
+//!
+//! | candidate | W-L-D | Elo | 95% CI | per range |
+//! |---|---|---|---|---|
+//! | `leaf=learned` (learned value alone, no playout) | 54-146-0 | **-171.8** | [-225.8, -117.8] | -180, -162 |
+//! | `leaf=learned-blend:0.5` (half learned, half playout), ranges `1`, `10001` | 104-96-0 | +13.8 | [-34.2, +61.9] | 0, +28 |
+//! | `leaf=learned-blend:0.5`, ranges `20001`, `30001` | 108-91-1 | +29.5 | [-18.7, +77.7] | +3, +56 |
+//! | `leaf=learned-blend:0.5`, **all four ranges pooled (400 games)** | 212-187-1 | **+21.7** | [-12.4, +55.9] | — |
+//!
+//! **The blend is at parity with the default, not above it.** Half learned
+//! value and half playout scores `+21.7` Elo over 400 games against half
+//! `duels-eval` and half playout, positive on all four ranges but with an
+//! interval that contains zero and excludes the `+50` this line of work was
+//! pursued for; SPRT (`elo0 = 0`, `elo1 = 20`) reads `Continue` on every
+//! cell. What *is* clearly different is the mechanism: the learned blend won
+//! 25 of its 212 games by scientific supremacy against the control's 0
+//! (military 30 against 19, civilian 154 against 165), so the network's
+//! `science_win` head is doing inside the search exactly what the
+//! victory-kind decomposition was designed for — and it buys, at most, a
+//! couple of dozen Elo. The learned value is a *different* static half of
+//! roughly the same worth as the hand-crafted one, not a better one.
+//!
+//! The learned value on its own reproduces, almost to the point, the
+//! measurement that started this crate: a **pure** `duels-eval` leaf was
+//! `-170.7` Elo at `Nodes(2000)`, and a pure learned leaf is `-171.8` at
+//! `Nodes(32000)` — despite the network being far *better calibrated* on
+//! held-out corpus positions than the hand-crafted evaluation it stands next
+//! to (Brier `0.183` against `0.217`). The victory kinds are the same
+//! signature too: the learned-alone arm won 20 of its 54 games by scientific
+//! supremacy against the control's 0, and only 25 on points against 133. A
+//! static value, however good on the corpus distribution, is not a substitute
+//! for the playout inside a search; see `duels-value`'s crate docs for the
+//! reading of why. The cost side is fine — a learned leaf simulation is about
+//! 3.5 µs against a playout's 18.8 (`examples/leaf_bench.rs`) — it is the
+//! signal that does not carry.
+//!
 //! # The other knobs
 //!
 //! Every remaining [`Config`] field is `mcts-uct`'s, at `mcts-uct`'s tuned

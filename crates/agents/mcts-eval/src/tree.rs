@@ -267,8 +267,18 @@ impl Config {
     /// that same string, just frozen instead of live.
     pub fn describe(&self) -> String {
         let w = &self.rollout;
+        // A learned leaf records the embedded weights' provenance line the
+        // same way a `duels-eval` leaf records the whole evaluation
+        // configuration: so a results file says exactly which network it was
+        // measured with. Appended, so the string is unchanged for every
+        // pre-existing variant.
+        let value_tail = if self.leaf.uses_learned_value() {
+            format!(";value={}", duels_value::describe())
+        } else {
+            String::new()
+        };
         format!(
-            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});race={};chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={};leaf={};eval={}",
+            "c={:.3};rollout=weights(build={},wonder={},discard={},chain_free={},new_symbol={},pair_complete={});race={};chance=progressive-widening(c={:.2},alpha={:.2});dets={};prior={};leaf={};eval={}{value_tail}",
             self.exploration,
             w.build,
             w.wonder,
@@ -821,6 +831,12 @@ impl Tree {
                     Some(s) => weight * s + (1.0 - weight) * played,
                     None => played,
                 }
+            }
+            LeafValue::Learned => leaf::learned_value(&self.nodes[node as usize].state),
+            LeafValue::LearnedBlend { weight } => {
+                let learned = leaf::learned_value(&self.nodes[node as usize].state);
+                let played = self.rollout_from(node, rng);
+                weight * learned + (1.0 - weight) * played
             }
         }
     }
@@ -1642,6 +1658,8 @@ mod tests {
             (LeafValue::Static, true),
             (LeafValue::Truncated { plies: 8 }, true),
             (LeafValue::Blend { weight: 0.5 }, true),
+            (LeafValue::Learned, false),
+            (LeafValue::LearnedBlend { weight: 0.5 }, false),
         ] {
             let mut rng = StdRng::seed_from_u64(9);
             let tree = Tree::new(
@@ -1829,7 +1847,56 @@ mod tests {
                 leaf_value(LeafValue::Static, seed).to_bits(),
                 "seed {seed}: a blend at weight one is not the static value"
             );
+            // The learned family has the same two edges, on the same RNG
+            // stream: `LearnedBlend` runs the same playout `Rollout` does.
+            assert_eq!(
+                leaf_value(LeafValue::LearnedBlend { weight: 0.0 }, seed).to_bits(),
+                leaf_value(LeafValue::Rollout, seed).to_bits(),
+                "seed {seed}: a learned blend at weight zero is not the playout value"
+            );
+            assert_eq!(
+                leaf_value(LeafValue::LearnedBlend { weight: 1.0 }, seed).to_bits(),
+                leaf_value(LeafValue::Learned, seed).to_bits(),
+                "seed {seed}: a learned blend at weight one is not the learned value"
+            );
         }
+    }
+
+    /// The learned leaf is a `[0, 1]` probability and — the mandatory
+    /// property — does not depend on which hidden world the sampler drew.
+    /// `duels-value` asserts this of the value itself in its own
+    /// `tests/determinization_invariance.rs`; this asserts it of the way
+    /// *this* crate calls it, exactly as
+    /// `a_static_leaf_value_is_determinization_invariant` does for
+    /// `duels-eval`. (That it consumes no randomness is a fact of its
+    /// signature — `learned_value` takes no RNG — which is what makes the
+    /// `LearnedBlend { weight: 0.0 } == Rollout` edge above hold on one
+    /// stream.)
+    #[test]
+    fn a_learned_leaf_value_is_a_probability_and_determinization_invariant() {
+        let mut differing_worlds = 0;
+        for seed in 0..8u64 {
+            let (real, _) = mid_game(seed);
+            let obs = real.observation();
+            let mut rng_a = StdRng::seed_from_u64(seed ^ 0xAAAA);
+            let mut rng_b = StdRng::seed_from_u64(seed ^ 0xBBBB_BBBB);
+            let a = obs.sample_state(&mut rng_a);
+            let b = obs.sample_state(&mut rng_b);
+            if a != b {
+                differing_worlds += 1;
+            }
+            let (va, vb) = (leaf::learned_value(&a), leaf::learned_value(&b));
+            assert!(va.is_finite() && (0.0..=1.0).contains(&va), "{va}");
+            assert_eq!(
+                va.to_bits(),
+                vb.to_bits(),
+                "seed {seed}: the learned leaf scored the sampler's luck"
+            );
+        }
+        assert!(
+            differing_worlds > 0,
+            "every pair of samples coincided; vacuous"
+        );
     }
 
     /// A static leaf value is a `[0, 1]` probability, which is what makes it

@@ -40,6 +40,11 @@ fn candidates() -> Vec<(&'static str, LeafValue)> {
         ("truncated:16", LeafValue::Truncated { plies: 16 }),
         ("blend:0.3", LeafValue::Blend { weight: 0.3 }),
         ("blend:0.5 (default)", LeafValue::Blend { weight: 0.5 }),
+        // The learned value (`duels-value`), alone and blended: the same two
+        // shapes as `static` / `blend`, so the rows read as a direct cost
+        // comparison of the two static signals.
+        ("learned", LeafValue::Learned),
+        ("learned-blend:0.5", LeafValue::LearnedBlend { weight: 0.5 }),
     ]
 }
 
