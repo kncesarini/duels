@@ -11,13 +11,16 @@
 //! # The ladder, and why one budget runs all of it
 //!
 //! [`LADDER`] names the agents tracked and the budget each is *understood* to
-//! play at: `Nodes(1)` for the five 1-ply agents, `Nodes(2000)` for the three
+//! play at: `Nodes(1)` for the four 1-ply agents, `Nodes(2000)` for the three
 //! search agents, matching how every ladder comparison in this project's
-//! history has been run.
+//! history has been run. (`strategist` retired here — its research question,
+//! whether `duels-strategy`'s prior helps `greedy-ev`, was answered
+//! statistically indistinguishable, and it scored within noise of the
+//! anchor against every top-half agent. See `docs/milestones.md`.)
 //!
 //! `duels-arena match` grants both sides the same budget, so a mixed pairing
 //! (`phased` vs `mcts-uct`, say) looks at first like it cannot honour both
-//! numbers at once. It can: the five 1-ply agents take `_budget` in their
+//! numbers at once. It can: the four 1-ply agents take `_budget` in their
 //! `Agent::choose` signature and never read it, so a `Nodes(1)` and a
 //! `Nodes(2000)` 1-ply agent are *the same agent*. The whole round robin
 //! therefore runs at [`ROUND_ROBIN_BUDGET`], and the per-agent budgets in
@@ -74,10 +77,6 @@ pub const LADDER: &[LadderEntry] = &[
         budget: "nodes:1",
     },
     LadderEntry {
-        agent: "strategist",
-        budget: "nodes:1",
-    },
-    LadderEntry {
         agent: "phased",
         budget: "nodes:1",
     },
@@ -122,7 +121,7 @@ pub const CHAMPION: LadderEntry = LadderEntry {
 };
 
 /// Every unordered pairing of [`LADDER`] agents, in a stable order — the
-/// `C(n, 2)` = 28 matches one nightly round robin consists of.
+/// `C(n, 2)` = 21 matches one nightly round robin consists of.
 pub fn pairings() -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
     for (i, a) in LADDER.iter().enumerate() {
@@ -605,7 +604,6 @@ mod tests {
             "random",
             "greedy",
             "greedy-ev",
-            "strategist",
             "phased",
             "alphabeta",
             "mcts-uct",
@@ -667,7 +665,7 @@ mod tests {
         let p = pairings();
         let n = LADDER.len();
         assert_eq!(p.len(), n * (n - 1) / 2);
-        assert_eq!(p.len(), 28);
+        assert_eq!(p.len(), 21);
         let unique: BTreeSet<(&str, &str)> = p.iter().map(|&(a, b)| unordered(a, b)).collect();
         assert_eq!(unique.len(), p.len(), "no pairing should repeat");
         assert!(p.iter().all(|&(a, b)| a != b), "no self-play pairings");
@@ -739,8 +737,8 @@ mod tests {
         let board = build(&synthetic_round_robin(), "2026-09-06T00:00:00Z", "abc1234").unwrap();
         assert_eq!(board.schema, SCHEMA_VERSION);
         assert_eq!(board.rows.len(), LADDER.len());
-        assert_eq!(board.pairings.len(), 28);
-        assert_eq!(board.total_games, 28 * 100);
+        assert_eq!(board.pairings.len(), 21);
+        assert_eq!(board.total_games, 21 * 100);
         assert!(board.converged);
 
         let order: Vec<&str> = board.rows.iter().map(|r| r.agent.as_str()).collect();
@@ -751,7 +749,6 @@ mod tests {
                 "mcts-uct",
                 "alphabeta",
                 "phased",
-                "strategist",
                 "greedy-ev",
                 "greedy",
                 "random"
@@ -782,9 +779,9 @@ mod tests {
         let anchor = board.rows.iter().find(|r| r.agent == ANCHOR_AGENT).unwrap();
         assert_eq!(anchor.elo, ANCHOR_ELO);
 
-        // Each agent plays 7 opponents x 100 games.
+        // Each agent plays 6 opponents x 100 games.
         for row in &board.rows {
-            assert_eq!(row.games, 700, "{} played the wrong number", row.agent);
+            assert_eq!(row.games, 600, "{} played the wrong number", row.agent);
             assert_eq!(row.wins + row.losses + row.draws, row.games);
         }
         // The budget label follows the ladder, not the run.
@@ -814,7 +811,7 @@ mod tests {
         records.pop();
         let err = build(&records, "t", "c").unwrap_err();
         assert!(err.contains("incomplete"), "unexpected: {err}");
-        assert!(err.contains("1 of 28"), "should say what is missing: {err}");
+        assert!(err.contains("1 of 21"), "should say what is missing: {err}");
     }
 
     #[test]
