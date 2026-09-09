@@ -2153,6 +2153,163 @@
 //!   all**. They were deliberately left alone: fixing either is a change to a
 //!   different model, wants its own measurement, and belongs in its own PR.
 //!
+//! # Round ten: the science weight was frozen at the root, and unfreezing it
+//! is worth nothing
+//!
+//! ## The brief, and the honest answer to it
+//!
+//! Round nine's closing correction laid down a rule — *a [`Root`] may cache a
+//! price, never a quantity about the position* — and round ten was asked to
+//! apply it to the next place it is violated. The candidate was easy to name.
+//! [`TermWeights::science`], the multiplier on the science-ladder term, is
+//!
+//! ```text
+//! w_sci   = 1 + (boost_sci − 1) · S(c_sci)
+//! c_sci   = M_sci^alpha_m · (distinct / 6)^beta_prog
+//! ```
+//!
+//! and `distinct` in it is the **root's** distinct-symbol count, baked in when
+//! the `Root` was built. `terms::science_ladder` reads the leaf's count for the
+//! *rung*, correctly; the multiplier on that rung still says what the race
+//! mattered at the root. A leaf ten plies deeper, where a player has gone from
+//! two symbols to five, is judged by the importance the science term had at
+//! two. `mcts-eval` builds one `Root` per search tree, so this is its normal
+//! operating condition.
+//!
+//! **The answer is that this is not the same defect class as `p_build`, and
+//! the difference decides the shape of the change.** `p_build` was cached by
+//! accident, inside a term's *value*; nothing argued for it and nothing tested
+//! it. The commitment weights are root-fixed **on purpose**, in the *weight*
+//! layer: [`blend`]'s "Root-fixing" section argues for it and
+//! `tests::a_committing_move_is_scored_under_the_root_weights_not_its_own`
+//! pins it. At one ply, a weight that moved with the candidate action would
+//! credit a committing move twice — once through the term's contents, which
+//! should move, and again through the multiplier on them, which should not.
+//! That argument is sound at one ply and stale at ten. Both readings are right
+//! somewhere, so the change is an opt-in [`ScienceProgress`] and the default
+//! did not move.
+//!
+//! ## Why only half of `c_sci` can be re-read, and what that costs
+//!
+//! Rebuilding a whole `Root` per leaf is what the cost table rules out — one
+//! `Root::new` is about six and a half `evaluate`s. But `c_sci` factorises,
+//! and only one factor is expensive:
+//!
+//! ```text
+//! c_sci = M_sci^alpha_m · (distinct / 6)^beta_prog
+//!         \___________/   \___________________/
+//!          root-fixed        re-read per leaf
+//! ```
+//!
+//! [`Commitment::m_sci_alpha`] keeps the first factor so
+//! [`TermWeights::science_at`] can substitute the second for the price of one
+//! `distinct_science()` and two `powf`s.
+//!
+//! **This is an approximation and the direction of its error is known.**
+//! `M_sci` is [`duels_strategy::ScienceRead::magnitude`] — the probability of
+//! completing six symbols — which is itself a function of how many are held
+//! (`missing = 6 − distinct` is one of its inputs). So it is *not* a price in
+//! the sense the round-nine rule allows a `Root` to cache, and "the root's
+//! magnitude with the leaf's progress" is not a clean factorisation. `M_sci`
+//! rises with `distinct`, so a leaf that has advanced the race reads as
+//! somewhat *less* committed than a freshly-built `Root` would say, and never
+//! as more. The correction is real but partial, and conservative. Saying so is
+//! part of the result: an architect's sketch of this fix described `M_sci` as
+//! "achievability at the root", which the magnitude model does not support.
+//!
+//! ## Elo: neutral, on two disjoint ranges, for both consumers
+//!
+//! `duels-arena experiment`, paired seeds and swapped seats, 1600 games per
+//! cell over two disjoint ranges. Both arms of each A/B pin the same
+//! `duels-eval` configuration and differ in exactly the one field (see
+//! `duels_arena::agent_spec`'s `sciprog` key, and `mcts-eval`'s
+//! `eval_override_none_is_bit_identical_to_pinning_todays_live_default` for
+//! why pinning today's default is behaviourally free).
+//!
+//! ```text
+//!                                       seeds 1..801   seeds 10000..10800   pooled (3200)
+//! mcts-eval:sciprog=leaf  vs  =root       +6.7           −2.4               +2.2 [−9.9, +14.2]
+//! phased:sciprog=leaf     vs  phased      +1.7           −2.6               −0.4 [−12.5, +11.6]
+//! ```
+//!
+//! `mcts-eval` at `Nodes(2000)`, `phased` at `Nodes(1)`. Both pooled rows are
+//! SPRT `AcceptH0` against `H1 = 20` Elo, and `duels-arena`'s verdict for both
+//! experiments is **Reject**. So [`ScienceProgress::Root`] stays the default.
+//!
+//! No `TimeMs` column, deliberately. This round recommends no new default, and
+//! the run was made on a machine at load average 50-110 from unrelated
+//! concurrent work, where `duels_arena`'s own crate docs say a wall-clock cell
+//! is not worth trusting. A `Nodes` cell is load-independent, which is why
+//! these numbers are reported and a `TimeMs` cell was not attempted.
+//!
+//! ## The victory kinds, which is where the mechanism was supposed to show
+//!
+//! Aggregate Elo can hide a mechanism when the mechanism only decides 2-4% of
+//! games, so the science-race conversion rate is the number this round was
+//! actually predicting. It moved in the predicted direction and not by enough
+//! to matter:
+//!
+//! ```text
+//!                                    military   science   civilian   tiebreak
+//! mcts-eval:sciprog=leaf                 265        40       1276        28
+//! mcts-eval:sciprog=root (control)       230        31       1304        24
+//!    science race exposed in 128 of 3200 games (4%), military in 1515 (47%)
+//!
+//! phased:sciprog=leaf                     81        13       1466        37
+//! phased (control)                        84        14       1461        42
+//!    science race exposed in 69 of 3200 games (2%)
+//! ```
+//!
+//! For `mcts-eval`, science wins go 31 → 40 out of the 71 the two arms share:
+//! about 1.1 standard deviations under a 50/50 null, so directionally right and
+//! statistically nothing. Military wins move further in absolute terms
+//! (230 → 265, ~1.6 sd) and civilian wins fall by 28, which is the same
+//! composition trade round seven's blend-weight sweep described — nudging the
+//! evaluation's race terms up buys race wins out of the civilian column — at a
+//! magnitude too small to read as a finding.
+//!
+//! For `phased` there is no effect at all, in Elo or in composition, and
+//! `duels-agent-phased`'s `tests/science_progress_identity.rs` says why with a
+//! stronger instrument than an arena run: the option **does** move candidate
+//! scores at one ply (`expected_value` scores a post-action state against a
+//! pre-action `Root`, so even here the root's count is a move stale), but
+//! `S` is a quartic Hill curve with its midpoint near `0.32` and one symbol out
+//! of six moves `c_sci` by a fraction of that. The measured worst case is a few
+//! percent of one term, and across twelve whole self-play games it never once
+//! flips a 1-ply argmax — the decision hash is bit-identical to the pre-fix
+//! tree's. So the double-counting risk the root-fixing argument warns about is
+//! real in principle and, at these weights, too small to observe either way.
+//!
+//! ## What this says, and what a later round could still try
+//!
+//! The result is a documented negative, kept as an off-by-default option
+//! rather than reverted, on the same terms as round nine's two candidates.
+//! Three readings of it are worth carrying forward.
+//!
+//! **1. Staleness at depth is not automatically worth Elo.** Round nine's
+//! `p_build` fix recovered real strength, and it was tempting to read that as
+//! "every root-frozen quantity is costing something". This one is frozen in
+//! the same way and costs nothing measurable. The difference is plausibly
+//! *what the frozen quantity multiplies*: `p_build` scaled a whole term's
+//! value, while `w_sci` is a multiplier that the blend's own shape keeps
+//! within `[1.0, 1.5]` and, in most real positions, within a few percent of
+//! `1.0`. A quantity the shape flattens cannot be worth much however stale it
+//! is.
+//!
+//! **2. If the science weight is to matter, the shape is the thing to change,
+//! not where it is read.** `beta_prog = 2` and `hill_n = 4` together mean four
+//! of six symbols reads as barely committed. Whether that is right is a
+//! separate, sweepable question ([`Blend::beta_prog`], [`Blend::c0`]) and this
+//! round deliberately did not confound it with the staleness question.
+//!
+//! **3. The other root-fixed weights are untouched and probably not worth
+//! chasing individually.** [`TermWeights::military`], `vp`, `liquidity`,
+//! `development`, `economy` and `race_liquidity` are all still read at the
+//! root, and `c_mil` does not factorise the way `c_sci` does — `prog_mil`
+//! needs `MilitaryRead::need`, not a count off the state. On this round's
+//! evidence the honest next step for the blend is the sweep in (2), not six
+//! more unfreezings.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -2383,7 +2540,7 @@ use duels_core::scoring::{self, GameResult};
 use duels_core::{Action, GameState, Player};
 use duels_strategy::{deny_vp, stance_in, Context, PriorWeights, Stance, ThreatWeights, VpWeights};
 
-pub use blend::{Blend, Commitment, TermWeights};
+pub use blend::{Blend, Commitment, ScienceProgress, TermWeights};
 pub use menu::{ChainTable, MenuOptions, MenuTables, TakeContext, TakeValue};
 pub use rails::{rail_owner, rail_value, RailModel};
 pub use terms::{DevSupply, GuildTable, MilSmoothing, WonderBudget, MAX_UNITS};
@@ -3655,7 +3812,7 @@ impl Config {
              menu={:.2}@{:.2},chaineq={:.2},bill={:.2},band={:.2}/{:.2},\
              smooth={:.2}@{:.1}|\
              mil={:.2}/{:.2},vp={:.2},coin={:.2},dev={:.3}@{:.2},sci={:.2},raceliq={:.2},econ={:.1}/{:.2}/{:.2},chain={:.2},wonder={:.2},start={:?},deny={:.2}x{:.2},win={:.0}|\
-             blend={},a={:.2},b={:.2},n={:.1},c0={:.2},floors={:.2}/{:.2}/{:.2}/{:.2}/{:.2},boosts={:.2}/{:.2}",
+             blend={},a={:.2},b={:.2},n={:.1},c0={:.2},floors={:.2}/{:.2}/{:.2}/{:.2}/{:.2},boosts={:.2}/{:.2},sciprog={}",
             e.science_ladder,
             e.science.dead_race_scale,
             e.science.pair_threat_weight,
@@ -3765,6 +3922,10 @@ impl Config {
             b.floor_econ,
             b.boost_sci,
             b.boost_mil,
+            match b.science_progress {
+                ScienceProgress::Root => "root",
+                ScienceProgress::Leaf => "leaf",
+            },
         )
     }
 }
@@ -4406,7 +4567,18 @@ fn player_value(state: &GameState, p: Player, root: &Root) -> f64 {
     let economy = w.economy * (coin_safety + market);
 
     // --- sharpening with commitment ---------------------------------------
-    let science = w.science * e.science_ladder * terms::science_ladder(state, p, &e.science);
+    // `ScienceProgress::Root` — the default — is spelled as the bare
+    // `w.science` it always was, so the option's off value is the same
+    // expression rather than a reconstruction of it. See
+    // [`ScienceProgress`] for why the leaf reading is opt-in and not simply
+    // the fix.
+    let science_weight = match root.config.blend.science_progress {
+        ScienceProgress::Root => w.science,
+        ScienceProgress::Leaf => {
+            w.science_at(state.player(p).distinct_science(), &root.config.blend)
+        }
+    };
+    let science = science_weight * e.science_ladder * terms::science_ladder(state, p, &e.science);
     let military = match c.military_model {
         MilitaryModel::Legacy => {
             w.military * e.military_position * terms::military_position(state, p)

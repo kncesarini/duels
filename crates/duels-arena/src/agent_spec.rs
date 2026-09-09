@@ -136,7 +136,7 @@ use duels_agents_api::Agent;
 // `ReachModel` is round nine's addition and `duels-agent-phased` does not
 // re-export it; taken straight from the library below the agents, exactly as
 // `CountPricing` already is.
-use duels_eval::{CountPricing, ReachModel};
+use duels_eval::{CountPricing, ReachModel, ScienceProgress};
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
 
@@ -420,6 +420,34 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                         ))
                     }
                 });
+            }
+            // `duels-eval`'s round-ten option, which lives on
+            // `duels_eval::Config::blend` rather than on `EvalWeights` and so
+            // cannot ride the scalar fallthrough at the bottom of this match.
+            //
+            // Note that passing it *at all* pins `eval_override`, including
+            // `sciprog=root`. That is deliberate and is what makes the A/B
+            // symmetric: `mcts-eval:sciprog=leaf` against
+            // `mcts-eval:sciprog=root` differs in exactly one field, where
+            // against a bare `mcts-eval` it would also differ in whether the
+            // evaluation is pinned at all (`tree`'s
+            // `eval_override_none_is_bit_identical_to_pinning_todays_live_default`
+            // says that pinning today's default is behaviourally free, so the
+            // control arm is still today's agent).
+            "sci_progress" | "sciprog" => {
+                let eval = cfg
+                    .eval_override
+                    .get_or_insert_with(duels_eval::Config::default);
+                eval.blend.science_progress = match v {
+                    "root" | "off" => duels_eval::ScienceProgress::Root,
+                    "leaf" | "on" => duels_eval::ScienceProgress::Leaf,
+                    other => {
+                        return Err(format!(
+                            "mcts-eval: unknown sci_progress \"{other}\" (expected \"root\" \
+                             or \"leaf\")"
+                        ))
+                    }
+                };
             }
             "exploration" | "c" => cfg.exploration = parse_field(k, v)?,
             "chance_widen_c" => cfg.chance_widen_c = parse_field(k, v)?,
@@ -777,6 +805,16 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
                     other => return Err(format!("phased: unknown blend \"{other}\"")),
                 }
             }
+            // Round ten's option. Listed after `blend` so `blend=off,
+            // sciprog=leaf` means what it reads like, the same ordering
+            // convention `base` follows.
+            "sci_progress" | "sciprog" => {
+                cfg.blend.science_progress = match v {
+                    "root" | "off" => ScienceProgress::Root,
+                    "leaf" | "on" => ScienceProgress::Leaf,
+                    other => return Err(format!("phased: unknown sci_progress \"{other}\"")),
+                }
+            }
             "menu_lambda" | "lambda" => cfg.eval.menu.lambda = parse_field(k, v)?,
             "menu_tau" | "tau" => cfg.eval.menu.tau = parse_field(k, v)?,
             "chain_equity" | "chaineq" => cfg.eval.chain_equity = parse_field(k, v)?,
@@ -1020,6 +1058,60 @@ mod tests {
         assert_eq!(cfg.eval_override, Some(want));
         // A genuinely unknown key still fails rather than being swallowed.
         assert!(parse_mcts_eval_config("no_such_key=1.0").is_err());
+    }
+
+    /// Round ten's option has to be reachable from both agents' specs, under
+    /// the same key name, and has to show up in the recorded spec — otherwise
+    /// the two arms of its A/B are indistinguishable in a results file after
+    /// the fact.
+    #[test]
+    fn the_science_progress_key_reaches_both_agents_and_shows_up_in_the_spec() {
+        // Default is the root reading, for both.
+        assert_eq!(
+            parse_phased_config("").unwrap().blend.science_progress,
+            ScienceProgress::Root
+        );
+        assert_eq!(parse_mcts_eval_config("").unwrap().eval_override, None);
+
+        for value in ["leaf", "on"] {
+            assert_eq!(
+                parse_phased_config(&format!("sciprog={value}"))
+                    .unwrap()
+                    .blend
+                    .science_progress,
+                ScienceProgress::Leaf
+            );
+            let pinned = parse_mcts_eval_config(&format!("sci_progress={value}"))
+                .unwrap()
+                .eval_override
+                .expect("naming the key pins the evaluation");
+            assert_eq!(pinned.blend.science_progress, ScienceProgress::Leaf);
+        }
+        // `root` is spellable too, and pins the control arm so the A/B differs
+        // in exactly one field.
+        let control = parse_mcts_eval_config("sciprog=root")
+            .unwrap()
+            .eval_override
+            .expect("the control arm pins today's default too");
+        assert_eq!(control, duels_eval::Config::default());
+
+        // It layers on top of a frozen generation, like every other eval key.
+        let cfg = parse_mcts_eval_config("eval=v6,sciprog=leaf")
+            .unwrap()
+            .eval_override
+            .unwrap();
+        let mut want = duels_eval::Config::v6();
+        want.blend.science_progress = ScienceProgress::Leaf;
+        assert_eq!(cfg, want);
+
+        // And the recorded spec says which reading was in force.
+        let leaf = make_agent_from_spec("mcts-eval:sciprog=leaf", 1).unwrap();
+        assert!(leaf.spec().params.contains("sciprog=leaf"));
+        let root = make_agent_from_spec("mcts-eval:sciprog=root", 1).unwrap();
+        assert!(root.spec().params.contains("sciprog=root"));
+
+        assert!(parse_phased_config("sciprog=nonsense").is_err());
+        assert!(parse_mcts_eval_config("sciprog=nonsense").is_err());
     }
 
     /// A weight vector has to mean the same thing to both consumers of

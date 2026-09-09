@@ -75,12 +75,79 @@
 //! `crate::tests::a_committing_move_is_scored_under_the_root_weights_not_its_own`
 //! and, for the counting half, `duels-agent-phased`'s
 //! `tests::root_weights_are_built_exactly_once_per_choose`.
+//!
+//! ## ...and where root-fixing stops being right
+//!
+//! The paragraph above is an argument about **one ply**. It is a good one
+//! there: `phased` builds a `Root` from the pre-action position and scores the
+//! post-action position against it, so the "credited twice" failure is real
+//! and one move away. It is *not* an argument about a search that scores a
+//! leaf ten plies deeper, where the root weights are simply stale — a player
+//! who has gone from two distinct symbols to five is still being judged by the
+//! importance the science term had when they held two. `mcts-eval` builds one
+//! `Root` per tree, so that is exactly what happens there.
+//!
+//! The two readings genuinely conflict, and the shape of `c_sci` says which
+//! half of it can be repaired cheaply:
+//!
+//! ```text
+//! c_sci = M_sci^alpha_m · (distinct / 6)^beta_prog
+//!         \___________/   \___________________/
+//!          root-fixed        can be re-read
+//! ```
+//!
+//! [`Commitment::m_sci_alpha`] keeps the first factor, so
+//! [`TermWeights::science_at`] can re-read the second from the position being
+//! scored for the price of one `distinct_science()` and two `powf`s — against
+//! rebuilding a whole `Root`, which costs about six and a half `evaluate`s and
+//! is unaffordable per leaf.
+//!
+//! **This is an approximation, and knowing where it is loose matters.**
+//! `M_sci` is [`duels_strategy::ScienceRead::magnitude`] — the probability
+//! this player completes six symbols — which is itself a function of how many
+//! they hold (`missing = 6 − distinct` is one of its inputs). It is not a
+//! price in the sense a `Root` is allowed to cache prices. So "the root's
+//! magnitude with the leaf's progress" is not a clean factorisation; it is a
+//! *conservative* one. `M_sci` rises with `distinct`, so a leaf that has
+//! advanced the race reads as somewhat less committed than a freshly-built
+//! `Root` would say, and never as more. That is the right direction for an
+//! error to point in, but it is an error.
+//!
+//! Because of that — and because at one ply the root-fixed reading is the
+//! deliberate, tested behaviour rather than a defect —
+//! [`ScienceProgress::Leaf`] is **opt-in** and [`ScienceProgress::Root`]
+//! remains the default. See [`ScienceProgress`].
 
 use duels_core::data;
 use duels_strategy::{MilitaryRead, ScienceRead, ThreatWeights};
 
 /// Distinct scientific symbols that win the game outright.
 const SYMBOLS_TO_WIN: f64 = 6.0;
+
+/// Where the science-ladder weight's *progress* factor is read from.
+///
+/// The magnitude factor `M_sci^alpha_m` is root-fixed either way — see the
+/// module docs' "where root-fixing stops being right" for why only half of
+/// `c_sci` can be re-read cheaply, and for the sense in which doing so is an
+/// approximation rather than a strictly better answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScienceProgress {
+    /// The root position's distinct-symbol count, baked into
+    /// [`Commitment::c_sci`] when the [`crate::Root`] was built and reused for
+    /// every state scored against it.
+    ///
+    /// The default, and correct at one ply: `crate::evaluate` scores a
+    /// *post-action* state against a `Root` read *pre-action*, so a weight
+    /// that moved with the action would credit a committing move twice.
+    Root,
+    /// The distinct-symbol count of the state being scored, against the
+    /// root's magnitude.
+    ///
+    /// For a search that prices leaves at depth, where the root's count is
+    /// not stale by one move but by ten. Costs one `distinct_science()` and
+    /// two `powf`s per `player_value`.
+    Leaf,
+}
 
 /// Tunables for the commitment blend.
 ///
@@ -136,6 +203,9 @@ pub struct Blend {
     pub floor_race_liq: f64,
     /// What fraction of the economy weights survive at full commitment.
     pub floor_econ: f64,
+    /// Whether the science-ladder weight's progress factor is read from the
+    /// root or from the state being scored. See [`ScienceProgress`].
+    pub science_progress: ScienceProgress,
 }
 
 impl Default for Blend {
@@ -157,6 +227,7 @@ impl Default for Blend {
             boost_mil: 1.5,
             floor_race_liq: 0.30,
             floor_econ: 0.25,
+            science_progress: ScienceProgress::Root,
         }
     }
 }
@@ -218,6 +289,16 @@ impl Blend {
 pub struct Commitment {
     /// `M_sci^alpha_m × (distinct / 6)^beta_prog`.
     pub c_sci: f64,
+    /// The magnitude half of [`Commitment::c_sci`] on its own:
+    /// `M_sci^alpha_m`, or exactly `0.0` when the race is dead
+    /// (`M_sci <= 0`).
+    ///
+    /// Kept so [`Commitment::c_sci_at`] can substitute a different progress
+    /// factor without rebuilding the science read. `c_sci_at(root distinct)`
+    /// reproduces `c_sci` bit for bit — the two are the same two factors
+    /// multiplied in the same order, which is what
+    /// `tests::the_magnitude_half_reconstructs_c_sci_bit_for_bit` pins.
+    pub m_sci_alpha: f64,
     /// `1 − (1 − M_mil) × (1 − prog_mil^mil_prog_exp)`.
     pub c_mil: f64,
     /// The two combined as a probabilistic OR.
@@ -246,13 +327,22 @@ impl Commitment {
         blend: &Blend,
     ) -> Commitment {
         let prog_sci = (f64::from(science.distinct) / SYMBOLS_TO_WIN).clamp(0.0, 1.0);
+        // The magnitude half, kept on its own so `c_sci_at` can re-read the
+        // progress half from a deeper position. Zero for a dead race, which is
+        // what makes `m_sci_alpha <= 0.0` an exact stand-in for
+        // `science.magnitude <= 0.0` in the guard below.
+        let m_sci_alpha = if science.magnitude <= 0.0 {
+            0.0
+        } else {
+            science.magnitude.clamp(0.0, 1.0).powf(blend.alpha_m)
+        };
         let c_sci = if prog_sci <= 0.0 || science.magnitude <= 0.0 {
             // Written out rather than left to `powf`, so the monotonicity
             // property "no symbols held, or a dead race, means no science
             // commitment" holds exactly rather than to within a rounding.
             0.0
         } else {
-            science.magnitude.clamp(0.0, 1.0).powf(blend.alpha_m) * prog_sci.powf(blend.beta_prog)
+            m_sci_alpha * prog_sci.powf(blend.beta_prog)
         };
 
         let d_cap = f64::from(data::military().capital_distance);
@@ -269,12 +359,29 @@ impl Commitment {
 
         Commitment {
             c_sci,
+            m_sci_alpha,
             c_mil,
             c,
             c0_eff,
             s: blend.shape(c, c0_eff),
             s_sci: blend.shape(c_sci, c0_eff),
             s_mil: blend.shape(c_mil, c0_eff),
+        }
+    }
+
+    /// `c_sci` re-read for a different distinct-symbol count, against this
+    /// commitment's root-fixed magnitude.
+    ///
+    /// Bit-identical to [`Commitment::c_sci`] when `distinct` is the count the
+    /// root held. See the module docs for what the root-fixed magnitude
+    /// factor costs in accuracy.
+    #[inline]
+    pub fn c_sci_at(&self, distinct: u8, blend: &Blend) -> f64 {
+        let prog = (f64::from(distinct) / SYMBOLS_TO_WIN).clamp(0.0, 1.0);
+        if prog <= 0.0 || self.m_sci_alpha <= 0.0 {
+            0.0
+        } else {
+            self.m_sci_alpha * prog.powf(blend.beta_prog)
         }
     }
 }
@@ -330,6 +437,19 @@ impl TermWeights {
             economy: fall(blend.floor_econ, commitment.s),
             commitment,
         }
+    }
+
+    /// The science multiplier for a state holding `distinct` symbols, with the
+    /// magnitude half of the commitment still read from the root.
+    ///
+    /// Bit-identical to [`TermWeights::science`] when `distinct` is the root's
+    /// own count — the same two factors, the same `shape`, the same `rise`.
+    /// Read by `crate::player_value` only under
+    /// [`ScienceProgress::Leaf`].
+    #[inline]
+    pub fn science_at(&self, distinct: u8, blend: &Blend) -> f64 {
+        let c_sci = self.commitment.c_sci_at(distinct, blend);
+        1.0 + (blend.boost_sci - 1.0) * blend.shape(c_sci, self.commitment.c0_eff)
     }
 }
 
@@ -390,6 +510,7 @@ mod tests {
         let b = Blend::default();
         let zero = Commitment {
             c_sci: 0.0,
+            m_sci_alpha: 0.0,
             c_mil: 0.0,
             c: 0.0,
             c0_eff: b.midpoint(0.0),
@@ -416,6 +537,7 @@ mod tests {
         let b = Blend::default();
         let full = Commitment {
             c_sci: 1.0,
+            m_sci_alpha: 1.0,
             c_mil: 1.0,
             c: 1.0,
             c0_eff: b.midpoint(0.0),
@@ -431,5 +553,110 @@ mod tests {
         assert!((w.military - b.boost_mil).abs() < 1e-12);
         assert!((w.race_liquidity - 1.0).abs() < 1e-12);
         assert!((w.economy - b.floor_econ).abs() < 1e-12);
+    }
+
+    /// A hand-built [`Commitment`] is not enough for this one: the claim is
+    /// about what [`Commitment::of`] stores, so it has to go through that
+    /// function. `duels-strategy`'s reads are only constructible from a real
+    /// position, so `crate::tests` owns the whole-game version
+    /// (`the_leaf_progress_option_is_off_by_default_and_identical_at_the_root`);
+    /// this one covers the arithmetic over the parameter space directly.
+    #[test]
+    fn the_magnitude_half_reconstructs_c_sci_bit_for_bit() {
+        let b = Blend::default();
+        // Every `(magnitude, distinct)` pair the game can present, including
+        // the dead race and the no-symbols position that `c_sci`'s guard
+        // singles out.
+        for mag_i in 0..=20 {
+            let magnitude = f64::from(mag_i) / 20.0;
+            for distinct in 0u8..=7 {
+                let prog = (f64::from(distinct) / SYMBOLS_TO_WIN).clamp(0.0, 1.0);
+                let m_sci_alpha = if magnitude <= 0.0 {
+                    0.0
+                } else {
+                    magnitude.clamp(0.0, 1.0).powf(b.alpha_m)
+                };
+                let expected = if prog <= 0.0 || magnitude <= 0.0 {
+                    0.0
+                } else {
+                    m_sci_alpha * prog.powf(b.beta_prog)
+                };
+                let c = Commitment {
+                    c_sci: expected,
+                    m_sci_alpha,
+                    c_mil: 0.0,
+                    c: expected,
+                    c0_eff: b.midpoint(0.0),
+                    s: 0.0,
+                    s_sci: b.shape(expected, b.midpoint(0.0)),
+                    s_mil: 0.0,
+                };
+                assert_eq!(
+                    c.c_sci_at(distinct, &b).to_bits(),
+                    expected.to_bits(),
+                    "c_sci_at disagreed at magnitude {magnitude}, distinct {distinct}"
+                );
+                // ...and so does the multiplier built on top of it.
+                let w = TermWeights::of(c, &b);
+                assert_eq!(
+                    w.science_at(distinct, &b).to_bits(),
+                    w.science.to_bits(),
+                    "science_at disagreed at magnitude {magnitude}, distinct {distinct}"
+                );
+            }
+        }
+    }
+
+    /// The non-vacuity half: re-reading progress upward really does raise the
+    /// multiplier, and a dead race stays dead however many symbols the leaf
+    /// holds.
+    #[test]
+    fn re_reading_progress_moves_the_science_multiplier_but_not_a_dead_race() {
+        let b = Blend::default();
+        let c0 = b.midpoint(0.0);
+        // A live race read at two distinct symbols.
+        let m_sci_alpha = 0.6f64.powf(b.alpha_m);
+        let c_sci = m_sci_alpha * (2.0 / SYMBOLS_TO_WIN).powf(b.beta_prog);
+        let live = Commitment {
+            c_sci,
+            m_sci_alpha,
+            c_mil: 0.0,
+            c: c_sci,
+            c0_eff: c0,
+            s: b.shape(c_sci, c0),
+            s_sci: b.shape(c_sci, c0),
+            s_mil: 0.0,
+        };
+        let w = TermWeights::of(live, &b);
+        let mut last = w.science_at(0, &b);
+        for distinct in 1u8..=6 {
+            let next = w.science_at(distinct, &b);
+            assert!(
+                next >= last,
+                "the multiplier fell going from {} to {distinct} symbols",
+                distinct - 1
+            );
+            last = next;
+        }
+        assert!(
+            w.science_at(5, &b) > w.science * 1.05,
+            "five symbols should read as materially more committed than the \
+             root's two ({} vs {})",
+            w.science_at(5, &b),
+            w.science
+        );
+        assert!(last <= b.boost_sci + 1e-12);
+
+        // A dead race: `m_sci_alpha == 0`, so no amount of leaf progress
+        // resurrects it.
+        let dead = Commitment {
+            c_sci: 0.0,
+            m_sci_alpha: 0.0,
+            ..live
+        };
+        let dw = TermWeights::of(dead, &b);
+        for distinct in 0u8..=7 {
+            assert_eq!(dw.science_at(distinct, &b).to_bits(), 1.0f64.to_bits());
+        }
     }
 }
