@@ -5,12 +5,26 @@
 //!     --budget nodes:2000 --seed 1 [--out arena/results/run.json] \
 //!     [--sprt-elo0 0] [--sprt-elo1 5] [--alpha 0.05] [--beta 0.05]
 //!
+//! duels-arena experiment --candidate <SPEC> --control <SPEC> \
+//!     --seeds 1,10000 --budgets nodes:2000,time_ms:100 --games 400 \
+//!     [--label <NAME>] [--out-dir arena/results/experiments] \
+//!     [--sprt-elo0 0] [--sprt-elo1 20] [--alpha 0.05] [--beta 0.05] \
+//!     [--early-stop] [--check-every 50] [--dry-run]
+//!
 //! duels-arena pairings [--format matrix|lines]
 //! duels-arena leaderboard --results-dir <DIR> \
 //!     [--out-json arena/leaderboard.json] [--out-md arena/leaderboard.md] \
 //!     [--commit <SHA>] [--generated-at <RFC3339>]
 //! duels-arena champion [--field agent|budget|spec]
 //! ```
+//!
+//! `experiment` is `match` run as this project's whole documented measurement
+//! protocol instead of one match at a time: a candidate against a control
+//! over every (seed range × budget) cell, each cell an ordinary paired-seed
+//! match, with Elo + SPRT per cell *and* pooled across seed ranges within
+//! each budget, and one machine-readable summary
+//! (`<out-dir>/<label>/summary.json`) as the verdict. See
+//! `duels_arena::experiment`.
 //!
 //! `pairings`, `leaderboard` and `champion` exist for the nightly round-robin
 //! workflow (`.github/workflows/nightly-arena.yml`) and the `ai-candidate`
@@ -47,6 +61,7 @@ use std::process::ExitCode;
 
 use duels_arena::agent_registry::KNOWN_AGENTS;
 use duels_arena::elo::fit_elo;
+use duels_arena::experiment;
 use duels_arena::leaderboard;
 use duels_arena::match_runner::{
     parse_budget, play_paired_match, race_exposure, tally, victory_breakdown, VictoryBreakdown,
@@ -68,6 +83,7 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("match") => run_match(&args[1..]),
+        Some("experiment") => run_experiment(&args[1..]),
         Some("pairings") => run_pairings(&args[1..]),
         Some("leaderboard") => run_leaderboard(&args[1..]),
         Some("champion") => run_champion(&args[1..]),
@@ -87,6 +103,19 @@ fn print_usage() {
          USAGE:\n    duels-arena match --agent-a <SPEC> --agent-b <SPEC> --games <N> \\\n        \
          --budget <nodes:N|time_ms:N> --seed <N> [--out <PATH>]\n        \
          [--sprt-elo0 <F>] [--sprt-elo1 <F>] [--alpha <F>] [--beta <F>]\n\n    \
+         duels-arena experiment --candidate <SPEC> --control <SPEC>\n        \
+         [--seeds <RANGES>] [--budgets <B[,B...]>] [--games <N per cell>]\n        \
+         [--label <NAME>] [--out-dir <DIR>] [--sprt-elo0 <F>] [--sprt-elo1 <F>]\n        \
+         [--alpha <F>] [--beta <F>] [--early-stop] [--check-every <N>] [--dry-run]\n        \
+         This project's whole measurement protocol in one command: every\n        \
+         (seed range x budget) cell played as a paired-seed match, Elo and\n        \
+         SPRT per cell and pooled across seed ranges within each budget, and\n        \
+         one machine-readable verdict at <out-dir>/<label>/summary.json.\n        \
+         --seeds takes base seeds (\"1,10000\", each covering --games worth of\n        \
+         seeds) and/or explicit half-open ranges (\"1..201\", which name their\n        \
+         own length); ranges must be disjoint. --games is per cell, so the\n        \
+         total is ranges x budgets x games. --dry-run prints the cell plan\n        \
+         and its cost without playing anything.\n\n    \
          duels-arena pairings [--format matrix|lines]\n        \
          Every round-robin pairing on the leaderboard ladder. \"matrix\" emits\n        \
          the GitHub Actions job matrix the nightly workflow fans out over.\n\n    \
@@ -116,24 +145,45 @@ fn print_usage() {
 /// subcommand without pulling in a CLI-parsing dependency.
 struct Flags {
     values: std::collections::HashMap<String, String>,
+    switches: std::collections::BTreeSet<String>,
 }
 
 impl Flags {
     fn parse(args: &[String]) -> Result<Self, String> {
+        Self::parse_with_switches(args, &[])
+    }
+
+    /// Like [`Flags::parse`], but the names in `switches` are valueless
+    /// boolean flags (`--early-stop`) rather than `--flag value` pairs.
+    fn parse_with_switches(args: &[String], switches: &[&str]) -> Result<Self, String> {
         let mut values = std::collections::HashMap::new();
+        let mut seen_switches = std::collections::BTreeSet::new();
         let mut i = 0;
         while i < args.len() {
             let flag = &args[i];
             let name = flag
                 .strip_prefix("--")
                 .ok_or_else(|| format!("expected a --flag, got \"{flag}\""))?;
+            if switches.contains(&name) {
+                seen_switches.insert(name.to_string());
+                i += 1;
+                continue;
+            }
             let value = args
                 .get(i + 1)
                 .ok_or_else(|| format!("--{name} needs a value"))?;
             values.insert(name.to_string(), value.clone());
             i += 2;
         }
-        Ok(Self { values })
+        Ok(Self {
+            values,
+            switches: seen_switches,
+        })
+    }
+
+    /// Whether a valueless boolean flag was given.
+    fn switch(&self, name: &str) -> bool {
+        self.switches.contains(name)
     }
 
     fn required(&self, name: &str) -> Result<&str, String> {
@@ -270,6 +320,123 @@ fn run_match(args: &[String]) -> Result<(), String> {
         out_path.display()
     );
 
+    Ok(())
+}
+
+/// Build an [`experiment::ExperimentPlan`] from parsed flags. Split out from
+/// [`run_experiment`] so the plan a set of arguments produces can be tested
+/// without playing any games.
+fn experiment_plan(flags: &Flags) -> Result<experiment::ExperimentPlan, String> {
+    let candidate = flags.required("candidate")?.to_string();
+    let control = flags.required("control")?.to_string();
+    let games: u32 = flags.parsed("games", 200)?;
+    let ranges = experiment::parse_seed_ranges(flags.optional("seeds").unwrap_or("1"), games)?;
+    let budgets = experiment::parse_budgets(flags.optional("budgets").unwrap_or("nodes:2000"))?;
+
+    let sprt = SprtParams {
+        elo0: flags.parsed("sprt-elo0", experiment::DEFAULT_ELO0)?,
+        elo1: flags.parsed("sprt-elo1", experiment::DEFAULT_ELO1)?,
+        alpha: flags.parsed("alpha", SprtParams::default().alpha)?,
+        beta: flags.parsed("beta", SprtParams::default().beta)?,
+    };
+
+    let early_stop = flags.switch("early-stop");
+    let check_every: Option<u32> = match flags.optional("check-every") {
+        Some(_) => Some(flags.parsed("check-every", experiment::DEFAULT_CHECK_EVERY_GAMES)?),
+        None if early_stop => Some(experiment::DEFAULT_CHECK_EVERY_GAMES),
+        None => None,
+    };
+
+    let label = match flags.optional("label") {
+        Some(l) => experiment::slug(l),
+        None => experiment::default_label(&candidate, &control),
+    };
+
+    Ok(experiment::ExperimentPlan {
+        cells: experiment::plan_cells(&ranges, &budgets),
+        candidate,
+        control,
+        sprt,
+        label,
+        early_stop,
+        check_every_games: check_every,
+    })
+}
+
+/// `duels-arena experiment` — the measurement protocol as one command. See
+/// `duels_arena::experiment` for what it computes and why budgets are pooled
+/// separately from each other.
+fn run_experiment(args: &[String]) -> Result<(), String> {
+    let flags = Flags::parse_with_switches(args, &["early-stop", "dry-run"])?;
+    let plan = experiment_plan(&flags)?;
+    let out_dir = PathBuf::from(
+        flags
+            .optional("out-dir")
+            .unwrap_or(experiment::DEFAULT_OUT_DIR),
+    )
+    .join(&plan.label);
+
+    let total_games: u32 = plan.cells.iter().map(|c| c.range.games()).sum();
+    println!(
+        "duels-arena experiment \"{}\": {} vs {} (control)",
+        plan.label, plan.candidate, plan.control
+    );
+    println!(
+        "plan: {} cells, {} games total{}",
+        plan.cells.len(),
+        total_games,
+        if plan.early_stop {
+            " at most (early stopping on)"
+        } else {
+            ""
+        }
+    );
+    for (i, cell) in plan.cells.iter().enumerate() {
+        println!(
+            "  cell {}: budget {} seeds {}..{} ({} games)",
+            i + 1,
+            cell.budget_label,
+            cell.range.start,
+            cell.range.end(),
+            cell.range.games()
+        );
+    }
+    println!(
+        "sprt: H0 elo={:.1} vs H1 elo={:.1} (alpha={}, beta={})",
+        plan.sprt.elo0, plan.sprt.elo1, plan.sprt.alpha, plan.sprt.beta
+    );
+    if plan
+        .cells
+        .iter()
+        .any(|c| matches!(c.budget, duels_agents_api::Budget::TimeMs(_)))
+    {
+        println!(
+            "note: a time_ms cell is wall-clock based. Run this on an otherwise-quiet machine \
+             (see duels_arena's crate docs); cells are played one at a time for exactly this \
+             reason."
+        );
+    }
+    println!("output: {}", out_dir.display());
+
+    if flags.switch("dry-run") {
+        println!("--dry-run: not playing anything");
+        return Ok(());
+    }
+
+    let generated_at = leaderboard::format_rfc3339_utc(now_unix_seconds());
+    let summary = experiment::run(&plan, &out_dir, &generated_at, &mut |line| {
+        println!("{line}");
+    })?;
+
+    println!("\n{}", experiment::render_markdown(&summary));
+    let (json_path, md_path) = experiment::write_summary(&summary, &out_dir)?;
+    println!(
+        "wrote {} and {} (plus {} per-cell results files)",
+        json_path.display(),
+        md_path.display(),
+        summary.cells.len()
+    );
+    println!("verdict: {:?}", summary.verdict);
     Ok(())
 }
 
@@ -475,5 +642,149 @@ mod tests {
     fn flags_reject_a_dangling_flag_without_a_value() {
         let args: Vec<String> = ["--agent-a"].into_iter().map(String::from).collect();
         assert!(Flags::parse(&args).is_err());
+    }
+
+    #[test]
+    fn switches_are_valueless_and_do_not_swallow_the_next_flag() {
+        let args: Vec<String> = ["--early-stop", "--games", "10"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let flags = Flags::parse_with_switches(&args, &["early-stop"]).unwrap();
+        assert!(flags.switch("early-stop"));
+        assert!(!flags.switch("dry-run"));
+        assert_eq!(flags.parsed::<u32>("games", 0).unwrap(), 10);
+        // Without being declared a switch, it still wants a value.
+        assert!(Flags::parse(&args).is_err());
+    }
+
+    fn experiment_args(pairs: &[&str]) -> Vec<String> {
+        pairs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn experiment_defaults_to_one_seed_range_at_one_budget() {
+        let plan = experiment_plan(
+            &Flags::parse_with_switches(
+                &experiment_args(&["--candidate", "mcts-eval", "--control", "mcts-uct"]),
+                &["early-stop", "dry-run"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan.cells.len(), 1);
+        assert_eq!(plan.cells[0].budget_label, "nodes:2000");
+        assert_eq!(plan.cells[0].range.start, 1);
+        assert_eq!(plan.cells[0].range.games(), 200);
+        assert_eq!(plan.label, "mcts-eval-vs-mcts-uct");
+        // The project's own convention, not `SprtParams::default`'s elo1 = 5.
+        assert_eq!(plan.sprt.elo0, 0.0);
+        assert_eq!(plan.sprt.elo1, 20.0);
+        assert!(!plan.early_stop);
+        assert_eq!(plan.check_every_games, None);
+    }
+
+    #[test]
+    fn experiment_enumerates_the_seed_range_by_budget_cross_product() {
+        let plan = experiment_plan(
+            &Flags::parse_with_switches(
+                &experiment_args(&[
+                    "--candidate",
+                    "mcts-eval:c=0.4",
+                    "--control",
+                    "mcts-eval",
+                    "--seeds",
+                    "1,10000,20000..20050",
+                    "--budgets",
+                    "nodes:2000,time_ms:100",
+                    "--games",
+                    "100",
+                    "--label",
+                    "c 0.4 sweep",
+                ]),
+                &["early-stop", "dry-run"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan.cells.len(), 6, "3 seed ranges x 2 budgets");
+        assert_eq!(plan.label, "c_0.4_sweep", "a label is slugged for a path");
+        // Budget-major, and the explicit range keeps its own length.
+        let shape: Vec<(&str, u64, u32)> = plan
+            .cells
+            .iter()
+            .map(|c| (c.budget_label.as_str(), c.range.start, c.range.games()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("nodes:2000", 1, 100),
+                ("nodes:2000", 10_000, 100),
+                ("nodes:2000", 20_000, 100),
+                ("time_ms:100", 1, 100),
+                ("time_ms:100", 10_000, 100),
+                ("time_ms:100", 20_000, 100),
+            ]
+        );
+    }
+
+    #[test]
+    fn experiment_turns_on_chunked_sprt_checks_only_when_asked() {
+        let plan_of = |extra: &[&str]| {
+            let mut args = experiment_args(&["--candidate", "random", "--control", "greedy"]);
+            args.extend(extra.iter().map(|s| s.to_string()));
+            experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
+                .unwrap()
+        };
+        assert_eq!(plan_of(&[]).check_every_games, None);
+        let early = plan_of(&["--early-stop"]);
+        assert!(early.early_stop);
+        assert_eq!(
+            early.check_every_games,
+            Some(experiment::DEFAULT_CHECK_EVERY_GAMES)
+        );
+        let explicit = plan_of(&["--early-stop", "--check-every", "20"]);
+        assert_eq!(explicit.check_every_games, Some(20));
+    }
+
+    #[test]
+    fn experiment_rejects_missing_specs_and_overlapping_seed_ranges() {
+        let plan_err = |args: Vec<String>| {
+            experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
+                .unwrap_err()
+        };
+        assert!(plan_err(experiment_args(&["--control", "greedy"])).contains("candidate"));
+        assert!(plan_err(experiment_args(&["--candidate", "greedy"])).contains("control"));
+        let err = plan_err(experiment_args(&[
+            "--candidate",
+            "random",
+            "--control",
+            "greedy",
+            "--seeds",
+            "1,50",
+            "--games",
+            "200",
+        ]));
+        assert!(err.contains("overlap"), "unexpected: {err}");
+    }
+
+    /// `--dry-run` must not play a single game, so it is safe to ask a big
+    /// experiment what it would cost.
+    #[test]
+    fn experiment_dry_run_plays_nothing() {
+        run_experiment(&experiment_args(&[
+            "--candidate",
+            "mcts-eval",
+            "--control",
+            "mcts-uct",
+            "--seeds",
+            "1,10000",
+            "--budgets",
+            "nodes:2000,time_ms:100",
+            "--games",
+            "4000",
+            "--dry-run",
+        ]))
+        .unwrap();
     }
 }

@@ -45,7 +45,11 @@ use serde::{Deserialize, Serialize};
 use crate::elo::{sigmoid, ELO_TO_LOGIT};
 
 /// The two Elo hypotheses and error-rate tolerances for one SPRT run.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Serializable so a report can record which hypotheses produced its verdict
+/// (see [`crate::experiment::ExperimentSummary::sprt_params`]) rather than
+/// leaving a reader to guess.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SprtParams {
     /// H0: the candidate is this many Elo relative to the reference (often
     /// 0, "no better than the reference", or a small negative "not worse
