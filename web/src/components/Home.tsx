@@ -9,7 +9,6 @@ const AGENT_LABELS: Record<string, string> = {
   random: "Random — plays at chance",
   greedy: "Greedy — one ply, no search",
   "greedy-ev": "Greedy EV — one ply, averaged",
-  strategist: "Strategist — win-condition aware",
   phased: "Phased — shifts priorities by age",
   alphabeta: "Alpha-Beta — searches, thinks up to 1s",
   "mcts-uct": "MCTS — searches with playouts, thinks up to 1s",

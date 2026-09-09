@@ -21,16 +21,16 @@ crates/
     greedy/             1-ply heuristic, samples one hidden-info guess and commits to it
     greedy-ev/          same evaluation as greedy, but properly averages over chance_outcomes
                         instead of guessing — see "AI agent conventions" below
-    strategist/         greedy-ev plus a duels-strategy move-level prior
     phased/             a thin 1-ply Agent over duels-eval: sample a state, build one Root, score
                         every legal action, play the best. Holds no evaluation logic of its own.
     alphabeta/          expectimax + alpha-beta + Star1 pruning; simulation-based leaves (NOT static
                         eval — see "what we learned" below)
-    mcts-uct/           chance-node MCTS, playout leaf value, `c = 1.0`. The designated champion
-                        (`leaderboard::CHAMPION`) and the yardstick every knob here was tuned against
+    mcts-uct/           chance-node MCTS, playout leaf value, `c = 1.0`. The yardstick every knob
+                        in mcts-eval below was tuned against; no longer the ladder's champion
     mcts-eval/          the same search, with a leaf value that is half playout and half duels-eval
                         (`LeafValue::Blend { weight: 0.5 }`, `c = 0.5`). +89 Elo over mcts-uct, the
-                        largest effect this project has measured. Deliberately tracks
+                        largest effect this project has measured, and now the designated champion
+                        (`leaderboard::CHAMPION`). Deliberately tracks
                         `duels_eval::Config::default()` LIVE — no generation pin; read its crate
                         docs before "fixing" that. Carries a verbatim copy of mcts-uct's search as
                         its ablation control (`Config::rollout_base`), asserted move-for-move
@@ -125,12 +125,12 @@ The web client never implements rules/legality/cost logic — it only renders wh
 
 `arena/leaderboard.md` (rendered from `arena/leaderboard.json`) is the standing ranking of every registered agent. Both files are **generated** — `.github/workflows/nightly-arena.yml` rebuilds them every night and opens a PR; don't hand-edit them.
 
-- **The ladder is defined in code**, in `duels_arena::leaderboard::LADDER`: each agent at its production budget (`Nodes(1)` for the five 1-ply agents, `Nodes(2000)` for `alphabeta`/`mcts-uct`/`mcts-eval`), default config only. Adding an agent there extends the nightly matrix automatically — the workflow never lists agent names, so `LADDER` plus `agent_registry` is the whole registration for the nightly job. (Eight agents means `C(8,2)` = 28 pairings, up from 21; `nightly-arena.yml`'s prose still says 21 in a comment, harmless but stale — `.github/**` is a code-owner path so it was left alone.)
+- **The ladder is defined in code**, in `duels_arena::leaderboard::LADDER`: each agent at its production budget (`Nodes(1)` for the four 1-ply agents, `Nodes(2000)` for `alphabeta`/`mcts-uct`/`mcts-eval`), default config only. Adding an agent there extends the nightly matrix automatically — the workflow never lists agent names, so `LADDER` plus `agent_registry` is the whole registration for the nightly job. Seven agents means `C(7,2)` = 21 pairings. (`strategist` was retired from the roster — see "Current state" below — which happens to make `nightly-arena.yml`'s stale "21" comment accurate again, coincidentally rather than because anyone fixed it; `.github/**` is a code-owner path and was left alone either way.)
 - **The whole round robin runs at one budget (`nodes:2000`)** and that is not a compromise: the five 1-ply agents take `_budget` in `Agent::choose` and never read it, which `leaderboard::tests::one_ply_agents_ignore_their_budget` proves by playing games at both budgets and comparing every decision.
 - **Ratings are fitted jointly**, not pairwise — `elo::fit_joint_elo` is a Bradley-Terry MLE over all 28 head-to-head records at once (MM iteration, CIs from the joint Fisher information with the anchor's row/column deleted). `greedy` is pinned at 1000. Use `fit_elo` for a single head-to-head comparison; use `fit_joint_elo` for anything ladder-shaped.
 - **`main` cannot be pushed to directly** — the `main-protection` ruleset has an empty `bypass_actors` list — so the nightly proposes a PR. GitHub does not start workflows for `GITHUB_TOKEN`-authored PRs, so that PR's required `gate` check needs a close/reopen (or a `NIGHTLY_ARENA_TOKEN` PAT secret) before it can merge. The workflow says so in the PR body.
 - **`ai-candidate` is informational and must stay that way for now** (an explicit decision). It is a separate workflow file precisely so it cannot drift into `ci.yml`'s `gate` job. Promoting it to blocking means two deliberate edits: add it to `gate`'s `needs:` *and* to the ruleset's required-status-check list.
-- **The champion is a plain constant** (`leaderboard::CHAMPION`, currently `mcts-uct` at `Nodes(2000)`), not something read back out of the leaderboard. Automated promotion is M7 and does not exist yet; until it does, a human changing one line is the honest mechanism. **It is now deliberately not the top of the ladder**: `mcts-eval` measures about `+100` Elo above `mcts-uct` and should be expected to rank first once the nightly refits, and moving `CHAMPION` is a separate one-line decision on its own evidence rather than a side effect of adding an agent. `leaderboard::tests::a_complete_round_robin_builds_and_ranks_strongest_first` asserts that separation directly.
+- **The champion is a plain constant** (`leaderboard::CHAMPION`, currently `mcts-eval` at `Nodes(2000)`), not something read back out of the leaderboard. Automated promotion is M7 and does not exist yet; until it does, a human changing one line is the honest mechanism. `CHAMPION` was moved from `mcts-uct` to `mcts-eval` once the latter measured ~+100 Elo stronger and confirmed as the top of the ladder — a separate one-line decision on its own evidence, not a side effect of adding an agent. `leaderboard::tests::a_complete_round_robin_builds_and_ranks_strongest_first` asserts the champion is computed by matching `CHAMPION.agent` against the ladder, not derived from rank — a property that held when the two intentionally differed and still holds now that they coincide.
 
 ## Current state
 
