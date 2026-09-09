@@ -199,6 +199,10 @@ pub struct Config {
     /// versions, with no unrelated anchor agent needed. Not meant to be set in
     /// anything this project would call a *production* configuration.
     pub eval_override: Option<duels_eval::Config>,
+    /// **Measurement scaffold, not for merge.** `true` reverts the chance-node
+    /// sampler to the pre-R-105/R-110 model that reasons from the guild count
+    /// only. The control arm for the guild-mask fix.
+    pub chance_count_only: bool,
 }
 
 impl Default for Config {
@@ -228,6 +232,7 @@ impl Default for Config {
             // the crate docs.
             leaf: LeafValue::Blend { weight: 0.5 },
             eval_override: None,
+            chance_count_only: false,
         }
     }
 }
@@ -714,7 +719,7 @@ impl Tree {
             self.cfg.chance_widen_c * f64::from(visits + 1).powf(self.cfg.chance_widen_alpha);
 
         if width == 0 || (width as f64) < allowance {
-            let (outcome, prob) = chance::sample(&state, action, rng);
+            let (outcome, prob) = chance::sample(&state, action, self.cfg.chance_count_only, rng);
             // A re-drawn outcome is not a new child; descend into the old one.
             if let Kind::Chance { children, .. } = &self.nodes[id as usize].kind {
                 if let Some(existing) = children.iter().find(|c| c.outcome == outcome) {

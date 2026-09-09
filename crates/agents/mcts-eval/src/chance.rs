@@ -93,8 +93,17 @@ pub(crate) fn resolves_randomness(state: &GameState, action: Action) -> bool {
 ///
 /// `probability` is the probability of drawing exactly this outcome, so the
 /// probabilities over the (never enumerated) support sum to 1.
-pub(crate) fn sample(state: &GameState, action: Action, rng: &mut StdRng) -> (Outcome, f64) {
-    let (reveals, p_reveal) = sample_reveals(state, action, rng);
+pub(crate) fn sample(
+    state: &GameState,
+    action: Action,
+    count_only: bool,
+    rng: &mut StdRng,
+) -> (Outcome, f64) {
+    let (reveals, p_reveal) = if count_only {
+        sample_reveals_count_only(state, action, rng)
+    } else {
+        sample_reveals(state, action, rng)
+    };
     let (library_tokens, p_library) = sample_library(state, action, rng);
     (
         Outcome {
@@ -143,6 +152,80 @@ fn draw_one(pool: &mut Vec<CardId>, rng: &mut StdRng) -> Option<(CardId, f64)> {
     let p = 1.0 / pool.len() as f64;
     let card = pool.swap_remove(rng.gen_range(0..pool.len()));
     Some((card, p))
+}
+
+/// **Measurement scaffold, not for merge.** The pre-fix sampler, verbatim:
+/// it reasons from the guild *count* (`hidden_guild_count`) and never looks at
+/// the per-slot mask, so it hands back an ordinary card for a purple-backed
+/// slot at nonzero probability. Kept only so the R-105/R-110 fix has a control
+/// to be measured against inside one arena process.
+struct Pools {
+    guild: Vec<CardId>,
+    plain: Vec<CardId>,
+    guilds_left: u32,
+    plains_left: u32,
+}
+
+impl Pools {
+    fn draw(&mut self, left: u32, rng: &mut StdRng) -> Option<(CardId, f64)> {
+        if left == 0 {
+            return None;
+        }
+        let take_guild = if self.guilds_left == 0 {
+            false
+        } else if self.plains_left == 0 {
+            true
+        } else {
+            rng.gen_bool(f64::from(self.guilds_left) / f64::from(left))
+        };
+        let (pool, quota) = if take_guild {
+            (&mut self.guild, &mut self.guilds_left)
+        } else {
+            (&mut self.plain, &mut self.plains_left)
+        };
+        if pool.is_empty() {
+            return None;
+        }
+        let p = f64::from(*quota) / f64::from(left) / pool.len() as f64;
+        *quota -= 1;
+        let card = pool.swap_remove(rng.gen_range(0..pool.len()));
+        Some((card, p))
+    }
+}
+
+fn sample_reveals_count_only(
+    state: &GameState,
+    action: Action,
+    rng: &mut StdRng,
+) -> (RevealSlots, f64) {
+    let slots = revealed_slots(state, action);
+    let Some(s0) = slots[0] else {
+        return ([None, None], 1.0);
+    };
+    let info = engine::hidden_info(state);
+    let total = info.hidden_slots.count_ones();
+    let guilds_left = info.hidden_guild_count;
+    let mut pools = Pools {
+        guild: info.unseen_guilds,
+        plain: info.unseen_plain,
+        guilds_left,
+        plains_left: total.saturating_sub(guilds_left),
+    };
+    let Some((c0, p0)) = pools.draw(total, rng) else {
+        return ([None, None], 1.0);
+    };
+    let mut out = [Some((s0, c0)), None];
+    let mut p = p0;
+    if let Some(s1) = slots[1] {
+        match pools.draw(total - 1, rng) {
+            Some((c1, p1)) => {
+                out[1] = Some((s1, c1));
+                p *= p1;
+            }
+            None => return ([None, None], 1.0),
+        }
+    }
+    (out, p)
 }
 
 fn sample_reveals(state: &GameState, action: Action, rng: &mut StdRng) -> (RevealSlots, f64) {
@@ -250,7 +333,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x5EED);
         let mut counts: HashMap<Key, u32> = HashMap::new();
         for _ in 0..draws {
-            let (o, p) = sample(state, action, &mut rng);
+            let (o, p) = sample(state, action, false, &mut rng);
             let k = key(&o);
             let expected = *truth
                 .get(&k)
@@ -297,7 +380,7 @@ mod tests {
                 }
                 let a = legal[rng.gen_range(0..legal.len())];
                 if resolves_randomness(&st, a) {
-                    let (o, p) = sample(&st, a, &mut rng);
+                    let (o, p) = sample(&st, a, false, &mut rng);
                     assert!(p > 0.0 && p <= 1.0, "probability out of range: {p}");
                     let mut next = st;
                     engine::apply_with_outcome(&mut next, a, &o)
@@ -333,7 +416,7 @@ mod tests {
                         continue;
                     }
                     for _ in 0..8 {
-                        let (o, _) = sample(&st, a, &mut rng);
+                        let (o, _) = sample(&st, a, false, &mut rng);
                         for (slot, card) in o.reveals.iter().flatten().copied() {
                             let want = mask & (1u32 << slot) != 0;
                             assert_eq!(

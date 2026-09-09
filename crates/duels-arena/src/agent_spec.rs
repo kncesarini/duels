@@ -435,6 +435,8 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
             "exploration" | "c" => cfg.exploration = parse_field(k, v)?,
             "chance_widen_c" => cfg.chance_widen_c = parse_field(k, v)?,
             "chance_widen_alpha" => cfg.chance_widen_alpha = parse_field(k, v)?,
+            // Measurement scaffold, not for merge.
+            "chance_count_only" => cfg.chance_count_only = parse_field(k, v)?,
             "max_rollout_plies" => cfg.max_rollout_plies = parse_field(k, v)?,
             "time_check_interval" => cfg.time_check_interval = parse_field(k, v)?,
             "root_determinizations" | "dets" => cfg.root_determinizations = parse_field(k, v)?,
