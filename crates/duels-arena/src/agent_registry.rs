@@ -13,7 +13,6 @@ pub const KNOWN_AGENTS: &[&str] = &[
     "random",
     "greedy",
     "greedy-ev",
-    "strategist",
     "phased",
     "alphabeta",
     "mcts-uct",
@@ -29,7 +28,6 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
         "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
         "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
-        "strategist" => Ok(Box::new(duels_agent_strategist::StrategistAgent::new(seed))),
         "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
@@ -58,9 +56,12 @@ mod tests {
     }
 
     #[test]
-    fn strategist_is_registered() {
-        let agent = make_agent("strategist", 1).expect("strategist should be a known agent");
-        assert_eq!(agent.spec().name, "strategist");
+    fn strategist_is_retired() {
+        // Retired: its research question (whether `duels-strategy`'s prior
+        // helps `greedy-ev`) was answered statistically indistinguishable.
+        // See `docs/milestones.md`.
+        assert!(make_agent("strategist", 1).is_err());
+        assert!(!KNOWN_AGENTS.contains(&"strategist"));
     }
 
     #[test]

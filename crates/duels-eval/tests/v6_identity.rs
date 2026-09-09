@@ -430,12 +430,16 @@ fn the_generation_chain_is_still_a_chain_of_distinct_configurations() {
             );
         }
     }
-    // `v8` is *defined* as the default, so this is a tautology and is here to
-    // fail loudly if a later round ever re-points it without adding `v9`.
-    // Round eight is why this reads `v8` and not `v7`: it moved the default,
-    // and the contract under `Config::v8` is that the round doing so re-points
-    // the previous snapshot at literal values in the same PR.
-    assert_eq!(Config::v8(), Config::default());
+    // `v9` is the newest link, defined as a delta from the default, so this is
+    // a tautology and is here to fail loudly if a later round ever re-points
+    // it without adding `v10`. Round ten is why this reads `v9` and not `v8`:
+    // it moved the default, and the contract under `Config::v9` is that the
+    // round doing so re-points the previous snapshot at literal values in the
+    // same PR.
+    assert_ne!(Config::v9(), Config::default());
+    // `v9` is left out of the loop above because round nine adopted neither of
+    // the options it built, so its snapshot really is round eight's.
+    assert_eq!(Config::v8(), Config::v9());
 }
 
 /// The dead-race gate has to be a gate rather than a blanket reduction, so it

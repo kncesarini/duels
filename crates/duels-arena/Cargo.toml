@@ -12,7 +12,6 @@ duels-agents-api = { path = "../duels-agents-api" }
 duels-agent-random = { path = "../agents/random" }
 duels-agent-greedy = { path = "../agents/greedy" }
 duels-agent-greedy-ev = { path = "../agents/greedy-ev" }
-duels-agent-strategist = { path = "../agents/strategist" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-eval = { path = "../duels-eval" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }

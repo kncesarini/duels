@@ -10,7 +10,6 @@ members = [
     "crates/agents/random",
     "crates/agents/greedy",
     "crates/agents/greedy-ev",
-    "crates/agents/strategist",
     "crates/agents/phased",
     "crates/agents/mcts-uct",
     "crates/agents/mcts-eval",
