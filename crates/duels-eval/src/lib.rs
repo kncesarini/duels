@@ -2161,12 +2161,22 @@
 //! `tests/v9_identity.rs` is the shortest identity file this crate has,
 //! because [`Config::v9`] puts one scalar back and that is the whole delta.
 //!
-//! **Read the confirmation section before quoting this round's Elo.** The
-//! fitting thread measured `+18.1` to `mcts-eval`; the confirmation A/B run
-//! with the shipped code, over twice as many games, reads `+5.0` with an
-//! interval containing zero. The change is still positive on the whole body of
-//! evidence and it shipped on the project owner's decision, but the effect is
-//! smaller than the number that motivated it.
+//! **Read the confirmation sections before quoting this round's Elo — there
+//! are two of them and they disagree by instrument.** On `phased`, where this
+//! crate's weights decide the move outright, the change **reproduces**:
+//! `+11.9` Elo, 95% CI `[+8.0, +15.9]`, over 30,000 games on three fresh
+//! disjoint seed ranges, all three positive. On `mcts-eval`, where the same
+//! evaluation is only half of a search leaf value, it does **not** reproduce
+//! the magnitude that motivated it: the fitting thread measured `+18.1`, and
+//! the confirmation A/B over 4,000 games reads `+5.0` with an interval
+//! containing zero.
+//!
+//! **There is no single Elo number for this change.** Quote
+//! `+11.9 [+8.0, +15.9]` for `phased` and `+5.0 [-5.8, +15.7]` for
+//! `mcts-eval`, and say which one is meant. That the two differ by roughly a
+//! factor of two is this round's most interesting result rather than a
+//! discrepancy to be resolved — see "Reading the two confirmations together"
+//! below.
 //!
 //! ## Where the number came from
 //!
@@ -2217,7 +2227,14 @@
 //! interval that excludes zero. That is the bar this project's rules ask for,
 //! and the project owner's decision to move the default rests on it.
 //!
-//! ## The confirmation A/B, on current code — and it does not reproduce
+//! Both columns have since been re-measured against `v9()` in a single
+//! binary, and the two rows above turn out to have aged differently: the
+//! `phased` figures hold up (a little lower, `+11.9` against a mean of
+//! `+16.4`, which is what regression to a true effect looks like), the
+//! `mcts-eval` figure does not. Both sections follow.
+//!
+//! ## The `mcts-eval` confirmation A/B, on current code — and it does not
+//! ## reproduce
 //!
 //! **This is the round's honest negative, and it is about the round's own
 //! headline change.** The figures above were taken in the fitting thread. The
@@ -2256,22 +2273,93 @@
 //! only half-listens to them, which is round seven's policy/leaf split showing
 //! up again in miniature.
 //!
-//! What that means for the default is a judgement rather than a measurement,
-//! and it was the project owner's to make: the whole body of evidence points
-//! one way (three `phased` ranges, two `mcts-eval` ranges, three of four
-//! confirmation ranges), the size of the effect is the part in doubt, and a
-//! fitted weight that is probably slightly better is still better than an
-//! unfitted one that was never measured at all. **The number to carry forward
-//! is `+5.0 [-5.8, +15.7]`, not `+18.1`.** A future round quoting this change
-//! should quote that.
+//! **The number to carry forward for `mcts-eval` is `+5.0 [-5.8, +15.7]`, not
+//! `+18.1`.** A future round quoting this change at a *search* consumer should
+//! quote that.
 //!
-//! There is **no `TimeMs` column**, and it is a real gap in this round's
-//! protocol rather than an argument: a weight is a multiplication that was
-//! already being performed, so there is no per-decision cost for a wall-clock
-//! budget to expose, but this project's two-budget rule attaches to whatever a
-//! round recommends as a new default and this round recommends one. The
-//! machine available was under heavy concurrent load throughout, which is the
-//! one condition under which a `TimeMs` row is worth less than not having it.
+//! This arm has **no `TimeMs` column**, and it is a real gap rather than an
+//! argument: a weight is a multiplication that was already being performed, so
+//! there is no per-decision cost for a wall-clock budget to expose, but this
+//! project's two-budget rule attaches to whatever a round recommends as a new
+//! default and this round recommends one. The machine available was under
+//! heavy concurrent load throughout, which is the one condition under which a
+//! `TimeMs` row is worth less than not having it. (The `phased` arm below has
+//! no such gap, for a structural reason given there.)
+//!
+//! ## The `phased` confirmation A/B — and it does reproduce
+//!
+//! The section above left "the `phased` side, re-measured against `base=v9`"
+//! as this round's second-most-important open item. It has since been run, and
+//! it is the reason the default stays moved.
+//!
+//! `phased` (live, the new default) against `phased:base=v9` (pinned,
+//! reproducing round nine's value bit for bit) at `Nodes(1)`, on **three seed
+//! ranges disjoint from the three fitting-thread ranges, from the four
+//! `mcts-eval` confirmation ranges, and from each other**. The two agents'
+//! recorded `params_string`s differ in exactly one of fifty-one tokens
+//! (`menu=0.41@1.50` against `menu=0.60@1.50`) — the same one-token check the
+//! `mcts-eval` arm rests on, so this measures this change and nothing else.
+//!
+//! ```text
+//!                                      games      Elo        95% CI
+//!  seeds 90001..95001                  10000    +12.8    [+6.0, +19.6]   AcceptH1
+//!  seeds 100001..105001                10000    +14.6    [+7.8, +21.4]   AcceptH1
+//!  seeds 110001..115001                10000     +8.4    [+1.6, +15.2]   Continue
+//!  pooled                              30000    +11.9    [+8.0, +15.9]   AcceptH1
+//! ```
+//!
+//! Every range is positive, every range's interval **excludes zero**, and
+//! `duels-arena experiment`'s pooled SPRT against `H1 = +20` returns
+//! `AcceptH1` — an **Accept** verdict. Thirty thousand games is affordable
+//! here in a way it is not at `Nodes(2000)`: a 1-ply game costs about eight
+//! milliseconds of one core, and the runner plays a cell's seeds in parallel,
+//! so all three ranges together took twenty seconds of wall-clock against
+//! four minutes of CPU. That is the whole reason this arm can be pinned to
+//! `±4` Elo and the search arm cannot.
+//!
+//! There is **no `TimeMs` gap on this arm, structurally**. `phased` takes
+//! `_budget` in `Agent::choose` and never reads it, which
+//! `duels_arena::leaderboard::tests::one_ply_agents_ignore_their_budget`
+//! proves by playing games at two budgets and comparing every decision — so a
+//! wall-clock cell here would replay the `Nodes(1)` games move for move and
+//! report the same Elo. The two-budget rule is satisfied by construction
+//! rather than by a missing row.
+//!
+//! The victory kinds say something, unlike the `mcts-eval` arm's. Pooled over
+//! the 30,000 games the candidate's wins break down `851` military / `169`
+//! science / `14135` civilian / `349` tiebreak against the control's
+//! `875 / 117 / 13171 / 310`. **The entire margin is civilian**: `+964`
+//! civilian wins, against `-24` military. Repricing what the opponent can take
+//! next buys civilian-score judgement and buys nothing in the military race —
+//! which is exactly the division of labour the `mcts-eval` blend measurement
+//! found between this evaluation and a playout, showing up here inside the
+//! evaluation alone.
+//!
+//! ## Reading the two confirmations together
+//!
+//! `+11.9 [+8.0, +15.9]` on the policy and `+5.0 [-5.8, +15.7]` on the leaf.
+//! The intervals overlap, so this is not a contradiction and a single true
+//! effect of about `+8` would be consistent with both. But the point
+//! estimates differ by a factor of two in the direction round seven predicted,
+//! and the `phased` interval is narrow enough to be worth taking literally.
+//!
+//! The explanation the round offered for the shortfall before the `phased` arm
+//! existed was a guess between two options: too few `mcts-eval` ranges, or the
+//! policy/leaf split. The `phased` arm does not settle which, but it removes
+//! the version of the story in which the coefficient is simply worth less than
+//! the fit claimed — it is worth about what the fit claimed *to a policy*.
+//! **The fair summary is that this is a genuine `phased` improvement which is
+//! mildly positive-to-neutral on `mcts-eval`**, and a search that mixes this
+//! evaluation half-and-half with a playout dilutes a change to it roughly as
+//! much as the mixture weight suggests it should.
+//!
+//! That makes the default move well-supported on the consumer the round was
+//! tuning, without overclaiming on the consumer that ships as the strong
+//! agent. It is also the third time this project has measured the same lesson
+//! — round seven's "a better predictor is a worse leaf", round nine's `+30`
+//! to one and `−15` to the other, and now a factor of two — so it is no
+//! longer a surprise and should be the *expected* shape of any future
+//! `duels-eval` result. **Measure both consumers, and report two numbers.**
 //!
 //! ## What it does to the flagged position, which is a partial answer to
 //! ## round nine's diagnosis
@@ -2304,15 +2392,23 @@
 //! — it says the wonder-timing question round nine left open is genuinely not
 //! a menu-weight question.
 //!
-//! ## The victory kinds, which say nothing much
+//! ## The `mcts-eval` victory kinds, which say nothing much
 //!
-//! Pooled over the 4000 confirmation games, the candidate's wins break down
+//! Pooled over the 4000 `mcts-eval` confirmation games, the candidate's wins
+//! break down
 //! `338` military / `43` science / `1616` civilian against the control's
 //! `307 / 46 / 1586`. Both channels move slightly the candidate's way and
 //! neither moves much — no repeat of the civilian-for-military trade the blend
-//! weight produces, which is the reading a change to the *opponent-menu*
-//! weight should give: the menu prices what the opponent can take next, which
-//! is not a win condition.
+//! weight produces.
+//!
+//! The original reading of that was "the menu prices what the opponent can
+//! take next, which is not a win condition, so no channel should move". **The
+//! `phased` arm says otherwise** and is worth believing over this one: at
+//! 30,000 games the margin there is `+964` civilian and `−24` military, i.e.
+//! entirely civilian. Four thousand games simply cannot resolve a channel
+//! split inside a `+5` effect — with `1616` against `1586` civilian wins, the
+//! difference here is thirty games. Read this paragraph as "no signal", not as
+//! "no effect".
 //!
 //! ## Cost: none, and structurally so
 //!
@@ -2333,21 +2429,29 @@
 //! otherwise: it took a fitted coefficient that had converged, not the next
 //! item on that list. Everything there still stands, and four things join it.
 //!
-//! **1. This coefficient, measured properly.** The confirmation above is the
-//! most important open item this round leaves, because it is about this
-//! round's own change. `+5.0 [-5.8, +15.7]` over 4000 `Nodes(2000)` games
-//! neither establishes nor refutes it, and there is no `TimeMs` column at all.
-//! An eleventh round should give it two more disjoint ranges and a wall-clock
-//! cell on a quiet machine, and should be prepared for the answer to be "this
-//! is worth about five Elo", which would still be worth keeping and would be
-//! worth knowing.
+//! **1. This coefficient on `mcts-eval`, measured properly.** Still the most
+//! important open item, and now the *only* half of it left. `+5.0
+//! [-5.8, +15.7]` over 4000 `Nodes(2000)` games neither establishes nor
+//! refutes the change on a search consumer, and there is no `TimeMs` column on
+//! that arm at all. An eleventh round should give it two more disjoint ranges
+//! and a wall-clock cell on a quiet machine, and should be prepared for the
+//! answer to be "this is worth about five Elo to a search", which the `phased`
+//! arm now makes the *likely* answer rather than a disappointing one. Note the
+//! asymmetry in what that costs: the `phased` arm reached `±4` Elo in twenty
+//! seconds of wall-clock, and the same precision at `Nodes(2000)` is tens of
+//! thousands of games — hours, on a machine that must stay quiet.
 //!
-//! **2. The `phased` side, re-measured against `base=v9`.** The three `phased`
-//! figures above came from the fitting thread rather than from this binary.
-//! `phased` against `phased:base=v9` is now a single-binary measurement and
-//! costs minutes, and it is the column where this coefficient looked
-//! strongest — so if the policy/leaf-split explanation for the shortfall is
-//! right, that is where it should show.
+//! **2. Done — and it reproduced.** This item used to read "the `phased`
+//! side, re-measured against `base=v9`", on the reasoning that the fitting
+//! thread's three `phased` figures had never been taken in this binary and
+//! that this was the column where the coefficient looked strongest. It was
+//! run: `+11.9 [+8.0, +15.9]` over 30,000 games on three fresh ranges, all
+//! three positive, SPRT `AcceptH1`. See "The `phased` confirmation A/B" above.
+//! What replaces it as an open question is **why the two consumers differ by a
+//! factor of two** — the policy/leaf split is a name for the observation, not
+//! yet a mechanism, and three rounds have now seen it. A round that could
+//! predict the leaf effect from the policy effect would change how every
+//! future coefficient here gets measured.
 //!
 //! **3. The other seventeen coefficients.** The fit produced a whole vector and
 //! this round shipped one component of it. The rest were either
@@ -2890,12 +2994,18 @@ pub struct MenuWeights {
     /// ranges (+21.8 / +15.3 / +12.2 Elo) and `mcts-eval` pooled over two
     /// (+18.1, 95% CI [+2.9, +33.3]).
     ///
-    /// **The confirmation A/B did not reproduce that magnitude.** `mcts-eval`
-    /// against `mcts-eval:eval=v9` over 4000 `Nodes(2000)` games on four
-    /// further disjoint ranges reads `+5.0`, 95% CI `[-5.8, +15.7]` —
-    /// positive, three ranges of four positive, and not distinguishable from
-    /// zero. Quote `+5.0` for this change, not `+18.1`, and read the round-ten
-    /// section of the crate docs before moving it again.
+    /// **The two confirmation A/Bs disagree by instrument, and there is no
+    /// single Elo number for this change.** `phased` against
+    /// `phased:base=v9` over 30,000 `Nodes(1)` games on three further
+    /// disjoint ranges reads `+11.9`, 95% CI `[+8.0, +15.9]`, all three ranges
+    /// positive and each excluding zero — the fitting thread's `phased`
+    /// figures reproduce. `mcts-eval` against `mcts-eval:eval=v9` over 4000
+    /// `Nodes(2000)` games on four more reads only `+5.0`, 95% CI
+    /// `[-5.8, +15.7]` — positive, three of four ranges positive, and not
+    /// distinguishable from zero; the `+18.1` does *not* reproduce. So quote
+    /// `+11.9` as the policy effect and `+5.0` as the leaf effect, never
+    /// `+18.1`, and read the round-ten section of the crate docs before moving
+    /// it again.
     pub lambda: f64,
     /// Softmax temperature. Larger spreads credit further down the menu;
     /// towards zero it becomes a plain maximum.
@@ -3887,9 +3997,9 @@ impl Config {
     /// games.
     ///
     /// `tests/v9_identity.rs` asserts this reproduces round nine's arithmetic
-    /// bit for bit, which is what makes `mcts-eval` against
-    /// `mcts-eval:eval=v9` — the confirmation A/B round ten shipped on — a
-    /// single-binary measurement.
+    /// bit for bit, which is what makes both of round ten's confirmation A/Bs
+    /// — `mcts-eval` against `mcts-eval:eval=v9`, and `phased` against
+    /// `phased:base=v9` — single-binary measurements of one scalar.
     ///
     /// # Why a snapshot with no `#[cfg(test)]` copy behind it
     ///
