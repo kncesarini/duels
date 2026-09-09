@@ -58,8 +58,11 @@ ML"). Done, then promoted further than originally scoped:
 - PR 2 (optional) — a `duels-eval`-priced rollout policy for `mcts-eval`, only if there's
   appetite; not started.
 
-**Agent roster** — retiring `strategist` (its research question, whether `duels-strategy`'s
-prior helps `greedy-ev`, was answered: statistically indistinguishable). Approved, not yet
-executed. `random` and `greedy` are staying — `greedy` is the Elo leaderboard's anchor, and
-both serve as the easy end of the web UI's opponent picker. `mcts-eval` is now on the
-leaderboard's `LADDER` alongside the other seven agents.
+**Agent roster** — `strategist` retired (its research question, whether `duels-strategy`'s
+prior helps `greedy-ev`, was answered: statistically indistinguishable). Removed from
+`LADDER`, `agent_registry`/`duels-server::room`'s `KNOWN_AGENTS`, the web UI's opponent
+picker, and the workspace entirely (its crate is deleted). `random` and `greedy` are
+staying — `greedy` is the Elo leaderboard's anchor, and both serve as the easy end of the
+web UI's opponent picker. The ladder is now seven agents: `random`, `greedy`, `greedy-ev`,
+`phased`, `alphabeta`, `mcts-uct`, `mcts-eval` (`leaderboard::CHAMPION`, moved from
+`mcts-uct` once `mcts-eval` measured ~+100 Elo stronger).
