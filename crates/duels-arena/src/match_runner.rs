@@ -601,7 +601,11 @@ mod tests {
     #[test]
     fn per_side_win_race_exposure_splits_the_same_games_by_who_won_them() {
         let seeds: Vec<u64> = (0..40).collect();
-        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        // `phased` self-play, not `random`: this test only needs some cheap,
+        // fast self-play to exercise the splitting arithmetic below, and
+        // `random` was retired from the constructible roster (`random`,
+        // `greedy`, `greedy-ev`) -- see docs/milestones.md.
+        let records = play_paired_match("phased", "phased", &seeds, Budget::Nodes(1)).unwrap();
         let t = tally(&records);
         let vb = victory_breakdown(&records);
         let re = race_exposure(&records);
