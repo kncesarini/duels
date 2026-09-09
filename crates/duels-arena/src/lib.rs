@@ -24,6 +24,13 @@
 //!   and the designated champion the `ai-candidate` check measures against.
 //! - [`sprt`] runs a Sequential Probability Ratio Test, in the style of
 //!   chess-engine testing frameworks, over accumulated win/loss/draw counts.
+//! - [`experiment`] runs this project's whole documented measurement protocol
+//!   — candidate vs control, over several disjoint seed ranges and several
+//!   budgets, each cell a paired-seed match, Elo and SPRT per cell *and*
+//!   pooled across seed ranges within a budget — as one command producing one
+//!   machine-readable verdict. It is orchestration only: every game it plays
+//!   goes through [`match_runner`] and every statistic through [`elo`] /
+//!   [`sprt`].
 //! - [`results_io`] serializes a match's [`match_runner::GameRecord`]s, plus
 //!   the derived tally/victory-breakdown/race-exposure summary, to a JSON
 //!   results file.
@@ -90,6 +97,7 @@ pub mod age_start_policy;
 pub mod agent_registry;
 pub mod agent_spec;
 pub mod elo;
+pub mod experiment;
 pub mod leaderboard;
 pub mod match_runner;
 pub mod results_io;
