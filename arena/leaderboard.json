@@ -1,112 +1,132 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-07T08:52:42Z",
-  "commit": "a0c91c10f89a5dcec71d1566db8f1a26a449e585",
+  "generated_at": "2026-09-09T08:47:18Z",
+  "commit": "f945d8d9b3a992b127353a8dae97d8f595f05c6b",
   "budget": "nodes:2000",
   "anchor_agent": "greedy",
   "anchor_elo": 1000.0,
-  "champion_agent": "mcts-uct",
+  "champion_agent": "mcts-eval",
   "champion_budget": "nodes:2000",
   "rows": [
     {
       "rank": 1,
-      "agent": "mcts-uct",
+      "agent": "mcts-eval",
       "budget": "nodes:2000",
-      "elo": 2298.123093048037,
-      "elo_ci_low": 2248.692507856452,
-      "elo_ci_high": 2347.553678239622,
-      "games": 18000,
-      "wins": 16692,
-      "losses": 1307,
-      "draws": 1,
+      "elo": 2379.295859229621,
+      "elo_ci_low": 2326.434797360137,
+      "elo_ci_high": 2432.1569210991047,
+      "games": 21000,
+      "wins": 18811,
+      "losses": 2182,
+      "draws": 7,
       "champion": true
     },
     {
       "rank": 2,
-      "agent": "alphabeta",
+      "agent": "mcts-uct",
       "budget": "nodes:2000",
-      "elo": 2111.4243719756832,
-      "elo_ci_low": 2062.4868094341214,
-      "elo_ci_high": 2160.361934517245,
-      "games": 18000,
-      "wins": 14573,
-      "losses": 3427,
-      "draws": 0,
+      "elo": 2280.4210047881324,
+      "elo_ci_low": 2227.724753450357,
+      "elo_ci_high": 2333.1172561259077,
+      "games": 21000,
+      "wins": 17375,
+      "losses": 3620,
+      "draws": 5,
       "champion": false
     },
     {
       "rank": 3,
       "agent": "phased",
       "budget": "nodes:1",
-      "elo": 2034.9583970889119,
-      "elo_ci_low": 1986.234767786756,
-      "elo_ci_high": 2083.6820263910677,
-      "games": 18000,
-      "wins": 13690,
-      "losses": 4309,
-      "draws": 1,
+      "elo": 2139.924132511069,
+      "elo_ci_low": 2087.4083700379406,
+      "elo_ci_high": 2192.439894984197,
+      "games": 21000,
+      "wins": 15192,
+      "losses": 5802,
+      "draws": 6,
       "champion": false
     },
     {
       "rank": 4,
-      "agent": "strategist",
-      "budget": "nodes:1",
-      "elo": 1014.5050853221613,
-      "elo_ci_low": 1005.4252121762803,
-      "elo_ci_high": 1023.5849584680424,
-      "games": 18000,
-      "wins": 5401,
-      "losses": 12591,
-      "draws": 8,
+      "agent": "alphabeta",
+      "budget": "nodes:2000",
+      "elo": 2098.16444532708,
+      "elo_ci_low": 2045.7153165886843,
+      "elo_ci_high": 2150.613574065476,
+      "games": 21000,
+      "wins": 14576,
+      "losses": 6420,
+      "draws": 4,
       "champion": false
     },
     {
       "rank": 5,
-      "agent": "greedy-ev",
+      "agent": "strategist",
       "budget": "nodes:1",
-      "elo": 1007.6393056345729,
-      "elo_ci_low": 998.5705468729574,
-      "elo_ci_high": 1016.7080643961884,
-      "games": 18000,
-      "wins": 5290,
-      "losses": 12702,
-      "draws": 8,
+      "elo": 1011.4009404962858,
+      "elo_ci_low": 1002.30492838816,
+      "elo_ci_high": 1020.4969526044116,
+      "games": 21000,
+      "wins": 5393,
+      "losses": 15600,
+      "draws": 7,
       "champion": false
     },
     {
       "rank": 6,
+      "agent": "greedy-ev",
+      "budget": "nodes:1",
+      "elo": 1005.6294090697528,
+      "elo_ci_low": 996.5423928045028,
+      "elo_ci_high": 1014.7164253350028,
+      "games": 21000,
+      "wins": 5300,
+      "losses": 15693,
+      "draws": 7,
+      "champion": false
+    },
+    {
+      "rank": 7,
       "agent": "greedy",
       "budget": "nodes:1",
       "elo": 1000.0,
       "elo_ci_low": 1000.0,
       "elo_ci_high": 1000.0,
-      "games": 18000,
-      "wins": 5168,
-      "losses": 12828,
-      "draws": 4,
+      "games": 21000,
+      "wins": 5210,
+      "losses": 15785,
+      "draws": 5,
       "champion": false
     },
     {
-      "rank": 7,
+      "rank": 8,
       "agent": "random",
       "budget": "nodes:1",
-      "elo": 808.4062064227417,
-      "elo_ci_low": 798.5584920487296,
-      "elo_ci_high": 818.2539207967537,
-      "games": 18000,
-      "wins": 2174,
-      "losses": 15824,
-      "draws": 2,
+      "elo": 801.2803097746631,
+      "elo_ci_low": 791.3611390397797,
+      "elo_ci_high": 811.1994805095466,
+      "games": 21000,
+      "wins": 2122,
+      "losses": 18877,
+      "draws": 1,
       "champion": false
     }
   ],
   "pairings": [
     {
       "agent_a": "alphabeta",
+      "agent_b": "mcts-eval",
+      "a_wins": 456,
+      "b_wins": 2542,
+      "draws": 2
+    },
+    {
+      "agent_a": "alphabeta",
       "agent_b": "mcts-uct",
-      "a_wins": 684,
-      "b_wins": 2316,
-      "draws": 0
+      "a_wins": 736,
+      "b_wins": 2263,
+      "draws": 1
     },
     {
       "agent_a": "greedy",
@@ -118,29 +138,36 @@
     {
       "agent_a": "greedy",
       "agent_b": "greedy-ev",
-      "a_wins": 1465,
-      "b_wins": 1533,
+      "a_wins": 1461,
+      "b_wins": 1537,
       "draws": 2
     },
     {
       "agent_a": "greedy",
+      "agent_b": "mcts-eval",
+      "a_wins": 1,
+      "b_wins": 2999,
+      "draws": 0
+    },
+    {
+      "agent_a": "greedy",
       "agent_b": "mcts-uct",
-      "a_wins": 2,
-      "b_wins": 2998,
+      "a_wins": 6,
+      "b_wins": 2994,
       "draws": 0
     },
     {
       "agent_a": "greedy",
       "agent_b": "phased",
-      "a_wins": 14,
-      "b_wins": 2986,
+      "a_wins": 12,
+      "b_wins": 2988,
       "draws": 0
     },
     {
       "agent_a": "greedy",
       "agent_b": "strategist",
-      "a_wins": 1436,
-      "b_wins": 1562,
+      "a_wins": 1458,
+      "b_wins": 1540,
       "draws": 2
     },
     {
@@ -152,103 +179,138 @@
     },
     {
       "agent_a": "greedy-ev",
-      "agent_b": "mcts-uct",
+      "agent_b": "mcts-eval",
       "a_wins": 1,
       "b_wins": 2999,
       "draws": 0
     },
     {
       "agent_a": "greedy-ev",
-      "agent_b": "phased",
-      "a_wins": 10,
-      "b_wins": 2990,
+      "agent_b": "mcts-uct",
+      "a_wins": 0,
+      "b_wins": 3000,
       "draws": 0
     },
     {
       "agent_a": "greedy-ev",
-      "agent_b": "strategist",
-      "a_wins": 1530,
-      "b_wins": 1465,
-      "draws": 5
-    },
-    {
-      "agent_a": "phased",
-      "agent_b": "alphabeta",
-      "a_wins": 1111,
-      "b_wins": 1889,
-      "draws": 0
-    },
-    {
-      "agent_a": "phased",
-      "agent_b": "mcts-uct",
-      "a_wins": 617,
-      "b_wins": 2382,
-      "draws": 1
-    },
-    {
-      "agent_a": "random",
-      "agent_b": "alphabeta",
-      "a_wins": 0,
-      "b_wins": 3000,
-      "draws": 0
-    },
-    {
-      "agent_a": "random",
-      "agent_b": "greedy",
-      "a_wins": 749,
-      "b_wins": 2251,
-      "draws": 0
-    },
-    {
-      "agent_a": "random",
-      "agent_b": "greedy-ev",
-      "a_wins": 783,
-      "b_wins": 2216,
-      "draws": 1
-    },
-    {
-      "agent_a": "random",
-      "agent_b": "mcts-uct",
-      "a_wins": 0,
-      "b_wins": 3000,
-      "draws": 0
-    },
-    {
-      "agent_a": "random",
       "agent_b": "phased",
-      "a_wins": 2,
-      "b_wins": 2998,
-      "draws": 0
-    },
-    {
-      "agent_a": "random",
-      "agent_b": "strategist",
-      "a_wins": 640,
-      "b_wins": 2359,
-      "draws": 1
-    },
-    {
-      "agent_a": "strategist",
-      "agent_b": "alphabeta",
-      "a_wins": 0,
-      "b_wins": 3000,
-      "draws": 0
-    },
-    {
-      "agent_a": "strategist",
-      "agent_b": "mcts-uct",
       "a_wins": 3,
       "b_wins": 2997,
       "draws": 0
     },
     {
+      "agent_a": "greedy-ev",
+      "agent_b": "strategist",
+      "a_wins": 1532,
+      "b_wins": 1463,
+      "draws": 5
+    },
+    {
+      "agent_a": "mcts-uct",
+      "agent_b": "mcts-eval",
+      "a_wins": 1050,
+      "b_wins": 1948,
+      "draws": 2
+    },
+    {
+      "agent_a": "phased",
+      "agent_b": "alphabeta",
+      "a_wins": 1614,
+      "b_wins": 1385,
+      "draws": 1
+    },
+    {
+      "agent_a": "phased",
+      "agent_b": "mcts-eval",
+      "a_wins": 674,
+      "b_wins": 2323,
+      "draws": 3
+    },
+    {
+      "agent_a": "phased",
+      "agent_b": "mcts-uct",
+      "a_wins": 925,
+      "b_wins": 2073,
+      "draws": 2
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "alphabeta",
+      "a_wins": 1,
+      "b_wins": 2999,
+      "draws": 0
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "greedy",
+      "a_wins": 727,
+      "b_wins": 2272,
+      "draws": 1
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "greedy-ev",
+      "a_wins": 773,
+      "b_wins": 2227,
+      "draws": 0
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "mcts-eval",
+      "a_wins": 0,
+      "b_wins": 3000,
+      "draws": 0
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "mcts-uct",
+      "a_wins": 0,
+      "b_wins": 3000,
+      "draws": 0
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "phased",
+      "a_wins": 1,
+      "b_wins": 2999,
+      "draws": 0
+    },
+    {
+      "agent_a": "random",
+      "agent_b": "strategist",
+      "a_wins": 620,
+      "b_wins": 2380,
+      "draws": 0
+    },
+    {
+      "agent_a": "strategist",
+      "agent_b": "alphabeta",
+      "a_wins": 0,
+      "b_wins": 3000,
+      "draws": 0
+    },
+    {
+      "agent_a": "strategist",
+      "agent_b": "mcts-eval",
+      "a_wins": 0,
+      "b_wins": 3000,
+      "draws": 0
+    },
+    {
+      "agent_a": "strategist",
+      "agent_b": "mcts-uct",
+      "a_wins": 5,
+      "b_wins": 2995,
+      "draws": 0
+    },
+    {
       "agent_a": "strategist",
       "agent_b": "phased",
-      "a_wins": 12,
-      "b_wins": 2988,
+      "a_wins": 5,
+      "b_wins": 2995,
       "draws": 0
     }
   ],
-  "total_games": 63000,
+  "total_games": 84000,
   "converged": true
 }
