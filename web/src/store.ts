@@ -57,7 +57,7 @@ interface GameStore {
   catalog: Catalog | null;
   catalogError: string | null;
 
-  /** Agent names `POST /rooms` will accept, from `GET /agents`. `["random"]`
+  /** Agent names `POST /rooms` will accept, from `GET /agents`. `["phased"]`
    * until `loadAgents` resolves, so the opponent picker always has at least
    * the one opponent the e2e suite relies on. */
   agents: string[];
@@ -394,7 +394,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   catalog: null,
   catalogError: null,
 
-  agents: ["random"],
+  agents: ["phased"],
   agentsError: null,
 
   roomId: null,
@@ -439,15 +439,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
   loadAgents: async () => {
     try {
       const agents = await fetchAgents();
-      set({ agents: agents.length > 0 ? agents : ["random"], agentsError: null });
+      set({ agents: agents.length > 0 ? agents : ["phased"], agentsError: null });
     } catch (e) {
-      // Keep the `["random"]` default so the picker still works if `GET
+      // Keep the `["phased"]` default so the picker still works if `GET
       // /agents` is unreachable; just surface the error alongside it.
       set({ agentsError: e instanceof Error ? e.message : String(e) });
     }
   },
 
-  startVsBot: async (seed, agent = "random") => {
+  startVsBot: async (seed, agent = "phased") => {
     set({ status: "connecting", errorMessage: null });
     try {
       const res = await createRoom({

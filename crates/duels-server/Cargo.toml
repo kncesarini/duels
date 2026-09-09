@@ -15,9 +15,6 @@ duels-agents-api = { path = "../duels-agents-api" }
 # `duels-agent-phased`'s re-export would tie an analysis endpoint to one
 # agent's identity for no reason.
 duels-eval = { path = "../duels-eval" }
-duels-agent-random = { path = "../agents/random" }
-duels-agent-greedy = { path = "../agents/greedy" }
-duels-agent-greedy-ev = { path = "../agents/greedy-ev" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }

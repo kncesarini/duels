@@ -1434,8 +1434,8 @@ mod tests {
             budget: Budget::Nodes(1),
             range: SeedRange { start: 1, pairs: 7 },
         };
-        let one = play_cell("random", "greedy", &cell, &params(), false, None).unwrap();
-        let chunked = play_cell("random", "greedy", &cell, &params(), false, Some(4)).unwrap();
+        let one = play_cell("phased", "mcts-uct", &cell, &params(), false, None).unwrap();
+        let chunked = play_cell("phased", "mcts-uct", &cell, &params(), false, Some(4)).unwrap();
         assert_eq!(one.records.len(), 14);
         assert_eq!(chunked.records.len(), one.records.len());
         assert!(!one.stopped_early && !chunked.stopped_early);
@@ -1453,7 +1453,9 @@ mod tests {
     }
 
     /// Early stopping cuts a cell short once its SPRT decides, and reports
-    /// that it did. `random` vs `greedy` at a wide H1 resolves fast.
+    /// that it did. `phased` vs `mcts-uct` *at `nodes:1`* resolves fast at a
+    /// wide H1: one node of MCTS is a single playout, so the search agent is
+    /// playing near-randomly while `phased` ignores the budget entirely.
     #[test]
     fn early_stopping_abandons_the_rest_of_a_decided_cell() {
         let cell = CellPlan {
@@ -1470,7 +1472,7 @@ mod tests {
             alpha: 0.05,
             beta: 0.05,
         };
-        let outcome = play_cell("random", "greedy", &cell, &params, true, Some(20)).unwrap();
+        let outcome = play_cell("phased", "mcts-uct", &cell, &params, true, Some(20)).unwrap();
         assert!(outcome.stopped_early, "a decided cell should stop");
         assert!(
             outcome.records.len() < 400,
@@ -1484,7 +1486,7 @@ mod tests {
             "it should only have stopped on a decision"
         );
         // With early stopping off, the same cell plays every game.
-        let full = play_cell("random", "greedy", &cell, &params, false, Some(20)).unwrap();
+        let full = play_cell("phased", "mcts-uct", &cell, &params, false, Some(20)).unwrap();
         assert_eq!(full.records.len(), 400);
         assert!(!full.stopped_early);
     }
@@ -1505,11 +1507,11 @@ mod tests {
         let ranges = parse_seed_ranges("1,500", 4).unwrap();
         let budgets = parse_budgets("nodes:1").unwrap();
         let plan = ExperimentPlan {
-            candidate: "random".to_string(),
-            control: "random".to_string(),
+            candidate: "phased".to_string(),
+            control: "phased".to_string(),
             cells: plan_cells(&ranges, &budgets),
             sprt: params(),
-            label: default_label("random", "random"),
+            label: default_label("phased", "phased"),
             early_stop: false,
             check_every_games: None,
             gate: MechanismGate::parse(crate::mechanism::DEFAULT_GATE).unwrap(),
@@ -1523,7 +1525,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(summary.schema, SCHEMA_VERSION);
-        assert_eq!(summary.label, "random-vs-random");
+        assert_eq!(summary.label, "phased-vs-phased");
         assert_eq!(summary.cells.len(), 2);
         assert_eq!(summary.pooled.len(), 1);
         assert_eq!(summary.total_games, 8);
@@ -1531,9 +1533,9 @@ mod tests {
         assert_eq!(summary.seed_ranges.len(), 2);
         // The recorded params are the agent's own reported ones, read off a
         // game that was actually played rather than re-derived from the spec
-        // string (`random`'s happen to be empty, which is exactly why this
-        // asserts equality and not non-emptiness).
-        let own = crate::agent_spec::make_agent_from_spec("random", 1)
+        // string — which is why this asserts equality against what the agent
+        // itself reports rather than merely that something was recorded.
+        let own = crate::agent_spec::make_agent_from_spec("phased", 1)
             .unwrap()
             .spec()
             .params;
@@ -1590,7 +1592,7 @@ mod tests {
         assert_eq!(mech.checks.len(), 3, "3 default bounds x 1 budget");
 
         let md = std::fs::read_to_string(&md_path).unwrap();
-        assert!(md.contains("# Experiment: random-vs-random"));
+        assert!(md.contains("# Experiment: phased-vs-phased"));
         assert!(md.contains("nodes:1"));
         assert!(md.contains("Elo verdict"));
         assert!(md.contains("Mechanism verdict"));
@@ -1603,8 +1605,8 @@ mod tests {
     #[test]
     fn an_empty_plan_is_an_error_not_an_empty_summary() {
         let plan = ExperimentPlan {
-            candidate: "random".to_string(),
-            control: "random".to_string(),
+            candidate: "phased".to_string(),
+            control: "phased".to_string(),
             cells: Vec::new(),
             sprt: params(),
             label: "empty".to_string(),

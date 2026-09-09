@@ -11,7 +11,10 @@ duels-core = { path = "../duels-core" }
 
 [dev-dependencies]
 duels-agents-api = { path = "../duels-agents-api" }
-duels-agent-greedy = { path = "../agents/greedy" }
+# The only agent crate this one can drive a game with: it sits *below*
+# `duels-eval`, so dev-depending on `phased` (or anything above it) would
+# close a cycle. Retired from the roster, kept as a fixture — see that
+# crate's docs.
 duels-agent-random = { path = "../agents/random" }
 criterion = { workspace = true }
 proptest = { workspace = true }

@@ -3,19 +3,22 @@
 //! The single most direct check on whether this crate's design landed. A
 //! strong human player, in Age I, mostly avoids red and blue (both are slow:
 //! they develop nothing, and taking one can cost the "start the next age"
-//! claim) and prefers grey, green and yellow. `greedy-ev` cannot express that
-//! preference at all — it has no term for what a card *produces* — so the
+//! claim) and prefers grey, green and yellow. `greedy-ev`, the 1-ply
+//! reference this example was written against, could not express that
+//! preference at all — it had no term for what a card *produces* — so the
 //! question this example answers is whether `phased`'s development term and
 //! next-age-start tempo term move the profile in the direction a human would
-//! recognise.
+//! recognise. `greedy-ev` has since been retired (see `docs/milestones.md`)
+//! and is gone from the agent list below; `random` is the remaining
+//! no-preference baseline to read the profile against.
 //!
 //! ```text
 //! cargo run --release -p duels-agent-phased --example take_profile
-//! cargo run --release -p duels-agent-phased --example take_profile -- 40 phased greedy-ev mcts-uct
+//! cargo run --release -p duels-agent-phased --example take_profile -- 40 phased random mcts-uct
 //! ```
 //!
 //! Arguments: the number of self-play games per agent (default 30), then the
-//! agents to profile (default `phased greedy-ev mcts-uct`). Each agent plays
+//! agents to profile (default `phased random mcts-uct`). Each agent plays
 //! itself, so the profile is that agent's own taste rather than a reaction to
 //! somebody else's. `phased-v1` is the configuration this crate first
 //! shipped with, and `phased:band=<x>` overrides the military band weight, so
@@ -42,7 +45,6 @@
 //! is tabulated in the crate docs, along with why the default sits where it
 //! does.
 
-use duels_agent_greedy_ev::GreedyEvAgent;
 use duels_agent_mcts_uct::MctsAgent;
 use duels_agent_phased::PhasedAgent;
 use duels_agent_random::RandomAgent;
@@ -65,7 +67,6 @@ const COLOURS: [(CardType, &str); 7] = [
 fn make_agent(name: &str, seed: u64) -> Box<dyn Agent> {
     match name {
         "random" => Box::new(RandomAgent::new(seed)),
-        "greedy-ev" => Box::new(GreedyEvAgent::new(seed)),
         "mcts-uct" => Box::new(MctsAgent::new(seed)),
         "phased" => Box::new(PhasedAgent::new(seed)),
         // The configuration this crate shipped with, so the two rounds of
@@ -185,7 +186,7 @@ fn main() {
     } else {
         vec![
             "phased".to_string(),
-            "greedy-ev".to_string(),
+            "random".to_string(),
             "mcts-uct".to_string(),
         ]
     };

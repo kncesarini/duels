@@ -1,4 +1,5 @@
-//! `duels-agent-random`: the first concrete [`Agent`] implementation.
+//! `duels-agent-random`: the uniform-random baseline. **Retired from the
+//! agent roster; a test-only fixture.**
 //!
 //! [`RandomAgent`] does the simplest thing that conforms to the contract in
 //! `duels-agents-api`: it uniformly picks one of the `legal` actions it is
@@ -6,6 +7,34 @@
 //! it is given beyond what `choose`'s signature requires, and it never
 //! touches wall-clock time or ambient randomness (see `clippy.toml`, denied
 //! crate-wide below).
+//!
+//! # Why this crate still exists after being retired
+//!
+//! `random` was retired from the *roster* alongside `greedy` and `greedy-ev`
+//! (see `docs/milestones.md`): it is not on `duels_arena::leaderboard::LADDER`,
+//! not in `duels_arena::agent_registry::KNOWN_AGENTS` or
+//! `duels_server::room::KNOWN_AGENTS`, not offered by the web client's
+//! opponent picker, and cannot be named in a `duels-arena` spec string. No
+//! rating is published for it and nobody can play against it.
+//!
+//! The crate survives because a *uniform-random opponent* is the yardstick
+//! four surviving crates measure a correctness floor against — "a search agent
+//! that does not comfortably beat a random player has a bug, not bad luck":
+//!
+//! * `duels-agent-alphabeta`'s `tests/vs_random.rs`,
+//! * `duels-agent-mcts-uct` and `duels-agent-mcts-eval`'s in-crate
+//!   `beats_a_random_opponent` tests (and `mcts-uct`'s `vs_random` example),
+//! * `duels-agent-phased`'s `phased_convincingly_beats_random`,
+//! * `duels-arena`'s `age_start_policy` wrapper tests, which need a cheap
+//!   *stateful, RNG-consuming* inner agent and scan up to 200 whole games,
+//! * `duels-strategy`'s `watch_reads` example, the one agent below
+//!   `duels-eval` in the layering that it can drive a game with at all.
+//!
+//! Those assertions are *about* a random baseline; substituting a stronger
+//! surviving agent would not make them cheaper or stricter, it would make them
+//! mean something else. So this is a fixture in the same spirit as
+//! `duels_core::testing::StateBuilder`, and it is a **dev-dependency
+//! everywhere** — no shipping binary links it. Do not re-register it.
 
 #![deny(clippy::disallowed_methods)]
 

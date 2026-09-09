@@ -477,8 +477,8 @@ mod tests {
     }
 
     #[test]
-    fn random_vs_random_reaches_a_game_result() {
-        let records = play_paired_match("random", "random", &[1], Budget::Nodes(1)).unwrap();
+    fn self_play_reaches_a_game_result() {
+        let records = play_paired_match("phased", "phased", &[1], Budget::Nodes(1)).unwrap();
         assert_eq!(records.len(), 2);
         for r in &records {
             // Just proving a `GameResult` was reached is the point here;
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn seat_swap_pairing_uses_the_same_setup_with_seats_swapped() {
-        let records = play_paired_match("random", "random", &[42], Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &[42], Budget::Nodes(1)).unwrap();
         assert_eq!(records.len(), 2);
         let (first, second) = (&records[0], &records[1]);
         assert_eq!(first.seed, second.seed);
@@ -510,22 +510,22 @@ mod tests {
         );
 
         // ...but the two full games are not required to (and with a
-        // seed-dependent random agent, generally won't) end identically,
-        // since each half of the pair draws its in-game decisions from an
-        // independent RNG stream (`AGENT_A_SALT`/`AGENT_B_SALT`).
-        // We don't assert inequality here (a random agent *could*
-        // legitimately produce the same result by chance for some seeds);
+        // seed-dependent agent, generally won't) end identically, since each
+        // half of the pair draws its in-game decisions from an independent
+        // RNG stream (`AGENT_A_SALT`/`AGENT_B_SALT`).
+        // We don't assert inequality here (an agent *could* legitimately
+        // produce the same result by chance for some seeds);
         // the point is only that the pairing does not force the two games to
         // be trivial re-runs of one another, which the differing move counts
         // for most seeds already demonstrates in the larger end-to-end run.
-        assert_eq!(first.seat_one.name, "random");
-        assert_eq!(second.seat_one.name, "random");
+        assert_eq!(first.seat_one.name, "phased");
+        assert_eq!(second.seat_one.name, "phased");
     }
 
     #[test]
     fn multiple_seeds_run_in_parallel_and_all_complete() {
         let seeds: Vec<u64> = (0..20).collect();
-        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &seeds, Budget::Nodes(1)).unwrap();
         assert_eq!(records.len(), 40);
         let t = tally(&records);
         assert_eq!(t.total(), 40);
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_name_surfaces_as_an_error_not_a_panic() {
-        let err = play_paired_match("nope", "random", &[1], Budget::Nodes(1)).unwrap_err();
+        let err = play_paired_match("nope", "phased", &[1], Budget::Nodes(1)).unwrap_err();
         assert!(err.contains("nope"));
     }
 
@@ -582,12 +582,13 @@ mod tests {
 
     #[test]
     fn victory_breakdown_sums_to_the_win_count_for_each_side() {
-        // A real, sizeable match end to end: random vs random over enough
-        // seeds to see a mix of civilian/tiebreak/draw outcomes (military
-        // and scientific supremacy are rare with random play but the sum
-        // property must hold regardless of which kinds actually occur).
+        // A real, sizeable match end to end: `phased` self-play over enough
+        // seeds to see a mix of civilian/tiebreak/draw outcomes (military and
+        // scientific supremacy are rare between two evaluation-driven agents,
+        // but the sum property must hold regardless of which kinds actually
+        // occur).
         let seeds: Vec<u64> = (0..60).collect();
-        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &seeds, Budget::Nodes(1)).unwrap();
         let t = tally(&records);
         let vb = victory_breakdown(&records);
         assert_eq!(vb.a.total(), t.a_wins);
@@ -600,7 +601,11 @@ mod tests {
     #[test]
     fn per_side_win_race_exposure_splits_the_same_games_by_who_won_them() {
         let seeds: Vec<u64> = (0..40).collect();
-        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        // `phased` self-play, not `random`: this test only needs some cheap,
+        // fast self-play to exercise the splitting arithmetic below, and
+        // `random` was retired from the constructible roster (`random`,
+        // `greedy`, `greedy-ev`) -- see docs/milestones.md.
+        let records = play_paired_match("phased", "phased", &seeds, Budget::Nodes(1)).unwrap();
         let t = tally(&records);
         let vb = victory_breakdown(&records);
         let re = race_exposure(&records);
@@ -627,7 +632,7 @@ mod tests {
     #[test]
     fn race_exposure_counts_never_exceed_the_game_count() {
         let seeds: Vec<u64> = (0..30).collect();
-        let records = play_paired_match("random", "random", &seeds, Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &seeds, Budget::Nodes(1)).unwrap();
         let re = race_exposure(&records);
         assert_eq!(re.total_games, records.len() as u32);
         assert!(re.military_games <= re.total_games);

@@ -381,27 +381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "duels-agent-greedy"
-version = "0.1.0"
-dependencies = [
- "duels-agent-random",
- "duels-agents-api",
- "duels-core",
- "rand 0.8.8",
-]
-
-[[package]]
-name = "duels-agent-greedy-ev"
-version = "0.1.0"
-dependencies = [
- "duels-agent-greedy",
- "duels-agent-random",
- "duels-agents-api",
- "duels-core",
- "rand 0.8.8",
-]
-
-[[package]]
 name = "duels-agent-mcts-eval"
 version = "0.1.0"
 dependencies = [
@@ -428,7 +407,6 @@ dependencies = [
 name = "duels-agent-phased"
 version = "0.1.0"
 dependencies = [
- "duels-agent-greedy-ev",
  "duels-agent-mcts-uct",
  "duels-agent-random",
  "duels-agents-api",
@@ -461,8 +439,6 @@ name = "duels-arena"
 version = "0.1.0"
 dependencies = [
  "duels-agent-alphabeta",
- "duels-agent-greedy",
- "duels-agent-greedy-ev",
  "duels-agent-mcts-eval",
  "duels-agent-mcts-uct",
  "duels-agent-phased",
@@ -504,12 +480,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "duels-agent-alphabeta",
- "duels-agent-greedy",
- "duels-agent-greedy-ev",
  "duels-agent-mcts-eval",
  "duels-agent-mcts-uct",
  "duels-agent-phased",
- "duels-agent-random",
  "duels-agents-api",
  "duels-core",
  "duels-eval",
@@ -531,7 +504,6 @@ name = "duels-strategy"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "duels-agent-greedy",
  "duels-agent-random",
  "duels-agents-api",
  "duels-core",

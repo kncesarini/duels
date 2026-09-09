@@ -1,19 +1,25 @@
 //! Integration tests: `PhasedAgent` driving whole games to completion against
-//! `RandomAgent` (a sanity floor) and head-to-head against
-//! `duels-agent-greedy-ev` (the reference this crate exists to beat).
+//! `RandomAgent`, a sanity floor.
 //!
 //! These only ever see [`duels_core::Observation`]s and the `legal` actions
 //! handed to `choose`, exactly as a real arena run would drive them.
 //!
+//! The head-to-head this crate was built to win — against `greedy-ev`, which
+//! `duels-arena` measured at around 98% over 400 paired games on three
+//! disjoint seed ranges — is gone with that agent's retirement (see
+//! `docs/milestones.md`). The measurement stands in this crate's history and
+//! in `duels-eval`'s research record; what is left here is the floor against a
+//! random player, which is the assertion that would actually catch a
+//! regression in the plumbing.
+//!
 //! The real, large-N win-rate measurement with victory-kind and race-exposure
 //! breakdowns belongs to `duels-arena`
 //! (`cargo run --release -p duels-arena -- match --agent-a phased --agent-b
-//! greedy-ev --games 400 --budget nodes:1 --seed 1`), whose numbers this
-//! crate's PR description reports. What is here is small enough to stay in the
-//! default `cargo test` path, and is a floor rather than the headline: it
-//! asserts a margin so wide that only a real regression could break it.
+//! alphabeta --games 400 --budget nodes:2000 --seed 1`). What is here is small
+//! enough to stay in the default `cargo test` path, and is a floor rather than
+//! the headline: it asserts a margin so wide that only a real regression could
+//! break it.
 
-use duels_agent_greedy_ev::GreedyEvAgent;
 use duels_agent_phased::PhasedAgent;
 use duels_agent_random::RandomAgent;
 use duels_agents_api::{Agent, Budget};
@@ -49,21 +55,20 @@ fn play_full_game<A: Agent, B: Agent>(mut one: A, mut two: B, seed: u64) -> Game
     state.result().expect("a finished game has a result")
 }
 
-/// Paired, seat-swapped win rate for `phased` against one opponent. Seat
+/// Paired, seat-swapped win rate for `phased` against a random opponent. Seat
 /// swapping is not optional in this game: first-player advantage is large
 /// even between equally strong agents.
-fn paired_win_rate(opponent: &str, seeds: u64) -> f64 {
+fn paired_win_rate_vs_random(seeds: u64) -> f64 {
     let mut wins = 0u32;
     let mut games = 0u32;
     for seed in 0..seeds {
         for phased_is_one in [true, false] {
             let phased = PhasedAgent::new(seed * 4 + u64::from(phased_is_one));
             let other_seed = seed * 4 + 2;
-            let result = match (phased_is_one, opponent) {
-                (true, "random") => play_full_game(phased, RandomAgent::new(other_seed), seed),
-                (false, "random") => play_full_game(RandomAgent::new(other_seed), phased, seed),
-                (true, _) => play_full_game(phased, GreedyEvAgent::new(other_seed), seed),
-                (false, _) => play_full_game(GreedyEvAgent::new(other_seed), phased, seed),
+            let result = if phased_is_one {
+                play_full_game(phased, RandomAgent::new(other_seed), seed)
+            } else {
+                play_full_game(RandomAgent::new(other_seed), phased, seed)
             };
             games += 1;
             match result {
@@ -91,7 +96,7 @@ fn phased_vs_phased_plays_full_games_to_completion_across_seeds() {
 
 #[test]
 fn phased_convincingly_beats_random() {
-    let rate = paired_win_rate("random", 25);
+    let rate = paired_win_rate_vs_random(25);
     println!(
         "phased vs random over 50 paired games: {:.1}%",
         rate * 100.0
@@ -99,24 +104,6 @@ fn phased_convincingly_beats_random() {
     assert!(
         rate > 0.85,
         "phased only won {:.1}% against random",
-        rate * 100.0
-    );
-}
-
-/// The head-to-head this crate exists for. `duels-arena` measures this at
-/// around 98% over 400 paired games on three disjoint seed ranges; the
-/// threshold here is set far below that so it flags a regression rather than
-/// ordinary run-to-run noise on a small sample.
-#[test]
-fn phased_convincingly_beats_greedy_ev() {
-    let rate = paired_win_rate("greedy-ev", 25);
-    println!(
-        "phased vs greedy-ev over 50 paired games: {:.1}%",
-        rate * 100.0
-    );
-    assert!(
-        rate > 0.80,
-        "phased only won {:.1}% against greedy-ev",
         rate * 100.0
     );
 }

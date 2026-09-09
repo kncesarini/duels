@@ -113,7 +113,12 @@ fn cost(spec: &str, budget: Budget, seeds: u64, seed0: u64) {
     let mut searches = 0u64;
     for k in 0..seeds {
         let s = seed0 + k;
-        let mut opponent = duels_arena::agent_registry::make_agent("random", s ^ 0xBEEF).unwrap();
+        // A uniform-random opponent, taken from the test fixture crate
+        // rather than the registry: `random` was retired from the roster, and
+        // pricing a search against a *stronger* opponent would measure
+        // different (longer, differently-shaped) games. See
+        // `duels-agent-random`'s crate docs.
+        let mut opponent = duels_agent_random::RandomAgent::new(s ^ 0xBEEF);
         let mut mcts = (name == "mcts-uct")
             .then(|| MctsAgent::with_config(s, parse_mcts_config(params).expect("valid keys")));
         let mut ab = (name == "alphabeta").then(|| {

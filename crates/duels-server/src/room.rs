@@ -33,15 +33,12 @@ fn next_id() -> u64 {
 /// web client's opponent picker should offer them (weakest/cheapest first).
 /// `GET /agents` serves this list so the UI never hand-maintains its own
 /// copy. Mirrors `duels-arena`'s `agent_registry::KNOWN_AGENTS`.
-pub const KNOWN_AGENTS: &[&str] = &[
-    "random",
-    "greedy",
-    "greedy-ev",
-    "phased",
-    "alphabeta",
-    "mcts-uct",
-    "mcts-eval",
-];
+///
+/// `random`, `greedy` and `greedy-ev` were retired from the roster (see
+/// `docs/milestones.md`), which is why the easy end of the picker now starts
+/// at `phased`. `duels-agent-random` still exists as a test fixture but is
+/// deliberately not linked by this crate at all.
+pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval"];
 
 /// Construct the `Agent` for an agent seat. Unknown names are rejected when
 /// the room is created rather than silently falling back to something.
@@ -50,9 +47,6 @@ pub const KNOWN_AGENTS: &[&str] = &[
 /// (and a `KNOWN_AGENTS` entry) per new agent crate as it lands.
 pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String> {
     match name {
-        "random" => Ok(Box::new(duels_agent_random::RandomAgent::new(seed))),
-        "greedy" => Ok(Box::new(duels_agent_greedy::GreedyAgent::new(seed))),
-        "greedy-ev" => Ok(Box::new(duels_agent_greedy_ev::GreedyEvAgent::new(seed))),
         "phased" => Ok(Box::new(duels_agent_phased::PhasedAgent::new(seed))),
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
@@ -569,7 +563,7 @@ mod tests {
                 [
                     SeatSpec::Human,
                     SeatSpec::Agent {
-                        name: "greedy".to_string(),
+                        name: "phased".to_string(),
                     },
                 ],
                 Some(seed),

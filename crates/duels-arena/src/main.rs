@@ -1,7 +1,7 @@
 //! `duels-arena` CLI.
 //!
 //! ```text
-//! duels-arena match --agent-a random --agent-b random --games 1000 \
+//! duels-arena match --agent-a phased --agent-b mcts-uct --games 1000 \
 //!     --budget nodes:2000 --seed 1 [--out arena/results/run.json] \
 //!     [--sprt-elo0 0] [--sprt-elo1 5] [--alpha 0.05] [--beta 0.05]
 //!
@@ -713,9 +713,9 @@ mod tests {
     fn flags_parse_required_and_optional_and_typed_values() {
         let args: Vec<String> = [
             "--agent-a",
-            "random",
+            "phased",
             "--agent-b",
-            "random",
+            "phased",
             "--games",
             "10",
         ]
@@ -723,7 +723,7 @@ mod tests {
         .map(String::from)
         .collect();
         let flags = Flags::parse(&args).unwrap();
-        assert_eq!(flags.required("agent-a").unwrap(), "random");
+        assert_eq!(flags.required("agent-a").unwrap(), "phased");
         assert_eq!(flags.parsed::<u32>("games", 0).unwrap(), 10);
         assert_eq!(flags.parsed::<u32>("missing", 42).unwrap(), 42);
         assert!(flags.required("nope").is_err());
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn experiment_turns_on_chunked_sprt_checks_only_when_asked() {
         let plan_of = |extra: &[&str]| {
-            let mut args = experiment_args(&["--candidate", "random", "--control", "greedy"]);
+            let mut args = experiment_args(&["--candidate", "phased", "--control", "mcts-uct"]);
             args.extend(extra.iter().map(|s| s.to_string()));
             experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
                 .unwrap()
@@ -844,13 +844,13 @@ mod tests {
             experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
                 .unwrap_err()
         };
-        assert!(plan_err(experiment_args(&["--control", "greedy"])).contains("candidate"));
-        assert!(plan_err(experiment_args(&["--candidate", "greedy"])).contains("control"));
+        assert!(plan_err(experiment_args(&["--control", "mcts-uct"])).contains("candidate"));
+        assert!(plan_err(experiment_args(&["--candidate", "phased"])).contains("control"));
         let err = plan_err(experiment_args(&[
             "--candidate",
-            "random",
+            "phased",
             "--control",
-            "greedy",
+            "mcts-uct",
             "--seeds",
             "1,50",
             "--games",

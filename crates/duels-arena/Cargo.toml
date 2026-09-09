@@ -9,9 +9,6 @@ description = "Tournament runner: plays Agent implementations against each other
 [dependencies]
 duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
-duels-agent-random = { path = "../agents/random" }
-duels-agent-greedy = { path = "../agents/greedy" }
-duels-agent-greedy-ev = { path = "../agents/greedy-ev" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-eval = { path = "../duels-eval" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
@@ -22,3 +19,12 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 rayon = "1"
 duels-strategy = { path = "../duels-strategy" }
+
+[dev-dependencies]
+# Retired from the roster, kept as a test fixture: `age_start_policy`'s
+# wrapper tests need a cheap *stateful, RNG-consuming* inner agent and scan
+# up to 200 whole games for a seed with no age-boundary choice, and
+# `examples/ensemble_lab.rs` prices a search against a random opponent. A
+# dev-dependency, so the shipped binary does not link it and no spec string
+# can name it. See `duels-agent-random`'s crate docs.
+duels-agent-random = { path = "../agents/random" }

@@ -14,5 +14,4 @@ rand = { workspace = true }
 
 [dev-dependencies]
 duels-agent-random = { path = "../random" }
-duels-agent-greedy-ev = { path = "../greedy-ev" }
 duels-agent-mcts-uct = { path = "../mcts-uct" }

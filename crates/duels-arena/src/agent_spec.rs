@@ -58,15 +58,6 @@
 //!   `duels_eval::Config::vN()` snapshot so it can be matched directly, in one
 //!   binary, against a live (unpinned) `mcts-eval` — see
 //!   [`duels_agent_mcts_eval::Config::eval_override`].
-//! * `greedy` -- every [`duels_agent_greedy::EvalWeights`] field, by its own
-//!   name (`military_position`, `military_endgame_urgency`,
-//!   `science_distinct_symbol`, `science_near_supremacy`,
-//!   `science_pair_setup`, `vp_projection`, `coins_div3`,
-//!   `coin_safety_floor`, `coin_safety_penalty`, `resource_vulnerability`,
-//!   `deny_chain_gift`, `wonder_potential`, `instant_result`).
-//! * `greedy-ev` -- the same field names, against
-//!   [`duels_agent_greedy_ev::EvalWeights`] (an identically-shaped struct in
-//!   its own crate).
 //! * `phased` -- `base` (`v1`..`v8`/`default`), the
 //!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
 //!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
@@ -102,7 +93,11 @@
 //!   (`token_equity`/`tokeneq`), the right-to-move term (`to_move`/`tomove`),
 //!   the value-scale knob (`value_scale`/`scale`), and the count-priced menu
 //!   switch (`count`/`count_pricing`, `unpriced`/`counted`).
-//! * `random` -- bare name only; it has no parameters.
+//!
+//! Every parameterisable agent on the roster is listed above: `random`,
+//! `greedy` and `greedy-ev` were retired (see `docs/milestones.md`), so
+//! their names — and the `greedy`/`greedy-ev` `EvalWeights` parsers that used
+//! to live here — are gone rather than silently accepted.
 //!
 //! # Examples
 //!
@@ -111,15 +106,13 @@
 //!
 //! let a = make_agent_from_spec("mcts-uct:exploration=1.2", 1).unwrap();
 //! let b = make_agent_from_spec("alphabeta:max_depth=10,rollouts=4", 1).unwrap();
-//! let c = make_agent_from_spec("random", 1).unwrap(); // bare name, unchanged
+//! let c = make_agent_from_spec("phased", 1).unwrap(); // bare name, unchanged
 //! assert_eq!(a.spec().name, "mcts-uct");
 //! assert_eq!(b.spec().name, "alphabeta");
-//! assert_eq!(c.spec().name, "random");
+//! assert_eq!(c.spec().name, "phased");
 //! ```
 
 use duels_agent_alphabeta::{eval, playout, AlphaBetaAgent, Config as AlphaBetaConfig};
-use duels_agent_greedy::{EvalWeights as GreedyWeights, GreedyAgent};
-use duels_agent_greedy_ev::{EvalWeights as GreedyEvWeights, GreedyEvAgent};
 use duels_agent_mcts_eval::{
     Config as MctsEvalConfig, LeafValue, MctsEvalAgent, PriorMode as EvalPriorMode,
     RaceWeights as EvalRaceWeights, RolloutWeights as EvalRolloutWeights,
@@ -163,21 +156,10 @@ pub fn make_agent_from_spec(spec: &str, seed: u64) -> Result<Box<dyn Agent + Sen
             let cfg = parse_mcts_eval_config(params)?;
             Ok(Box::new(MctsEvalAgent::with_config(seed, cfg)))
         }
-        "greedy" => {
-            let w = parse_greedy_weights(params)?;
-            Ok(Box::new(GreedyAgent::with_weights(seed, w)))
-        }
-        "greedy-ev" => {
-            let w = parse_greedy_ev_weights(params)?;
-            Ok(Box::new(GreedyEvAgent::with_weights(seed, w)))
-        }
         "phased" => {
             let cfg = parse_phased_config(params)?;
             Ok(Box::new(PhasedAgent::with_config(seed, cfg)))
         }
-        "random" => Err(format!(
-            "\"random\" takes no parameters; use the bare name \"random\", not \"{spec}\""
-        )),
         other => Err(format!(
             "unknown agent \"{other}\" in spec \"{spec}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")
@@ -600,8 +582,9 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
 /// The key names are exactly [`parse_phased_config`]'s, which is the point:
 /// a weight vector written for one agent has to mean the same thing in the
 /// other, or an A/B across the two measures two different candidates. The
-/// duplication against `parse_phased_config`'s own arms is the same accepted
-/// cost as `eval_weights_parser!`'s across `greedy` and `greedy-ev`, and
+/// duplication against `parse_phased_config`'s own arms is an accepted cost
+/// (it is the same one the now-deleted `eval_weights_parser!` macro carried
+/// across `greedy` and `greedy-ev`), and
 /// `mcts_eval_shares_phaseds_eval_key_names` holds the two in agreement.
 fn apply_eval_config_key(
     eval: &mut duels_eval::EvalWeights,
@@ -875,58 +858,31 @@ pub fn parse_phased_config(params: &str) -> Result<PhasedConfig, String> {
     Ok(cfg)
 }
 
-/// Generates a `key=value` parser for one of the (identically-shaped, but
-/// distinctly-typed) per-crate `EvalWeights` structs shared by `greedy` and
-/// `greedy-ev`.
-macro_rules! eval_weights_parser {
-    ($(#[$meta:meta])* $fn_name:ident, $ty:ty) => {
-        $(#[$meta])*
-        pub fn $fn_name(params: &str) -> Result<$ty, String> {
-            let mut w = <$ty>::default();
-            for (k, v) in parse_params(params)? {
-                match k {
-                    "military_position" => w.military_position = parse_field(k, v)?,
-                    "military_endgame_urgency" => w.military_endgame_urgency = parse_field(k, v)?,
-                    "science_distinct_symbol" => w.science_distinct_symbol = parse_field(k, v)?,
-                    "science_near_supremacy" => w.science_near_supremacy = parse_field(k, v)?,
-                    "science_pair_setup" => w.science_pair_setup = parse_field(k, v)?,
-                    "vp_projection" => w.vp_projection = parse_field(k, v)?,
-                    "coins_div3" => w.coins_div3 = parse_field(k, v)?,
-                    "coin_safety_floor" => w.coin_safety_floor = parse_field(k, v)?,
-                    "coin_safety_penalty" => w.coin_safety_penalty = parse_field(k, v)?,
-                    "resource_vulnerability" => w.resource_vulnerability = parse_field(k, v)?,
-                    "deny_chain_gift" => w.deny_chain_gift = parse_field(k, v)?,
-                    "wonder_potential" => w.wonder_potential = parse_field(k, v)?,
-                    "instant_result" => w.instant_result = parse_field(k, v)?,
-                    other => return Err(format!("unknown eval-weight key \"{other}\"")),
-                }
-            }
-            Ok(w)
-        }
-    };
-}
-
-eval_weights_parser!(
-    /// Parse a `greedy:...` parameter list into a [`GreedyWeights`].
-    parse_greedy_weights,
-    GreedyWeights
-);
-eval_weights_parser!(
-    /// Parse a `greedy-ev:...` parameter list into a [`GreedyEvWeights`].
-    parse_greedy_ev_weights,
-    GreedyEvWeights
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn bare_name_still_works_exactly_as_before() {
-        let agent = make_agent_from_spec("random", 1).unwrap();
-        assert_eq!(agent.spec().name, "random");
-        let agent = make_agent_from_spec("greedy", 1).unwrap();
-        assert_eq!(agent.spec().name, "greedy");
+        let agent = make_agent_from_spec("phased", 1).unwrap();
+        assert_eq!(agent.spec().name, "phased");
+        let agent = make_agent_from_spec("mcts-uct", 1).unwrap();
+        assert_eq!(agent.spec().name, "mcts-uct");
+    }
+
+    /// A retired agent's name is rejected whether or not it carries
+    /// parameters — the `greedy`/`greedy-ev` weight parsers went with the
+    /// crates, so there is no arm left to accept one. See
+    /// `docs/milestones.md`.
+    #[test]
+    fn retired_agent_names_are_rejected_bare_and_parameterised() {
+        for retired in ["random", "greedy", "greedy-ev", "strategist"] {
+            assert!(make_agent_from_spec(retired, 1).is_err(), "{retired}");
+            assert!(
+                make_agent_from_spec(&format!("{retired}:vp_projection=2.5"), 1).is_err(),
+                "{retired} with parameters"
+            );
+        }
     }
 
     #[test]
@@ -1426,22 +1382,6 @@ mod tests {
     }
 
     #[test]
-    fn greedy_spec_sets_named_weights() {
-        let agent = make_agent_from_spec("greedy:vp_projection=2.5", 1).unwrap();
-        assert_eq!(agent.spec().name, "greedy");
-        let w = parse_greedy_weights("vp_projection=2.5").unwrap();
-        assert_eq!(w.vp_projection, 2.5);
-    }
-
-    #[test]
-    fn greedy_ev_spec_sets_named_weights() {
-        let agent = make_agent_from_spec("greedy-ev:instant_result=500", 1).unwrap();
-        assert_eq!(agent.spec().name, "greedy-ev");
-        let w = parse_greedy_ev_weights("instant_result=500").unwrap();
-        assert_eq!(w.instant_result, 500.0);
-    }
-
-    #[test]
     fn phased_base_v1_is_the_configuration_the_crate_shipped_with() {
         assert_eq!(parse_phased_config("base=v1").unwrap(), PhasedConfig::v1());
         assert_eq!(parse_phased_config("base=v2").unwrap(), PhasedConfig::v2());
@@ -1677,7 +1617,8 @@ mod tests {
     fn unknown_key_is_rejected_not_panicked() {
         assert!(parse_alphabeta_config("not_a_real_key=1").is_err());
         assert!(parse_mcts_config("not_a_real_key=1").is_err());
-        assert!(parse_greedy_weights("not_a_real_key=1").is_err());
+        assert!(parse_mcts_eval_config("not_a_real_key=1").is_err());
+        assert!(parse_phased_config("not_a_real_key=1").is_err());
     }
 
     #[test]

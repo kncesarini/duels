@@ -4,8 +4,8 @@
 //! The "ahead now" half is not re-derived here. [`duels_core::scoring::breakdown`]
 //! already computes the real end-of-game score from the real card data,
 //! including the guild majority recount and `floor(coins / 3)`, and
-//! `duels-agent-greedy` already leans on it for exactly this purpose; this
-//! module calls it and subtracts.
+//! the now-retired `duels-agent-greedy` leaned on it for exactly this
+//! purpose; this module calls it and subtracts.
 //!
 //! What it adds is the *swing still available*: unbuilt wonder points (already
 //! drafted, so they are a private reserve nobody can take away), the civilian

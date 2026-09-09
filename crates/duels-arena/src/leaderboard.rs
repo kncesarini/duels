@@ -11,22 +11,29 @@
 //! # The ladder, and why one budget runs all of it
 //!
 //! [`LADDER`] names the agents tracked and the budget each is *understood* to
-//! play at: `Nodes(1)` for the four 1-ply agents, `Nodes(2000)` for the three
-//! search agents, matching how every ladder comparison in this project's
-//! history has been run. (`strategist` retired here — its research question,
-//! whether `duels-strategy`'s prior helps `greedy-ev`, was answered
-//! statistically indistinguishable, and it scored within noise of the
-//! anchor against every top-half agent. See `docs/milestones.md`.)
+//! play at: `Nodes(1)` for `phased`, the one remaining 1-ply agent, and
+//! `Nodes(2000)` for the three search agents, matching how every ladder
+//! comparison in this project's history has been run.
+//!
+//! The ladder is deliberately four agents. `strategist` retired first (its
+//! research question, whether `duels-strategy`'s prior helps `greedy-ev`, was
+//! answered statistically indistinguishable), and then `random`, `greedy` and
+//! `greedy-ev` — the whole 1-ply floor tier below `phased` — went for measured
+//! strength far below the rest of the roster: the last full refit had all
+//! three inside a 200-Elo band scoring 0.0%-0.5% against every top-half agent,
+//! so they cost the nightly fifteen of its twenty-one pairings and told it
+//! nothing it did not already know. See `docs/milestones.md`; that retirement
+//! is also what moved [`ANCHOR_AGENT`].
 //!
 //! `duels-arena match` grants both sides the same budget, so a mixed pairing
 //! (`phased` vs `mcts-uct`, say) looks at first like it cannot honour both
-//! numbers at once. It can: the four 1-ply agents take `_budget` in their
-//! `Agent::choose` signature and never read it, so a `Nodes(1)` and a
-//! `Nodes(2000)` 1-ply agent are *the same agent*. The whole round robin
-//! therefore runs at [`ROUND_ROBIN_BUDGET`], and the per-agent budgets in
-//! [`LADDER`] are labels on the report rather than a second thing to
-//! configure. `tests::one_ply_agents_ignore_their_budget` checks this by
-//! playing games rather than by trusting the signature.
+//! numbers at once. It can: `phased` takes `_budget` in its `Agent::choose`
+//! signature and never reads it, so a `Nodes(1)` and a `Nodes(2000)` `phased`
+//! are *the same agent*. The whole round robin therefore runs at
+//! [`ROUND_ROBIN_BUDGET`], and the per-agent budgets in [`LADDER`] are labels
+//! on the report rather than a second thing to configure.
+//! `tests::one_ply_agents_ignore_their_budget` checks this by playing games
+//! rather than by trusting the signature.
 //!
 //! Each agent is tracked at its default configuration only. Notable config
 //! variants (`phased:wonder=budget` and friends) belong in the per-agent
@@ -65,18 +72,6 @@ pub struct LadderEntry {
 /// Every agent on the leaderboard, with its production budget.
 pub const LADDER: &[LadderEntry] = &[
     LadderEntry {
-        agent: "random",
-        budget: "nodes:1",
-    },
-    LadderEntry {
-        agent: "greedy",
-        budget: "nodes:1",
-    },
-    LadderEntry {
-        agent: "greedy-ev",
-        budget: "nodes:1",
-    },
-    LadderEntry {
         agent: "phased",
         budget: "nodes:1",
     },
@@ -103,13 +98,54 @@ pub const LADDER: &[LadderEntry] = &[
 pub const ROUND_ROBIN_BUDGET: &str = "nodes:2000";
 
 /// The agent whose rating pins the leaderboard's scale, and the value it is
-/// pinned to. `greedy` at 1000 follows the original architecture design's
-/// "BayesElo anchored at greedy-v1 = 1000": a middling, entirely
-/// hand-written, never-changing baseline is the right thing to pin, because
-/// every other agent's number then moves only when *that* agent's strength
-/// moves.
-pub const ANCHOR_AGENT: &str = "greedy";
-/// See [`ANCHOR_AGENT`].
+/// pinned to.
+///
+/// # Why `mcts-uct`, and what changed
+///
+/// This was `greedy` at 1000, following the original architecture design's
+/// "BayesElo anchored at greedy-v1 = 1000". The reasoning there is the part
+/// worth keeping: **a never-changing baseline is the right thing to pin,
+/// because every other agent's number then moves only when *that* agent's
+/// strength moves.** `greedy` qualified because its evaluation was a frozen,
+/// hand-written formula in its own crate that nothing else tuned.
+///
+/// `greedy` was retired from the roster, so the scale needed a new pin from
+/// what is left: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`. The obvious
+/// positional analogue is `phased` — the weakest survivor, 1-ply, and
+/// budget-invariant. It is the wrong choice, and for exactly the reason above:
+/// `phased`'s `Config` *is* [`duels_eval::Config`], and `PhasedAgent::new`
+/// reads `duels_eval::Config::default()` live. `duels-eval` is re-tuned in
+/// numbered rounds (ten of them so far, the most recent moving a default
+/// weight), and each one silently redefines `phased`'s strength. Pinning the
+/// scale there would shift *every* rating on the board on every tuning round,
+/// which is precisely the failure the anchor exists to prevent.
+///
+/// `mcts-uct` is the defensible pin:
+///
+/// * It does not depend on `duels-eval` at all (check its `Cargo.toml`), and
+///   its default `PriorMode::None` does not consult `duels-strategy` either,
+///   so no library round can move it.
+/// * Its `Config::default()` is frozen, and `mcts-eval` carries a verbatim
+///   copy of its search as an ablation control asserted move-for-move — a
+///   silent change to it fails a test in another crate.
+/// * It is already this project's canonical yardstick: every knob in
+///   `mcts-eval` was tuned against it, and it held [`CHAMPION`] until
+///   `mcts-eval` measured past it.
+/// * It sits second of four, so ratings still spread either side of 1000.
+///
+/// What it gives up against `greedy` is budget-independence: it is a search,
+/// so its strength is a function of its budget. That is pinned too — the whole
+/// round robin is played at [`ROUND_ROBIN_BUDGET`], which is `mcts-uct`'s own
+/// ladder budget.
+///
+/// **Every Elo number generated before this change was measured against
+/// `greedy` = 1000 and is not comparable to one measured after it.** The
+/// ratings in `arena/leaderboard.{json,md}` are refitted from scratch by the
+/// next nightly round robin; nothing rescales the old numbers, and they should
+/// not be read alongside the new ones.
+pub const ANCHOR_AGENT: &str = "mcts-uct";
+/// See [`ANCHOR_AGENT`]. Unchanged at the conventional scale origin: only
+/// *which* agent sits at 1000 moved, not the number it is pinned to.
 pub const ANCHOR_ELO: f64 = 1000.0;
 
 /// The reigning champion: the agent and budget a candidate agent is measured
@@ -121,7 +157,7 @@ pub const CHAMPION: LadderEntry = LadderEntry {
 };
 
 /// Every unordered pairing of [`LADDER`] agents, in a stable order — the
-/// `C(n, 2)` = 21 matches one nightly round robin consists of.
+/// `C(n, 2)` = 6 matches one nightly round robin consists of.
 pub fn pairings() -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
     for (i, a) in LADDER.iter().enumerate() {
@@ -445,10 +481,13 @@ pub fn render_markdown(board: &Leaderboard) -> String {
          nightly round robin overwrites this file.\n\n",
     );
     out.push_str(&format!(
-        "- Generated: `{}`\n- Commit: `{}`\n- Budget: `{}` for every pairing (the five 1-ply \
+        "- Generated: `{}`\n- Commit: `{}`\n- Budget: `{}` for every pairing (the 1-ply \
          agents ignore their budget, so this is also `nodes:1` for them - see \
-         `duels_arena::leaderboard`)\n- Anchor: `{}` pinned at {:.0} Elo\n- Champion: `{}` at \
-         `{}`\n- Total games: {} across {} pairings, paired-seed and seat-swapped\n\n",
+         `duels_arena::leaderboard`)\n- Anchor: `{}` pinned at {:.0} Elo (it replaced `greedy` \
+         when the 1-ply floor tier was retired, so these numbers are on a different scale \
+         from any generated before that - see `duels_arena::leaderboard::ANCHOR_AGENT`)\n\
+         - Champion: `{}` at `{}`\n- Total games: {} across {} pairings, paired-seed and \
+         seat-swapped\n\n",
         board.generated_at,
         board.commit,
         board.budget,
@@ -600,15 +639,7 @@ mod tests {
     fn synthetic_round_robin() -> Vec<PairwiseRecord> {
         // Strength order, weakest first; the win rate of the stronger side is
         // set by how far apart they are on this list.
-        let order = [
-            "random",
-            "greedy",
-            "greedy-ev",
-            "phased",
-            "alphabeta",
-            "mcts-uct",
-            "mcts-eval",
-        ];
+        let order = ["phased", "alphabeta", "mcts-uct", "mcts-eval"];
         let mut out = Vec::new();
         for (i, a) in order.iter().enumerate() {
             for (j, b) in order.iter().enumerate().skip(i + 1) {
@@ -665,19 +696,29 @@ mod tests {
         let p = pairings();
         let n = LADDER.len();
         assert_eq!(p.len(), n * (n - 1) / 2);
-        assert_eq!(p.len(), 21);
+        assert_eq!(p.len(), 6);
         let unique: BTreeSet<(&str, &str)> = p.iter().map(|&(a, b)| unordered(a, b)).collect();
         assert_eq!(unique.len(), p.len(), "no pairing should repeat");
         assert!(p.iter().all(|&(a, b)| a != b), "no self-play pairings");
     }
 
     /// The load-bearing claim behind running the whole round robin at one
-    /// budget: the five 1-ply agents play identically at `Nodes(1)` and
-    /// `Nodes(2000)`. Checked by driving real games and comparing the chosen
-    /// action at every decision, not by reading the `_budget` parameter name.
+    /// budget: the 1-ply tier — `phased` alone, since the floor agents were
+    /// retired — plays identically at `Nodes(1)` and `Nodes(2000)`. Checked by
+    /// driving real games and comparing the chosen action at every decision,
+    /// not by reading the `_budget` parameter name. Still written as a loop
+    /// over the `nodes:1` entries so a future 1-ply agent is covered the
+    /// moment it joins [`LADDER`].
     #[test]
     fn one_ply_agents_ignore_their_budget() {
-        for entry in LADDER.iter().filter(|e| e.budget == "nodes:1") {
+        let one_ply: Vec<&LadderEntry> = LADDER.iter().filter(|e| e.budget == "nodes:1").collect();
+        assert!(
+            !one_ply.is_empty(),
+            "no `nodes:1` ladder entry left for this test to cover — if the \
+             1-ply tier is gone, the module docs' one-budget argument needs \
+             rewriting, not this filter loosening"
+        );
+        for entry in one_ply {
             for seed in [1u64, 2, 3] {
                 let mut cheap = make_agent_from_spec(entry.agent, seed).unwrap();
                 let mut rich = make_agent_from_spec(entry.agent, seed).unwrap();
@@ -707,21 +748,22 @@ mod tests {
 
     #[test]
     fn pairing_is_read_back_off_the_records() {
-        let records = play_paired_match("random", "greedy", &[1, 2], Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "alphabeta", &[1, 2], Budget::Nodes(1)).unwrap();
         let (a, b) = pairing_of(&records).unwrap();
-        assert_eq!((a.as_str(), b.as_str()), ("random", "greedy"));
+        assert_eq!((a.as_str(), b.as_str()), ("phased", "alphabeta"));
     }
 
     #[test]
     fn pairing_of_rejects_self_play_and_empty_records() {
-        let records = play_paired_match("random", "random", &[1], Budget::Nodes(1)).unwrap();
+        let records = play_paired_match("phased", "phased", &[1], Budget::Nodes(1)).unwrap();
         assert!(pairing_of(&records).unwrap_err().contains("self-play"));
         assert!(pairing_of(&[]).is_err());
     }
 
     #[test]
     fn pairwise_record_matches_the_tally_of_the_games_behind_it() {
-        let records = play_paired_match("random", "greedy", &[1, 2, 3], Budget::Nodes(1)).unwrap();
+        let records =
+            play_paired_match("phased", "alphabeta", &[1, 2, 3], Budget::Nodes(1)).unwrap();
         let file = ResultsFile::from_records(&records);
         let pr = pairwise_record_of(&file).unwrap();
         let t = tally(&records);
@@ -737,22 +779,14 @@ mod tests {
         let board = build(&synthetic_round_robin(), "2026-09-06T00:00:00Z", "abc1234").unwrap();
         assert_eq!(board.schema, SCHEMA_VERSION);
         assert_eq!(board.rows.len(), LADDER.len());
-        assert_eq!(board.pairings.len(), 21);
-        assert_eq!(board.total_games, 21 * 100);
+        assert_eq!(board.pairings.len(), 6);
+        assert_eq!(board.total_games, 6 * 100);
         assert!(board.converged);
 
         let order: Vec<&str> = board.rows.iter().map(|r| r.agent.as_str()).collect();
         assert_eq!(
             order,
-            vec![
-                "mcts-eval",
-                "mcts-uct",
-                "alphabeta",
-                "phased",
-                "greedy-ev",
-                "greedy",
-                "random"
-            ],
+            vec!["mcts-eval", "mcts-uct", "alphabeta", "phased"],
             "the synthetic ladder's order should come straight back out"
         );
         assert_eq!(board.rows[0].rank, 1);
@@ -775,13 +809,21 @@ mod tests {
         );
         assert!(board.rows.iter().filter(|r| r.champion).count() == 1);
 
-        // The anchor is pinned exactly where `ANCHOR_ELO` says.
+        // The anchor is pinned exactly where `ANCHOR_ELO` says. It is
+        // `mcts-uct`, second of four here rather than near the bottom as
+        // `greedy` was, so unlike before some ratings come out *below* 1000 —
+        // see `ANCHOR_AGENT`'s docs for why the pin moved there.
         let anchor = board.rows.iter().find(|r| r.agent == ANCHOR_AGENT).unwrap();
         assert_eq!(anchor.elo, ANCHOR_ELO);
+        assert!(
+            board.rows.iter().any(|r| r.elo < ANCHOR_ELO),
+            "an anchor above the bottom of the ladder should leave weaker \
+             agents below it"
+        );
 
-        // Each agent plays 6 opponents x 100 games.
+        // Each agent plays 3 opponents x 100 games.
         for row in &board.rows {
-            assert_eq!(row.games, 600, "{} played the wrong number", row.agent);
+            assert_eq!(row.games, 300, "{} played the wrong number", row.agent);
             assert_eq!(row.wins + row.losses + row.draws, row.games);
         }
         // The budget label follows the ladder, not the run.
@@ -811,7 +853,7 @@ mod tests {
         records.pop();
         let err = build(&records, "t", "c").unwrap_err();
         assert!(err.contains("incomplete"), "unexpected: {err}");
-        assert!(err.contains("1 of 21"), "should say what is missing: {err}");
+        assert!(err.contains("1 of 6"), "should say what is missing: {err}");
     }
 
     #[test]
@@ -827,7 +869,7 @@ mod tests {
     #[test]
     fn an_agent_not_on_the_ladder_is_rejected() {
         let mut records = synthetic_round_robin();
-        records.push(record("random", "some-experiment", 5, 5, 0));
+        records.push(record("phased", "some-experiment", 5, 5, 0));
         let err = build(&records, "t", "c").unwrap_err();
         assert!(err.contains("some-experiment"), "unexpected: {err}");
     }
@@ -928,26 +970,26 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
 
-        let one = play_paired_match("random", "greedy", &[1, 2], Budget::Nodes(1)).unwrap();
-        let two = play_paired_match("random", "greedy-ev", &[1, 2], Budget::Nodes(1)).unwrap();
+        let one = play_paired_match("phased", "alphabeta", &[1, 2], Budget::Nodes(1)).unwrap();
+        let two = play_paired_match("phased", "mcts-uct", &[1, 2], Budget::Nodes(1)).unwrap();
         write_results(
             &dir.join("pairing-0")
-                .join(pairing_results_filename("random", "greedy")),
+                .join(pairing_results_filename("phased", "alphabeta")),
             &one,
         )
         .unwrap();
         write_results(
             &dir.join("pairing-1")
-                .join(pairing_results_filename("random", "greedy-ev")),
+                .join(pairing_results_filename("phased", "mcts-uct")),
             &two,
         )
         .unwrap();
 
         let records = collect_pairwise_records(&dir).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].agent_a, "random");
-        assert_eq!(records[0].agent_b, "greedy");
-        assert_eq!(records[1].agent_b, "greedy-ev");
+        assert_eq!(records[0].agent_a, "phased");
+        assert_eq!(records[0].agent_b, "alphabeta");
+        assert_eq!(records[1].agent_b, "mcts-uct");
         assert_eq!(records[0].wins + records[0].losses + records[0].draws, 4);
 
         let _ = fs::remove_dir_all(&dir);

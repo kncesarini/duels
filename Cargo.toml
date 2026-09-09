@@ -7,9 +7,11 @@ members = [
     "crates/duels-eval",
     "crates/duels-arena",
     "crates/duels-server",
+    # Retired from the agent roster, kept as a test-only fixture: the
+    # uniform-random baseline every search agent's correctness floor is
+    # measured against. Not registered in `duels-arena`'s `agent_registry` or
+    # `duels-server`'s `room`, and a dev-dependency only. See its crate docs.
     "crates/agents/random",
-    "crates/agents/greedy",
-    "crates/agents/greedy-ev",
     "crates/agents/phased",
     "crates/agents/mcts-uct",
     "crates/agents/mcts-eval",
