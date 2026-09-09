@@ -2153,6 +2153,221 @@
 //!   all**. They were deliberately left alone: fixing either is a change to a
 //!   different model, wants its own measurement, and belongs in its own PR.
 //!
+//! # Round ten: one weight, fitted, and the only one everything agreed about
+//!
+//! Round ten changes **one number**: [`MenuWeights::lambda`], the weight on
+//! the opponent-menu term, from the `0.6` rounds one through nine all shipped
+//! to `0.408`. No new option, no new model, no shape change anywhere —
+//! `tests/v9_identity.rs` is the shortest identity file this crate has,
+//! because [`Config::v9`] puts one scalar back and that is the whole delta.
+//!
+//! **Read the confirmation section before quoting this round's Elo.** The
+//! fitting thread measured `+18.1` to `mcts-eval`; the confirmation A/B run
+//! with the shipped code, over twice as many games, reads `+5.0` with an
+//! interval containing zero. The change is still positive on the whole body of
+//! evidence and it shipped on the project owner's decision, but the effect is
+//! smaller than the number that motivated it.
+//!
+//! ## Where the number came from
+//!
+//! Not from a sweep. A separate research thread fitted this crate's eighteen
+//! scalar weights **jointly**, by regression against a search-derived value
+//! corpus: `duels-arena/examples/value_corpus.rs` records, per decision of
+//! `mcts-eval` self-play, the win probability the search itself backed up at
+//! its root, and a weight vector is then fitted to predict that. The
+//! infrastructure for reaching such a vector from a spec string is
+//! `duels-arena`'s eval-scalar keys — `phased:menu_lambda=...` and
+//! `mcts-eval:menu_lambda=...` name the same field, which is what makes one
+//! candidate vector measurable on both consumers.
+//!
+//! The fit put `menu.lambda` at `0.407872`. `0.408` is that rounded to three
+//! places, which is far inside the fit's own standard error and is what a
+//! shipped weight should look like.
+//!
+//! ## Why this coefficient and not the other seventeen
+//!
+//! **Because it is the only one where everything agreed.** The round had four
+//! independent things to say about each coefficient, and they disagree freely:
+//!
+//! * a **clean** fit target (a corpus held disjoint from anything used to
+//!   check the result),
+//! * a **contaminated** one (the same fit run where the check seeds overlap
+//!   the training seeds — kept deliberately, as the thing a coefficient has to
+//!   survive *both* of),
+//! * `phased`, which is this crate's evaluation used as a **policy**
+//!   (1-ply, the weights decide the move directly),
+//! * `mcts-eval`, which is the same evaluation used as half a search **leaf
+//!   value**.
+//!
+//! Round seven already established that these last two do not have to agree —
+//! "a better *predictor* is a worse *leaf*" is that round's headline — and
+//! round nine found a fix worth `+30` Elo to the first and `−15` to the
+//! second. So a coefficient the fit likes is not yet a coefficient to ship.
+//! `menu.lambda` is the one where all four columns came out positive:
+//!
+//! ```text
+//!                          seed range        Elo
+//!  phased (policy)         range 1        +21.8
+//!  phased (policy)         range 2        +15.3
+//!  phased (policy)         range 3        +12.2
+//!  mcts-eval (leaf)        two ranges     +18.1  [+2.9, +33.3]  (2000 games)
+//! ```
+//!
+//! Three disjoint seed ranges positive on `phased`, and a pooled `mcts-eval`
+//! interval that excludes zero. That is the bar this project's rules ask for,
+//! and the project owner's decision to move the default rests on it.
+//!
+//! ## The confirmation A/B, on current code — and it does not reproduce
+//!
+//! **This is the round's honest negative, and it is about the round's own
+//! headline change.** The figures above were taken in the fitting thread. The
+//! `eval=vN` pattern exists so a default move can be checked once more in a
+//! single binary against the exact generation it replaces, so that is what
+//! shipped with it: `mcts-eval` (live, the new default) against
+//! `mcts-eval:eval=v9` (pinned, reproducing the old default bit for bit), at
+//! `Nodes(2000)`, on **four seed ranges disjoint from all three above** and
+//! from each other. The two agents' recorded `params_string`s differ in
+//! exactly one token (`menu=0.41@1.50` against `menu=0.60@1.50`), so this
+//! measures this change and nothing else.
+//!
+//! ```text
+//!                                      games      Elo        95% CI
+//!  seed 50001                           1000     +8.3    [-13.2, +29.9]
+//!  seed 60001                           1000     +4.2    [-17.4, +25.7]
+//!  seed 70001                           1000     -3.1    [-24.6, +18.4]
+//!  seed 80001                           1000    +10.4    [-11.1, +31.9]
+//!  pooled                               4000     +5.0     [-5.8, +15.7]
+//! ```
+//!
+//! Three of the four ranges are positive and the pooled point estimate is
+//! positive, so nothing here contradicts the sign. But the interval **contains
+//! zero**, and `duels-arena experiment`'s SPRT against `H1 = +20` returns
+//! `AcceptH0` — a **Reject** verdict on the hypothesis that this is worth
+//! twenty Elo. More pointedly, the pooled interval's upper bound is `+15.7`,
+//! which sits *below* the `+18.1` the fitting thread measured: this run does
+//! not reproduce that figure, it bounds it.
+//!
+//! So the fair reading is **"positive, probably small, not established at four
+//! thousand games"** rather than "confirmed". Two candidate explanations, both
+//! untested: the fitting thread's `mcts-eval` measurement was two ranges where
+//! this is four, and a two-range read of the four above could have landed
+//! anywhere from `+6` to `+9`; or the fitted coefficient is worth more to
+//! `phased`, where the weights decide the move outright, than to a search that
+//! only half-listens to them, which is round seven's policy/leaf split showing
+//! up again in miniature.
+//!
+//! What that means for the default is a judgement rather than a measurement,
+//! and it was the project owner's to make: the whole body of evidence points
+//! one way (three `phased` ranges, two `mcts-eval` ranges, three of four
+//! confirmation ranges), the size of the effect is the part in doubt, and a
+//! fitted weight that is probably slightly better is still better than an
+//! unfitted one that was never measured at all. **The number to carry forward
+//! is `+5.0 [-5.8, +15.7]`, not `+18.1`.** A future round quoting this change
+//! should quote that.
+//!
+//! There is **no `TimeMs` column**, and it is a real gap in this round's
+//! protocol rather than an argument: a weight is a multiplication that was
+//! already being performed, so there is no per-decision cost for a wall-clock
+//! budget to expose, but this project's two-budget rule attaches to whatever a
+//! round recommends as a new default and this round recommends one. The
+//! machine available was under heavy concurrent load throughout, which is the
+//! one condition under which a `TimeMs` row is worth less than not having it.
+//!
+//! ## What it does to the flagged position, which is a partial answer to
+//! ## round nine's diagnosis
+//!
+//! Round nine diagnosed a position the project owner flagged — every legal
+//! move reading as worse than not moving — and found the opponent-menu term to
+//! be the whole of it. `tests/flagged_positions.rs` pins that as a property
+//! rather than as a set of numbers, and round ten moves it: the standing
+//! position against the best action was `0.332` win probability against
+//! `0.270`, a gap of `0.062`, and is now `0.321` against `0.290`, a gap of
+//! `0.032`. **The anomaly is halved and not removed**, which is what a 32% cut
+//! to the term's weight should do to an artefact that term is the whole of.
+//!
+//! Worth being careful about what this is and is not. Round ten did not set
+//! out to fix that position — it shipped a fitted coefficient, and the
+//! mitigation is a side effect that the fit knew nothing about. Read the other
+//! way round it is mild independent support for the number: two unrelated
+//! instruments, a regression against search verdicts and a hand-flagged
+//! position, both say the menu term was priced too high. It is *not* evidence
+//! that `0.408` is the right value rather than merely a better one; the gap is
+//! still there at the new weight, and the structural fix round nine named —
+//! the term is read on the post-action state, so a move that hands the turn
+//! over is charged for the opponent's whole menu — is untouched.
+//!
+//! The other half of that flag, the wonder-build preference one move earlier,
+//! is **unmoved**: both readings shift by exactly `+2.19` and the `6.70`-point
+//! preference between them survives to the second decimal. The five candidates
+//! there all hand the turn to the same opponent menu, so the term is common to
+//! them and cancels out of the comparison entirely. That is a useful negative
+//! — it says the wonder-timing question round nine left open is genuinely not
+//! a menu-weight question.
+//!
+//! ## The victory kinds, which say nothing much
+//!
+//! Pooled over the 4000 confirmation games, the candidate's wins break down
+//! `338` military / `43` science / `1616` civilian against the control's
+//! `307 / 46 / 1586`. Both channels move slightly the candidate's way and
+//! neither moves much — no repeat of the civilian-for-military trade the blend
+//! weight produces, which is the reading a change to the *opponent-menu*
+//! weight should give: the menu prices what the opponent can take next, which
+//! is not a win condition.
+//!
+//! ## Cost: none, and structurally so
+//!
+//! There is nothing to benchmark. A weight is a multiplication that was
+//! already being performed with a different operand, and the only branches
+//! this field participates in are the three `menu.lambda == 0.0` gates that
+//! skip building the menu tables — which take the same arm at `0.408` as at
+//! `0.6`. That is asserted rather than assumed, by
+//! `v9_identity::the_round_ten_default_does_not_cross_the_lambda_zero_gate`.
+//! The confirmation match bears it out at the only scale where it would show:
+//! `70.70` moves per game and a median `1660` ms per game, both inside round
+//! nine's `1522`-`1704` band on the same hardware.
+//!
+//! ## What is left
+//!
+//! Round nine's list under "What is left, in the order a tenth round should
+//! take it" is **almost entirely untouched**, and this round does not pretend
+//! otherwise: it took a fitted coefficient that had converged, not the next
+//! item on that list. Everything there still stands, and four things join it.
+//!
+//! **1. This coefficient, measured properly.** The confirmation above is the
+//! most important open item this round leaves, because it is about this
+//! round's own change. `+5.0 [-5.8, +15.7]` over 4000 `Nodes(2000)` games
+//! neither establishes nor refutes it, and there is no `TimeMs` column at all.
+//! An eleventh round should give it two more disjoint ranges and a wall-clock
+//! cell on a quiet machine, and should be prepared for the answer to be "this
+//! is worth about five Elo", which would still be worth keeping and would be
+//! worth knowing.
+//!
+//! **2. The `phased` side, re-measured against `base=v9`.** The three `phased`
+//! figures above came from the fitting thread rather than from this binary.
+//! `phased` against `phased:base=v9` is now a single-binary measurement and
+//! costs minutes, and it is the column where this coefficient looked
+//! strongest — so if the policy/leaf-split explanation for the shortfall is
+//! right, that is where it should show.
+//!
+//! **3. The other seventeen coefficients.** The fit produced a whole vector and
+//! this round shipped one component of it. The rest were either
+//! target-dependent (positive on the clean fit and negative on the
+//! contaminated one, or the reverse) or consumer-dependent (`phased` and
+//! `mcts-eval` disagreeing in sign), and each is its own measurement. The
+//! vector itself is worth keeping: `agent_spec`'s
+//! `mcts_eval_shares_phaseds_eval_key_names` records it verbatim as the
+//! eighteen-key spec string, which is both a test of the key names and the
+//! only copy of the fit's output in this repository.
+//!
+//! **4. The whole vector, as one candidate.** Shipping coefficients one at a time
+//! is what this project's rules ask for, and it is also the slowest possible
+//! way to spend a joint fit — a joint fit's coefficients are fitted *together*
+//! and are not independently meaningful. Measuring the full eighteen-key vector
+//! as a single candidate against the default, at both budget kinds and on two
+//! disjoint ranges, is a cheap experiment now that `duels-arena experiment`
+//! exists, and it would say whether the fit is worth more than the sum of the
+//! parts anyone dares ship from it.
+//!
 //! # Measured
 //!
 //! All paired and seat-swapped through `duels-arena`, at `Nodes(1)` unless
@@ -2648,11 +2863,39 @@ pub enum EconomyModel {
     Bill,
 }
 
+/// The opponent-menu weight rounds one through nine all shipped, before round
+/// ten's joint regression fit cut it to [`MenuWeights::default`]'s `0.408`.
+///
+/// Kept as a named constant so [`Config::v9`] restores it exactly and
+/// `tests/v9_identity.rs` can pin it, rather than the round-nine value being
+/// recoverable only from this file's history — exactly as
+/// [`SCIENCE_LADDER_V7`] and [`WIN_PROBABILITY_TEMPERATURE_V7`] do for round
+/// eight's two changes.
+pub const MENU_LAMBDA_V9: f64 = 0.6;
+
 /// The knobs of the opponent-menu term.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuWeights {
     /// Weight on the whole term. Zero switches it off entirely and restores
     /// the pre-existing evaluation bit for bit.
+    ///
+    /// **`0.408` since round ten; [`MENU_LAMBDA_V9`] is the `0.6` rounds one
+    /// through nine shipped.** `0.6` was never fitted — it was the value the
+    /// term was introduced at, chosen because the menu's units are victory
+    /// points and a little over half of one seemed the honest share of a
+    /// take the opponent has not made yet. Round ten's joint regression over
+    /// this crate's eighteen scalar weights put it at `0.407872`, and this is
+    /// the one coefficient where every instrument the round had agreed: the
+    /// clean fit target, the contaminated one, `phased` on three disjoint seed
+    /// ranges (+21.8 / +15.3 / +12.2 Elo) and `mcts-eval` pooled over two
+    /// (+18.1, 95% CI [+2.9, +33.3]).
+    ///
+    /// **The confirmation A/B did not reproduce that magnitude.** `mcts-eval`
+    /// against `mcts-eval:eval=v9` over 4000 `Nodes(2000)` games on four
+    /// further disjoint ranges reads `+5.0`, 95% CI `[-5.8, +15.7]` —
+    /// positive, three ranges of four positive, and not distinguishable from
+    /// zero. Quote `+5.0` for this change, not `+18.1`, and read the round-ten
+    /// section of the crate docs before moving it again.
     pub lambda: f64,
     /// Softmax temperature. Larger spreads credit further down the menu;
     /// towards zero it becomes a plain maximum.
@@ -2662,7 +2905,11 @@ pub struct MenuWeights {
 impl Default for MenuWeights {
     fn default() -> Self {
         Self {
-            lambda: 0.6,
+            // Round ten: `MENU_LAMBDA_V9` (0.6) -> the fitted 0.408, rounded
+            // to three places from the regression's `0.407872` because the
+            // fourth is far inside the fit's own standard error and a weight
+            // this crate ships should be readable.
+            lambda: 0.408,
             tau: 1.5,
         }
     }
@@ -3375,8 +3622,11 @@ pub struct Config {
     pub pending_model: PendingModel,
     /// How a drafted-but-unbuilt wonder is priced. See [`WonderModel`].
     ///
-    /// **[`WonderModel::Rationed`] since round nine**; [`Config::v8`] restores
-    /// [`WonderModel::Flat`].
+    /// **Still [`WonderModel::Flat`].** Round nine built
+    /// [`WonderModel::Rationed`], measured it on both consumers and did not
+    /// adopt it — it is worth about +30 Elo to `phased` and −15 to
+    /// `mcts-eval`, and `mcts-eval` is the consumer that decides. Reachable as
+    /// `phased:wonder=rationed`.
     pub wonder_model: WonderModel,
     /// Whether a destroy effect's credit is discounted by the chance the
     /// opponent simply builds the production back.
@@ -3579,12 +3829,11 @@ impl Config {
         }
     }
 
-    /// The configuration the *eighth* round of work shipped with, which is
-    /// also today's [`Config::default`].
+    /// The configuration the *eighth* round of work shipped with.
     ///
-    /// **Round nine deliberately did not move the default**, so this is still
-    /// the newest link in the chain. It added two options — the
-    /// [`WonderModel::Rationed`] wonder term and the
+    /// **Round nine deliberately did not move the default**, so for the whole
+    /// of round nine this function was an alias for it. It added two
+    /// options — the [`WonderModel::Rationed`] wonder term and the
     /// [`ReachModel::Structure`] symbol-reachability test — and measured both,
     /// and each measurement said to leave the default alone: the first is
     /// worth +30 Elo to `phased` and **−24** to `mcts-eval`, the second is
@@ -3593,49 +3842,116 @@ impl Config {
     /// symbol walk grew a second branch) reproduces round eight bit for bit
     /// on the branch it kept.
     ///
+    /// Round ten moved [`Config::default`], so — following the contract this
+    /// function's own documentation spelled out, and exactly as round eight
+    /// did to [`Config::v7`] — it now reads through [`Config::v9`] and spells
+    /// out round nine's two *off* values as literals. **They are the values
+    /// `v9()` carries anyway**, because round nine left the default alone;
+    /// they are written out here for the explicitness the rest of this chain
+    /// uses, so that a future round which does turn one of them on cannot
+    /// silently redefine round eight.
+    ///
+    /// This makes `v8()` and [`Config::v9`] the same configuration, and that
+    /// is the honest reading of the history rather than a defect: round nine
+    /// changed nothing about the default. It is the one place in this chain
+    /// where two adjacent links are equal, and the two chain tests carve it
+    /// out by name.
+    ///
+    /// `tests/v9_identity.rs` covers this generation's arithmetic through
+    /// `v9()`.
+    pub fn v8() -> Config {
+        Config {
+            eval: EvalWeights {
+                science: ScienceWeights {
+                    reach_model: ReachModel::Optimistic,
+                    ..Config::v9().eval.science
+                },
+                ..Config::v9().eval
+            },
+            wonder_model: WonderModel::Flat,
+            ..Config::v9()
+        }
+    }
+
+    /// The configuration the *ninth* round of work shipped with, which is
+    /// numerically identical to [`Config::v8`] — round nine measured two
+    /// options and adopted neither, so the only thing separating this
+    /// generation from round eight's is the calendar.
+    ///
+    /// Round ten changed [`Config::default`] in exactly one place, and this
+    /// function sets it back: [`MenuWeights::lambda`], the weight on the
+    /// opponent-menu term, from [`MENU_LAMBDA_V9`] (`0.6`) to the fitted
+    /// `0.408`. That is the whole delta — round ten moved no *shape* at all,
+    /// so `tests/v9_identity.rs` needs no verbatim copy of a function, only a
+    /// proof that restoring the scalar restores the arithmetic over real
+    /// games.
+    ///
+    /// `tests/v9_identity.rs` asserts this reproduces round nine's arithmetic
+    /// bit for bit, which is what makes `mcts-eval` against
+    /// `mcts-eval:eval=v9` — the confirmation A/B round ten shipped on — a
+    /// single-binary measurement.
+    ///
     /// # Why a snapshot with no `#[cfg(test)]` copy behind it
     ///
     /// `v1()`-`v5()` each exist so a *later* round can be measured against an
     /// *earlier* one in a single binary, and each has a `tests/vN_identity.rs`
     /// holding a verbatim copy of the code it snapshots. There is nothing to
-    /// copy here: this generation *is* the current arithmetic, so the identity
-    /// that matters is a different one — that a **search agent pinning this
-    /// generation keeps getting the same numbers**.
+    /// copy here: this generation *is* the current arithmetic apart from one
+    /// scalar, so the identity that matters is a different one — that a
+    /// **search agent pinning this generation keeps getting the same
+    /// numbers**.
     ///
-    /// This generation was `duels-agent-mcts-uct`'s pinned leaf-evaluation
-    /// config while that agent's leaf value existed; that machinery has since
-    /// moved to `duels-agent-mcts-eval`, which deliberately does **not** pin —
-    /// it reads [`Config::default`] live at every tree construction, precisely
-    /// so it keeps getting stronger as later `phased` rounds land, rather than
+    /// The one agent that ever pinned a generation of this crate was
+    /// `duels-agent-mcts-uct`, and it pinned [`Config::v6`] — the generation
+    /// current when its leaf value was measured — behind a golden-values test
+    /// over about fifty fixed positions. That machinery has since moved to
+    /// `duels-agent-mcts-eval`, which deliberately does **not** pin: it reads
+    /// [`Config::default`] live at every tree construction, precisely so it
+    /// keeps getting stronger as later `phased` rounds land, rather than
     /// needing a version bump to benefit from one (see that crate's docs for
     /// why). **No agent currently pins a generation of this crate**, so there
-    /// is presently no downstream golden-values test that would catch a
-    /// silent arithmetic change here — the closest thing on record was
-    /// `mcts-uct`'s, and it no longer exists.
+    /// is presently no downstream golden-values test that would catch a silent
+    /// arithmetic change here.
+    ///
+    /// The nearest thing that survives is `duels-agent-phased`'s
+    /// `tests/p_build_identity.rs`, which hashes twelve whole self-play games
+    /// per configuration. It is not a generation pin — it guards a different
+    /// claim — but it does pin the shipping default's *decisions*, and round
+    /// ten found out the useful way: it failed, and re-recording it was part of
+    /// this round. An evaluation change that reaches an agent cannot land
+    /// silently while that file exists.
     ///
     /// # The contract for the next round, if a future consumer ever pins again
     ///
     /// The moment [`Config::default`] moves, this stops being a snapshot of
     /// anything. So a round that changes the default must, in the same PR:
-    /// add `v9()` and re-point this function's `..` at it, spelling out round
-    /// nine's *off* values here (exactly as [`Config::v2`]'s comment
-    /// describes, and exactly as round eight did to [`Config::v7`]).
-    /// **Round nine is the first round that did not have to**, having measured
-    /// its two candidates and left the default alone; a round-ten change to a
-    /// default still owes the chain a `v9()`, and the two round-nine options
-    /// are already at their off values here, so that snapshot is one `..`
-    /// away. If some future agent pins a generation the way `mcts-uct` once
-    /// did, that agent's own golden-values test is what re-baselining means
-    /// for it — this crate cannot enforce that on its behalf.
+    /// add `v10()` and re-point this function's `..` at it, spelling out round
+    /// ten's *off* values here (exactly as [`Config::v2`]'s comment
+    /// describes, and exactly as rounds eight and ten did to [`Config::v7`]
+    /// and [`Config::v8`]). Round ten added no option, so there is nothing
+    /// for a `v10()` to switch *off* beyond the scalar itself — that snapshot
+    /// is one `..` away. If some future agent pins a generation the way
+    /// `mcts-uct` once did, that agent's own golden-values test is what
+    /// re-baselining means for it — this crate cannot enforce that on its
+    /// behalf.
     ///
     /// Because the newest link in this chain is defined *as* the default
-    /// (`v1`-`v7` are deltas from it, not literal field values), any
-    /// same-crate check that `v8 == default` is a tautology — this is not a
-    /// gap introduced by removing the downstream test, it was always true.
-    /// See the note in
+    /// (`v1`-`v8` are deltas from it, not literal field values), any
+    /// same-crate check that the newest snapshot equals the default is a
+    /// tautology — this is not a gap introduced by removing the downstream
+    /// test, it was always true. See the note in
     /// `tests::the_generation_snapshots_are_a_chain_of_distinct_configurations`.
-    pub fn v8() -> Config {
-        Config::default()
+    pub fn v9() -> Config {
+        Config {
+            eval: EvalWeights {
+                menu: MenuWeights {
+                    lambda: MENU_LAMBDA_V9,
+                    ..Config::default().eval.menu
+                },
+                ..Config::default().eval
+            },
+            ..Config::default()
+        }
     }
 }
 
@@ -5490,8 +5806,15 @@ mod tests {
     /// changed nothing, and one that equals [`Config::default`] while *not*
     /// being the newest link is a snapshot that has silently drifted.
     ///
-    /// [`Config::v8`] is the newest link and is deliberately today's default;
+    /// [`Config::v9`] is the newest link and is deliberately today's default;
     /// see its documentation for what the next round owes this chain.
+    ///
+    /// **`v8` and `v9` are the one deliberate exception**, and it is exactly
+    /// the case the paragraph above names: round nine really did change
+    /// nothing about the default. It built two options, measured both and
+    /// adopted neither, so its snapshot and round eight's are the same
+    /// configuration. That is asserted rather than tolerated, so a later edit
+    /// which pulls them apart has to say so here.
     #[test]
     fn the_generation_snapshots_are_a_chain_of_distinct_configurations() {
         let chain = [
@@ -5502,19 +5825,34 @@ mod tests {
             ("v5", Config::v5()),
             ("v6", Config::v6()),
             ("v7", Config::v7()),
+            ("v8", Config::v8()),
         ];
         for (i, (name, cfg)) in chain.iter().enumerate() {
             for (later, other) in chain.iter().skip(i + 1) {
                 assert_ne!(cfg, other, "{name} and {later} are the same configuration");
             }
         }
-        // Deliberately *not* `assert_eq!(Config::v8(), Config::default())`.
-        // `v8` is defined as `Config::default()`, so that assertion is a
-        // tautology: it cannot fail, and reading it as a guard against a
-        // ninth round silently redefining this generation would be a
-        // mistake. Nothing in this crate can catch that, because the newest
-        // snapshot in this chain is *by construction* whatever the default
-        // is (`v1`-`v7` are deltas from it, not literals).
+        // Round nine adopted neither of the options it built, so its snapshot
+        // is round eight's. Pinned as an equality rather than left out of the
+        // loop above: if some later edit makes them differ, the round-nine
+        // narrative in this file and in `tests/round_nine_identity.rs` has
+        // become wrong and should fail rather than quietly pass.
+        assert_eq!(
+            Config::v8(),
+            Config::v9(),
+            "round nine moved the default after all, so it owes this chain a \
+             snapshot of its own"
+        );
+        // Round ten moved the default, so `v9` is a real delta from it and
+        // `v8` is no longer an alias for it either.
+        assert_ne!(Config::v9(), Config::default());
+        assert_ne!(Config::v8(), Config::default());
+
+        // Deliberately *not* `assert_eq!(Config::v9(), Config::default())`.
+        // The newest snapshot in this chain is *by construction* a delta from
+        // whatever the default is (`v1`-`v8` are deltas, not literals), so a
+        // check that the newest link tracks the default cannot catch an
+        // eleventh round silently redefining this generation.
         //
         // The guard that used to work lived with the consumer that had
         // something to lose: `duels-agent-mcts-uct`'s
@@ -5522,8 +5860,15 @@ mod tests {
         // held ~50 evaluations captured from `v6()` at the moment its search
         // was measured against it. That agent no longer consumes this crate at
         // all, and no current consumer pins a generation, so nothing
-        // downstream enforces the chain today. See [`Config::v9`]'s "contract
-        // for the next round".
+        // downstream enforces the *chain* today. See [`Config::v9`]'s
+        // "contract for the next round".
+        //
+        // What does still exist downstream is `duels-agent-phased`'s
+        // `tests/p_build_identity.rs`, which hashes twelve whole self-play
+        // games under the default. It guards a different claim and is not a
+        // generation pin, but it does mean a change to the shipping default
+        // cannot reach an agent's decisions unnoticed — round ten confirmed
+        // that by failing it.
     }
 
     // `spec_reports_the_expected_name_and_encoded_params`,

@@ -43,8 +43,17 @@
 //! By running this file against the pre-fix commit — the harness compiles
 //! unchanged there, because it drives the agent through `Agent::choose` and
 //! touches no signature the fix moved — and recording what it printed. The
-//! test bodies then assert the post-fix run reproduces the default hash and
-//! does not reproduce the rationed one.
+//! test bodies then assert the post-fix run reproduces the flat hash and does
+//! not reproduce the rationed one.
+//!
+//! Both are read against `Config::v9()`, which is the evaluation that commit
+//! shipped. They were written as `Config::default()` when round nine's default
+//! *was* that evaluation; round ten moved the default (one weight, the
+//! opponent-menu `lambda`) and the constants moved with the name rather than
+//! with the thing they describe. Round ten re-addressed them to `v9()` and
+//! pinned the new default's own digest beside them, so this file now guards
+//! two claims: that the `p_build` fix was inert where it had to be, and that
+//! the shipping evaluation cannot move without an agent's decisions saying so.
 
 use duels_agent_phased::{Config, EvalWeights, PhasedAgent, WonderModel};
 use duels_agents_api::{Agent, Budget};
@@ -105,9 +114,15 @@ fn self_play_digest(config: Config) -> (u64, u64) {
 }
 
 /// The rationed configuration the round-nine sweep measured: the model on, at
-/// the `wonder_potential` weight that sweep landed on.
+/// the `wonder_potential` weight that sweep landed on, over the evaluation
+/// round nine shipped.
+///
+/// [`Config::v9`] rather than [`Config::default`] on purpose. The pre-fix
+/// digest below was recorded against round nine's evaluation, so reading it
+/// against a later default would make the comparison a measurement of two
+/// changes at once instead of the one it is about.
 fn rationed() -> Config {
-    let d = Config::default();
+    let d = Config::v9();
     Config {
         wonder_model: WonderModel::Rationed,
         eval: EvalWeights {
@@ -121,14 +136,36 @@ fn rationed() -> Config {
 /// **The no-regression claim.** `WonderModel::Flat` is the default and never
 /// read the cached `p_build`, so removing the cache cannot have moved a single
 /// decision on the path both shipping consumers use.
+///
+/// The pinned digest is read against [`Config::v9`] rather than
+/// [`Config::default`], and that is a correction rather than a weakening.
+/// Round nine's default is the configuration the pre-fix recording was taken
+/// under, so `v9()` is the configuration this claim is *about*; addressing it
+/// as "the default" only worked for as long as the default did not move.
+/// **Round ten moved it** — one weight, `duels_eval::MenuWeights::lambda` —
+/// and `phased` plays 856 decisions rather than 865 under the new one, which
+/// has nothing to do with `p_build` and everything to do with a different
+/// evaluation choosing different moves. Pinning the round-ten default
+/// alongside it keeps the shipping path guarded going forward.
 #[test]
 fn the_default_configuration_is_unchanged_by_the_p_build_fix() {
-    let (decisions, hash) = self_play_digest(Config::default());
     // Recorded from the pre-fix tree (`651d451`), over the same twelve seeds,
-    // and reproduced exactly after the fix.
+    // and reproduced exactly after the fix -- under the configuration that
+    // tree shipped, which is now `Config::v9()`.
+    let (decisions, hash) = self_play_digest(Config::v9());
     assert_eq!(
         (decisions, hash),
         (865, 0x58e8_6d3d_4266_1389),
+        "round nine's evaluation moved: {decisions} decisions, hash {hash:#018x}"
+    );
+    // ...and the shipping default, pinned from round ten on. A later round
+    // that moves `Config::default` is expected to fail here and re-record it,
+    // exactly as round ten did: this is the guard that a *silent* change to
+    // the evaluation cannot reach an agent's decisions unnoticed.
+    let (decisions, hash) = self_play_digest(Config::default());
+    assert_eq!(
+        (decisions, hash),
+        (856, 0x7d61_4d78_2e87_ef73),
         "the default evaluation moved: {decisions} decisions, hash {hash:#018x}"
     );
 }
@@ -151,8 +188,9 @@ fn the_rationed_configuration_is_deliberately_not_identical() {
         "the rationed model still plays its pre-fix game, so p_build is \
          still frozen somewhere"
     );
-    // ...and it has not collapsed into the default either, which would be the
-    // other way to accidentally make the option inert.
-    let (_, default_hash) = self_play_digest(Config::default());
-    assert_ne!(hash, default_hash);
+    // ...and it has not collapsed into the configuration it is an option on
+    // top of either, which would be the other way to accidentally make the
+    // option inert.
+    let (_, base_hash) = self_play_digest(Config::v9());
+    assert_ne!(hash, base_hash);
 }
