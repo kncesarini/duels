@@ -53,19 +53,80 @@
 //! unchanged. The crate docs say the same thing and flag the wall-clock
 //! confirmation as outstanding.
 //!
-//! **The obvious repair, deliberately not applied.** Splitting the
-//! accumulator into four independent partial sums breaks the dependency chain
-//! and should recover most of the ten-fold gap. It is not done here because it
-//! changes the summation order and therefore the network's output in the last
-//! couple of `f32` digits, which would mean the shipped code no longer
-//! computes what the measured Elo was measured with. Doing it is a small,
-//! self-contained follow-up whose *own* before/after Elo run is cheap, and it
-//! should be done that way rather than folded in silently.
+//! # The obvious repair, now applied — and it is worth `1.41x`, not ten
+//!
+//! Splitting the accumulator into four independent partial sums (now
+//! [`duels_value::Summation::Unrolled4`], the default) was predicted here to
+//! "recover most of the ten-fold gap". **It does not, and the prediction was
+//! wrong.** Both orders, timed in one run under one load:
+//!
+//! ```text
+//! features                0.29 us
+//! forward (serial)       52.88 us
+//! forward (unrolled4)    37.54 us
+//! evaluate (both)        38.21 us
+//! full playout          108.97 us
+//!
+//! evaluate / playout    35.1%   (features 1% of that, forward 98%)
+//! unroll speedup        1.41x
+//! serial   evaluate / playout would be  48.8%
+//! unrolled evaluate / playout would be  34.7%
+//! ```
+//!
+//! (The microseconds are about three times the figures above them because that
+//! run shared the machine with four concurrent arena matches. The *ratios* are
+//! the comparable part, which is this file's whole argument, and the two
+//! summation rows were timed back to back inside one process.)
+//!
+//! So the dependency chain was **not** the whole story. Four accumulators
+//! should give close to `4x` on a purely latency-bound reduction, and `1.41x`
+//! says the loop is substantially **memory**-bound as well: `w1` is
+//! `128 × 211 × 4` bytes = 108 KiB, which does not sit in L1, so every call
+//! streams the whole weight matrix from L2. Widening the unroll further would
+//! not help; what would is shrinking or quantising `w1`, or evaluating several
+//! positions against one pass over the weights. Neither is done here, and the
+//! second would need a batching interface a search leaf does not currently
+//! have.
+//!
+//! The gain is still real and worth having: it takes the learned leaf from
+//! roughly half a playout to roughly a third of one. For the **pure**
+//! `LeafValue::Learned` — no playout at all — that means about `0.35x` a
+//! playout against the default `LeafValue::Blend`'s `1.08x`, so at equal wall
+//! clock the pure learned leaf runs on the order of `3x` the simulations. That
+//! is the opposite sign from `LearnedBlend`'s `0.74x` above, and it is why the
+//! wall-clock question has to be asked separately for the two variants rather
+//! than answered once.
+//!
+//! Because the unroll reassociates a floating-point sum it is not
+//! bit-identical to the order the crate docs' Elo was measured with, so
+//! [`duels_value::Summation::Serial`] is kept reachable
+//! (`mcts-eval:leaf=learned,value_sum=serial`) and the change was measured on
+//! both axes rather than argued about:
+//!
+//! * **numerically**, `tests/summation_equivalence.rs` — worst difference
+//!   `4.768e-7` over 2,000 (position, perspective) pairs, against a `1e-5`
+//!   tolerance, i.e. passing by a factor of 21;
+//! * **in Elo**, `arena/results/experiments/p1-unroll-ab{,-extended}` —
+//!   serial against unrolled at `c = 0.15`, `Nodes(32000)`, three disjoint
+//!   seed ranges, **800 games: `-1.7` Elo [`-25.8`, `+22.3`], 397-401-2.**
+//!   Zero, as a reassociation at a fixed node count has to be.
+//!
+//! That Elo run is also a small lesson in sample size, and it is recorded
+//! because it nearly produced a wrong conclusion. The first range alone said
+//! `-41.7` [`-90.1`, `+6.7`], which looks alarming and is not significant;
+//! the three cells were `-41.7`, `-18.5` and `+41.8`. There is no mechanism by
+//! which a `5e-7` arithmetic difference can cost strength at a **fixed node
+//! count** — a node is a node — so the scatter is divergent trajectories and
+//! nothing else, and 200 games is simply not enough to see zero.
 
 use std::time::Instant;
 
 use duels_core::{engine, GameState, Player};
-use duels_value::{default_net, features};
+use duels_value::{default_net, features, NUM_FEATURES};
+
+/// One forward-pass variant under the timer: a feature vector in, one output
+/// out (so the optimiser cannot delete the work).
+type ForwardUnderTest<'a> = Box<dyn FnMut(&[f32; NUM_FEATURES]) -> f32 + 'a>;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -138,25 +199,28 @@ fn main() {
         "features",
         Box::new(|s| features(s, Player::One).iter().sum::<f32>()),
     );
-    let t_forward = {
-        // Precomputed, so this line times the matrix arithmetic alone.
-        let xs: Vec<_> = states.iter().map(|s| features(s, Player::One)).collect();
-        #[allow(clippy::disallowed_methods)]
+    // Precomputed, so these lines time the matrix arithmetic alone.
+    let xs: Vec<_> = states.iter().map(|s| features(s, Player::One)).collect();
+    // Both accumulation orders, in one run under one load, so the ratio
+    // between them is meaningful even though the microseconds are not.
+    #[allow(clippy::disallowed_methods)]
+    let time_forward = |name: &str, mut f: ForwardUnderTest<'_>| {
         let start = Instant::now();
         let mut acc = 0.0f32;
         for _ in 0..REPS {
             for x in &xs {
-                acc += net.forward(x)[0];
+                acc += f(x);
             }
         }
         let per = start.elapsed().as_secs_f64() / (REPS * xs.len()) as f64;
-        println!(
-            "{:<20} {:>7.2} us   (checksum {acc:.3e})",
-            "forward",
-            per * 1e6
-        );
+        println!("{name:<20} {:>7.2} us   (checksum {acc:.3e})", per * 1e6);
         per
     };
+    let t_forward_serial = time_forward("forward (serial)", Box::new(|x| net.forward_serial(x)[0]));
+    let t_forward = time_forward(
+        "forward (unrolled4)",
+        Box::new(|x| net.forward_unrolled4(x)[0]),
+    );
     let t_evaluate = time(
         "evaluate (both)",
         Box::new(|s| net.win_probability(s, Player::One)),
@@ -196,6 +260,20 @@ fn main() {
         100.0 * t_evaluate / t_playout,
         100.0 * t_features / t_evaluate,
         100.0 * t_forward / t_evaluate,
+    );
+    println!(
+        "unroll speedup      {:>6.2}x   (serial {:.2} us -> unrolled4 {:.2} us)",
+        t_forward_serial / t_forward,
+        t_forward_serial * 1e6,
+        t_forward * 1e6,
+    );
+    println!(
+        "serial   evaluate / playout would be {:>5.1}%",
+        100.0 * (t_features + t_forward_serial) / t_playout
+    );
+    println!(
+        "unrolled evaluate / playout would be {:>5.1}%",
+        100.0 * (t_features + t_forward) / t_playout
     );
     println!("(checksum {sink:.3e})");
 }

@@ -59,7 +59,11 @@
 //!   A/B-testing-only exception: it pins this one agent instance to a frozen
 //!   `duels_eval::Config::vN()` snapshot so it can be matched directly, in one
 //!   binary, against a live (unpinned) `mcts-eval` — see
-//!   [`duels_agent_mcts_eval::Config::eval_override`].
+//!   [`duels_agent_mcts_eval::Config::eval_override`]. `value_sum=serial` is
+//!   the analogous exception for the learned leaves' arithmetic: it selects
+//!   `duels_value::Summation::Serial`, the accumulation order that predates
+//!   the four-way unroll, so the two can be matched directly in one binary.
+//!   It is read only by a learned leaf and so cannot move the default.
 //! * `phased` -- `base` (`v1`..`v8`/`default`), the
 //!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
 //!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
@@ -556,6 +560,23 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                             "mcts-eval: leaf \"{other}\" takes no parameter (only \
                              \"truncated:<plies>\", \"blend:<weight>\" and \
                              \"learned_blend:<weight>\" do)"
+                        ))
+                    }
+                };
+            }
+            // Which accumulation order the learned leaves' forward pass uses.
+            // Read only by a learned leaf, so it cannot move the default
+            // configuration; it is here so the four-way accumulator unroll can
+            // be A/B tested against the arithmetic the crate docs' Elo numbers
+            // were taken with. See `duels_value::Summation`.
+            "value_sum" | "value_summation" => {
+                cfg.value_summation = match v {
+                    "serial" => duels_value::Summation::Serial,
+                    "unrolled4" | "unrolled" => duels_value::Summation::Unrolled4,
+                    other => {
+                        return Err(format!(
+                            "mcts-eval: unknown value summation \"{other}\" (expected \
+                             \"serial\" or \"unrolled4\")"
                         ))
                     }
                 };

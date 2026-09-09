@@ -199,6 +199,20 @@ pub struct Config {
     /// versions, with no unrelated anchor agent needed. Not meant to be set in
     /// anything this project would call a *production* configuration.
     pub eval_override: Option<duels_eval::Config>,
+    /// Which accumulation order the learned leaves' forward pass uses.
+    ///
+    /// Only read when [`LeafValue::needs_learned_net`] is true, so it cannot
+    /// affect the default configuration at all. It exists so the four-way
+    /// accumulator unroll in `duels_value::Summation` can be A/B tested the
+    /// same way [`Config::eval_override`] lets a `duels-eval` change be: one
+    /// binary, one process, one `duels-arena experiment`, with the old
+    /// arithmetic reachable as `mcts-eval:leaf=learned,value_sum=serial`.
+    ///
+    /// The unroll reassociates a floating-point sum, so it is not
+    /// bit-identical to the order the crate docs' Elo numbers were measured
+    /// with — which is exactly why the old order stays reachable rather than
+    /// being deleted.
+    pub value_summation: duels_value::Summation,
 }
 
 impl Default for Config {
@@ -228,6 +242,7 @@ impl Default for Config {
             // the crate docs.
             leaf: LeafValue::Blend { weight: 0.5 },
             eval_override: None,
+            value_summation: duels_value::Summation::default(),
         }
     }
 }
@@ -299,7 +314,11 @@ impl Config {
             // whole `duels_eval::Config`: a retrain at the same width is the
             // same shape and completely different behaviour, so recording only
             // "learned" would make two results files indistinguishable.
-            true => format!(";value={}", duels_value::default_weights_id()),
+            true => format!(
+                ";value={}/{}",
+                duels_value::default_weights_id(),
+                self.value_summation.name()
+            ),
             false => String::new(),
         }
     }
@@ -469,7 +488,10 @@ impl Tree {
             .leaf
             .needs_eval_root()
             .then(|| duels_eval::Root::new(&state, state.current_player(), cfg.eval_config()));
-        let learned_net = cfg.leaf.needs_learned_net().then(duels_value::default_net);
+        let learned_net = cfg
+            .leaf
+            .needs_learned_net()
+            .then(|| duels_value::default_net().with_summation(cfg.value_summation));
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,

@@ -147,7 +147,7 @@ fn reachable() -> Vec<(u64, usize, GameState)> {
         let mut state = engine::new_game(seed);
         let mut rng = StdRng::seed_from_u64(seed ^ 0xC0FF_EE11);
         if PLIES.contains(&0) {
-            out.push((seed, 0, state.clone()));
+            out.push((seed, 0, state));
         }
         for ply in 1..=max {
             let legal = engine::legal_actions(&state);
@@ -159,7 +159,7 @@ fn reachable() -> Vec<(u64, usize, GameState)> {
                 break;
             }
             if PLIES.contains(&ply) {
-                out.push((seed, ply, state.clone()));
+                out.push((seed, ply, state));
             }
         }
     }
@@ -533,7 +533,15 @@ fn report_hand_built() {
         }
     }
     // Legal-shaped: disjoint cities, one lead per board.
-    let boards: [(&str, &[&str], &[&str], i8, u8); 8] = [
+    /// (name, Player::One's city, Player::Two's city, conflict pawn, age).
+    type Board = (
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+        i8,
+        u8,
+    );
+    let boards: [Board; 8] = [
         ("legal-early-thin", &["lumber-yard"], &["quarry"], 0, 1),
         (
             "legal-early-mil-vs-sci",

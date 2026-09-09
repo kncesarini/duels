@@ -1145,6 +1145,18 @@ mod tests {
             learned.contains(&format!("value={}", duels_value::default_weights_id())),
             "the spec does not name the value network: {learned}"
         );
+        // The same argument applies to *how* the forward pass accumulates:
+        // `Summation::Unrolled4` reassociates the hidden layer's sum, so two
+        // results files taken either side of that change are not comparable
+        // to the last few `f32` digits, and the spec has to say which one ran.
+        assert!(
+            learned.contains(&format!(
+                "value={}/{}",
+                duels_value::default_weights_id(),
+                duels_value::Summation::default().name()
+            )),
+            "the spec does not name the summation order: {learned}"
+        );
         // ...and the default configuration's spec string is untouched by any
         // of this, because a learned leaf is strictly opt-in.
         let default = describe(Config::default().leaf);

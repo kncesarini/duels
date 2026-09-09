@@ -32,6 +32,55 @@ const MAGIC: [u8; 4] = *b"DVW1";
 /// How many outcome classes the head predicts. See [`crate::Outcome`].
 pub const NUM_OUTCOMES: usize = 4;
 
+/// How a layer's dot products are accumulated — the *only* thing that
+/// distinguishes two otherwise identical networks, and it is here because
+/// floating-point addition is not associative.
+///
+/// # Why this is a choice and not an implementation detail
+///
+/// `examples/value_bench.rs` measured the original forward pass at **45% of a
+/// full random playout**, which is far more than 27,520 multiply-adds should
+/// cost. The reason is not the FLOP count, it is the **dependency chain**:
+/// each hidden unit was a single serial `acc += w * x` reduction over 211
+/// terms, and because `f32` addition is not associative LLVM may neither
+/// reorder nor vectorise it. The loop therefore ran at the *latency* of one
+/// `f32` add per element (about two cycles each) rather than at throughput —
+/// roughly ten times off.
+///
+/// Splitting the accumulator into four independent partial sums breaks that
+/// chain. It also changes the summation order, and so changes the network's
+/// output in the last couple of `f32` digits. That is why the choice is
+/// explicit and why [`Summation::Serial`] is kept: the Elo the crate docs
+/// report was measured with the serial order, and an agent must be able to
+/// reproduce it exactly rather than approximately.
+///
+/// The difference is tiny but it is not zero, so it is measured on both axes
+/// rather than argued about: `tests/summation_equivalence.rs` bounds it
+/// numerically (`|Δ| < 1e-5` over 1,000 sampled positions) and the crate docs
+/// record the before/after arena run that bounds it in Elo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Summation {
+    /// One serial `f32` accumulator per unit — the original order, and the
+    /// one every Elo number predating the unroll was measured with.
+    Serial,
+    /// Four independent partial sums, combined pairwise at the end. The
+    /// default, because it computes the same function to within `1e-5` and
+    /// breaks the latency chain that made the forward pass cost half a
+    /// playout.
+    #[default]
+    Unrolled4,
+}
+
+impl Summation {
+    /// A short stable name, for an agent's params string.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Summation::Serial => "serial",
+            Summation::Unrolled4 => "unrolled4",
+        }
+    }
+}
+
 /// A one-hidden-layer perceptron: `softmax(W2 · relu(W1 · x + b1) + b2)`.
 ///
 /// Holds its parameters as flat `Vec<f32>`s in row-major order, which is the
@@ -47,6 +96,10 @@ pub struct Net {
     w2: Vec<f32>,
     /// `NUM_OUTCOMES`.
     b2: Vec<f32>,
+    /// Which accumulation order [`Net::forward`] uses. Not part of the
+    /// weights file — it is a property of *this* handle on them, so one
+    /// parsed buffer can be read both ways for an A/B.
+    summation: Summation,
 }
 
 /// Why a weights buffer was rejected.
@@ -167,7 +220,24 @@ impl Net {
             b1,
             w2,
             b2,
+            summation: Summation::default(),
         })
+    }
+
+    /// The same weights, read with a different accumulation order.
+    ///
+    /// Consumes and returns the net so it reads as a builder at a call site
+    /// that parses once and keeps the result, which is how a search uses it.
+    #[must_use]
+    pub fn with_summation(mut self, summation: Summation) -> Net {
+        self.summation = summation;
+        self
+    }
+
+    /// Which accumulation order [`Net::forward`] will use.
+    #[inline]
+    pub fn summation(&self) -> Summation {
+        self.summation
     }
 
     /// The hidden layer's width.
@@ -187,7 +257,25 @@ impl Net {
     ///
     /// Deterministic, allocation-free, and reads no clock — the only thing a
     /// search leaf is allowed to be.
+    ///
+    /// Dispatches on [`Net::summation`]. The two arms compute the same
+    /// function to within `1e-5`; see [`Summation`] for why they are not
+    /// bit-identical and why both are kept.
     pub fn forward(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
+        match self.summation {
+            Summation::Serial => self.forward_serial(x),
+            Summation::Unrolled4 => self.forward_unrolled4(x),
+        }
+    }
+
+    /// The original forward pass, kept **verbatim** as the reference order.
+    ///
+    /// Not `#[cfg(test)]`: it is reachable from an agent's configuration on
+    /// purpose, so the Elo numbers taken before the unroll can be reproduced
+    /// exactly rather than approximately. `CLAUDE.md`'s first rule of agent
+    /// development is that the old behaviour stays available as an explicit,
+    /// proven-identical option.
+    pub fn forward_serial(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
         // Hidden layer. Walked as `hidden` contiguous rows of `NUM_FEATURES`,
         // which is why `w1` is stored row-major. `MAX_HIDDEN` bounds both this
         // buffer and what `from_bytes` will accept, so `hidden` always fits.
@@ -215,6 +303,59 @@ impl Net {
         }
         softmax(logits)
     }
+
+    /// The same arithmetic with the reduction split four ways, so the
+    /// multiply-adds run at throughput instead of at add latency.
+    ///
+    /// Identical in structure to [`Net::forward_serial`] — same rows, same
+    /// ReLU, same softmax — differing only in the order the products are
+    /// summed, which the private `dot4` localises to one function.
+    pub fn forward_unrolled4(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
+        let mut h = [0.0f32; MAX_HIDDEN];
+        let hidden = self.hidden;
+        for (j, hj) in h.iter_mut().enumerate().take(hidden) {
+            let row = &self.w1[j * NUM_FEATURES..(j + 1) * NUM_FEATURES];
+            let acc = dot4(row, x, self.b1[j]);
+            *hj = if acc > 0.0 { acc } else { 0.0 };
+        }
+
+        let mut logits = [0.0f32; NUM_OUTCOMES];
+        for (k, lk) in logits.iter_mut().enumerate() {
+            let row = &self.w2[k * hidden..(k + 1) * hidden];
+            *lk = dot4(row, &h[..hidden], self.b2[k]);
+        }
+        softmax(logits)
+    }
+}
+
+/// `bias + a · b`, accumulated into four independent partial sums.
+///
+/// The four lanes are combined pairwise (`(a0 + a1) + (a2 + a3)`) rather than
+/// left-to-right, and the ragged tail — `NUM_FEATURES` is 211, which is
+/// `4 × 52 + 3` — is added last. Both choices are arbitrary but *fixed*: the
+/// function has to be deterministic to the bit for a search's results to be
+/// reproducible, which is a stronger requirement than being accurate.
+///
+/// Sums the shorter of the two slices, which is only ever reached with equal
+/// lengths from [`Net::forward_unrolled4`].
+#[inline]
+fn dot4(a: &[f32], b: &[f32], bias: f32) -> f32 {
+    let mut acc = [0.0f32; 4];
+    // `as_chunks` yields `&[[f32; 4]]`, so the four indexings below are
+    // statically in bounds and compile without checks.
+    let (a4, a_tail) = a.as_chunks::<4>();
+    let (b4, b_tail) = b.as_chunks::<4>();
+    for (aw, bw) in a4.iter().zip(b4.iter()) {
+        acc[0] += aw[0] * bw[0];
+        acc[1] += aw[1] * bw[1];
+        acc[2] += aw[2] * bw[2];
+        acc[3] += aw[3] * bw[3];
+    }
+    let mut tail = 0.0f32;
+    for (aw, bw) in a_tail.iter().zip(b_tail.iter()) {
+        tail += aw * bw;
+    }
+    bias + ((acc[0] + acc[1]) + (acc[2] + acc[3])) + tail
 }
 
 /// A numerically stable softmax over the four logits.

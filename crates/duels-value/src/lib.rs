@@ -262,17 +262,141 @@
 //!    pre-registered as a feasibility spike whose success criterion was a
 //!    measurement, not a shipped default.
 //!
-//! ### The most promising next steps, in order
+//! # Follow-up round: the `c` sweep, and why the result still is not adopted
 //!
-//! 1. A `TimeMs(1000)` confirmation on a genuinely quiet machine, and the
-//!    four-way-unrolled forward pass that would make the time cost a
-//!    non-question (see `examples/value_bench.rs`).
-//! 2. A full-ladder round robin, to rule out opponent-specific exploitation.
-//! 3. More corpus games. The fit peaks at epoch 5 on 70,000 training games and
-//!    peaked at epoch 2 on 21,000, so this is variance-limited and the corpus
-//!    is the binding resource — not the architecture.
-//! 4. A `c` sweep for the pure variant, and a `weight` sweep for the blend.
-//!    Neither was touched; `0.5` was inherited, not tuned.
+//! Three of the four "next steps" above were then done. Two of the four
+//! caveats resolved *for* the model and one resolved sharply against it, and
+//! the honest summary is: **the pure learned leaf is far stronger than this
+//! spike measured, and it is still not a general strength improvement.**
+//!
+//! Every figure below is backed by a results directory under
+//! `arena/results/experiments/`, named in its row.
+//!
+//! ## Caveat 3 was the dominant term, not a footnote (`c` really was wrong)
+//!
+//! `Nodes(32000)`, two disjoint 300-game ranges (seeds 1 and 200001),
+//! paired-seed and seat-swapped, against `mcts-eval`'s default:
+//!
+//! | leaf | `c` | pooled Elo | 95% CI | ranges | results dir |
+//! | --- | --: | --: | --- | --- | --- |
+//! | `learned` | 0.1 | +126.7 | [+97.1, +156.4] | +127.8 / +125.2 | `p0-learned-c0.1` |
+//! | `learned` | **0.15** | **+140.1** | [+110.0, +170.2] | +163.4 / +117.4 | `p0-learned-c0.15` |
+//! | `learned` | 0.25 | +101.0 | [+72.1, +130.0] | +97.1 / +104.6 | `p0-learned-c0.25` |
+//! | `learned` | 0.5 | +57.2 | [+29.0, +85.3] | +55.9 / +58.3 | `spike-learned-pure` |
+//! | `learned_blend:0.5` | **0.5** | **+106.1** | [+77.0, +135.2] | +94.6 / +117.4 | `spike-learned-blend` |
+//! | `learned_blend:0.5` | 0.35 | +73.9 | [+45.5, +102.3] | +99.6 / +48.8 | `p0-learnedblend0.5-c0.35` |
+//! | `learned_blend:0.5` | 0.25 | +85.5 | [+56.9, +114.1] | +89.7 / +81.1 | `p0-learnedblend0.5-c0.25` |
+//!
+//! The pure-leaf sweep has a genuine **interior** optimum rather than running
+//! off the end of the range: `0.1` and `0.25` are both below `0.15`, so the
+//! best value is bracketed. `0.1` and `0.15` overlap heavily, so read the
+//! optimum as "somewhere in `[0.10, 0.15]`" rather than as `0.15` exactly;
+//! what is not in doubt is that the whole neighbourhood is 70-83 Elo above the
+//! `0.5` that was inherited.
+//!
+//! **The two halves of that sweep point opposite ways, and the asymmetry is
+//! the result.** For the blend, `c = c₀·(1 - w)` already prescribes `0.5` at
+//! `w = 0.5`, so there was nothing to retune and every perturbation *lost*
+//! 20-30 Elo — the formula is confirmed, not merely assumed. For the **pure**
+//! leaf there is no playout to shrink, the formula gives no guidance at all,
+//! and the `0.5` this spike inherited was leaving about **83 Elo** on the
+//! table — more than every other refinement in this crate combined.
+//! `CLAUDE.md`'s standing instruction that a change to what a leaf backs up
+//! must re-derive `c` was right, and the reason to state it this loudly is
+//! that the spike above read `0.5` as "close enough to leave alone".
+//!
+//! ## Caveat 1 partly resolved: it is not a high-budget artefact
+//!
+//! At the ladder's **production** budget, `Nodes(2000)`, two disjoint
+//! 400-game ranges (`p0-learned-nodes2000`): **+91.4 Elo [+66.5, +116.3]**,
+//! 503-297, SPRT `AcceptH1`, ranges +128.6 [+92.2, +165.0] and
+//! +55.9 [+21.5, +90.4] — **both cell CIs exclude zero**. The mechanism gate
+//! reads `Pass` on `civilian_share` (58.8% against a required 43.4%) and on
+//! `military_share` (14.9% against a permitted 19.5%), which is a better
+//! mechanism read than either spike run above obtained.
+//!
+//! ## Caveat 2 resolved *against* it: the gain is `mcts-eval`-specific
+//!
+//! This is the finding that matters most, and it is the reason nothing here
+//! is adopted. A mini round robin at `Nodes(2000)`, 400 games per pairing on
+//! the same two seed ranges, asking whether the candidate's margin over
+//! `mcts-eval` survives being measured *through a third party*:
+//!
+//! | comparison | Elo | 95% CI | share of direct |
+//! | --- | --: | --- | --: |
+//! | direct, cand − `mcts-eval` (800 games) | +91.5 ± 12.7 | — | 100% |
+//! | indirect via `mcts-uct` | **+25.5** ± 27.8 | [−28.9, +79.9] | 28% |
+//! | indirect via `alphabeta` | **+11.2** ± 36.1 | [−59.5, +82.0] | 12% |
+//!
+//! (`p2-cand-vs-mctsuct`, `p2-ctrl-vs-mctsuct`, `p2-cand-vs-alphabeta`,
+//! `p2-ctrl-vs-alphabeta`.) **Both indirect intervals contain zero.** A joint
+//! Bradley-Terry fit over all five records with `mcts-uct` pinned at 1000 —
+//! the same estimator `duels_arena::elo::fit_joint_elo` uses for anything
+//! ladder-shaped — puts the candidate at 1213.2 against `mcts-eval`'s 1139.3,
+//! a +74.0 gap where the direct match said +91.5. That residual is real
+//! intransitivity: no single consistent rating reproduces both.
+//!
+//! ### The mechanism, which is more specific than "it beats one opponent"
+//!
+//! The science-seeking behaviour *does* transfer. It just stops paying.
+//!
+//! | pairing | candidate's wins | opponent's wins |
+//! | --- | --- | --- |
+//! | cand vs `mcts-uct` | mil 38, **sci 89**, civ 171 → 298 | mil 8, sci 0, civ 88 → 101 |
+//! | `mcts-eval` vs `mcts-uct` | mil 34, **sci 10**, civ 237 → 287 | mil 16, sci 2, civ 88 → 113 |
+//!
+//! Against `mcts-uct` the learned leaf still converts 89 scientific
+//! supremacies where `mcts-eval` converts 10, so it genuinely *sees* the race
+//! — the offline per-head numbers (science AUC 0.955) were not a fluke. But
+//! its total is 298 against 287, because those extra science wins come almost
+//! entirely out of **its own civilian column** (171 against 237). It is
+//! **route substitution, not extra wins.**
+//!
+//! That reframes the direct +91.5 exactly. Against `mcts-eval` the same
+//! behaviour scores, because `mcts-eval` concedes 129 science games in 800 and
+//! wins **one** — it cannot defend the race at all, which is the
+//! miscalibration `science_calibration` documented. Against an opponent whose
+//! leaf is a real playout, and which therefore does see races, the learned
+//! leaf converts games it would have won by other means.
+//!
+//! **The `science_share` mechanism gate reads `Inconclusive` in all four
+//! round-robin pairings and never `Pass`** — always because the *control* wins
+//! too few science games to form a ratio (0, 2, 1 and 3, against an evidence
+//! floor of 5). That bound is, for now, not satisfiable against any opponent
+//! on this ladder; `civilian_share` and `military_share` `Pass` in all four.
+//!
+//! ## What this says about the leaf, as opposed to about the agent
+//!
+//! A leaf value can be a large, reproducible, correctly-measured Elo gain
+//! against one opponent and close to nothing against two others, without any
+//! bug and without any of the measurements being wrong. Reading the direct
+//! number as "the strength of the learned leaf" is the mistake, and a
+//! candidate-versus-champion match — which is exactly what
+//! `.github/workflows/ai-candidate.yml` runs — cannot detect it. **A third
+//! opponent is what distinguishes a stronger agent from a counter to a
+//! specific one**, and that is worth remembering the next time a leaf change
+//! measures well against the champion alone.
+//!
+//! ## The remaining next steps, reordered by what is now known
+//!
+//! 1. **Make the model zero-sum coherent.** It is not:
+//!    `tests/probability_coherence.rs` measures a mean
+//!    `|P(win|One) + P(win|Two) - 1|` of 0.0559 over 1,277 legal positions
+//!    (max 0.4814), and an opening probability mass of 0.9396 across 512
+//!    deals where it must be 1. An antisymmetric head would make the property
+//!    exact for free. This is the one known defect that is architectural
+//!    rather than data-limited, and it is cheap.
+//! 2. **A `TimeMs(1000)` confirmation**, still outstanding for the pure leaf.
+//!    Note the cost profile now *favours* it: with the four-way unroll
+//!    (`Summation::Unrolled4`, worth 1.41x) the learned leaf costs about
+//!    `0.35x` a playout, against the default blend's `1.08x` — so at equal
+//!    wall clock the pure learned leaf should run on the order of `3x` the
+//!    simulations, the opposite sign from `LearnedBlend`'s `0.74x`.
+//! 3. **More corpus games**, unchanged: the fit peaks at epoch 5 on 70,000
+//!    training games and at epoch 2 on 21,000, so this is variance-limited and
+//!    the corpus is the binding resource, not the architecture.
+//! 4. **Whatever is tried next, measure it against `mcts-uct` too**, for the
+//!    reason the section above gives.
 //!
 //! # Usage
 //!
@@ -295,7 +419,7 @@ pub mod features;
 pub mod net;
 
 pub use features::{features, NUM_FEATURES};
-pub use net::{Net, WeightsError, NUM_OUTCOMES};
+pub use net::{Net, Summation, WeightsError, NUM_OUTCOMES};
 
 use duels_core::scoring::{GameResult, VictoryKind};
 use duels_core::{GameState, Player};
