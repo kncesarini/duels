@@ -28,6 +28,12 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 rayon = "1"
 duels-strategy = { path = "../duels-strategy" }
+# Read by `examples/value_corpus_mv.rs`'s temperature-sampling: which action a
+# generation run actually plays is a search-shaping decision (like `tree.rs`'s
+# `ucb1`/`resolve_chance`), so it uses the portable, software-implemented
+# `pow` rather than the platform libm's, for the same cross-platform
+# corpus-regeneration determinism reason.
+libm = { workspace = true }
 
 [dev-dependencies]
 # Retired from the roster, kept as a test fixture: `age_start_policy`'s

@@ -65,23 +65,45 @@ LOSS = 3
 
 
 def load_matrix(path):
-    """Memory-map a feature matrix, returning (seed, label, search_value, x)."""
+    """Memory-map a feature matrix, returning (seed, label, search_value, x).
+
+    Reads both matrix format versions `examples/feature_dump.rs` has ever
+    written: **version 1** (`u32` seed; no `ply` column — every matrix that
+    predates this task) and **version 2** (`u64` seed, widened for
+    `value_corpus_mv.rs` format-v2 corpora whose seed ranges run well past
+    2**32; a `ply` column; `sv` may be `NaN` for a specialist-agent row — see
+    that file's module docs, "Specialist rows: `search_value` is `NaN`").
+    Existing v1 corpora must keep training exactly as before, which is why
+    this stays a version dispatch rather than a single reshaped dtype.
+    """
     with open(path, "rb") as f:
         head = f.read(HEADER_BYTES)
     if len(head) < HEADER_BYTES or head[:4] != MAGIC_MATRIX:
         raise SystemExit(f"{path} is not a feature_dump matrix")
     version, n_in, n_out = struct.unpack("<III", head[4:16])
     rows, games = struct.unpack("<QQ", head[16:32])
-    if version != 1:
-        raise SystemExit(f"{path} is version {version}, this tool reads 1")
-    dt = np.dtype(
-        [("seed", "<u4"), ("label", "<u4"), ("sv", "<f4"), ("x", "<f4", (n_in,))]
-    )
+    if version == 1:
+        dt = np.dtype(
+            [("seed", "<u4"), ("label", "<u4"), ("sv", "<f4"), ("x", "<f4", (n_in,))]
+        )
+    elif version == 2:
+        dt = np.dtype(
+            [
+                ("seed", "<u8"),
+                ("label", "<u4"),
+                ("sv", "<f4"),
+                ("ply", "<u4"),
+                ("x", "<f4", (n_in,)),
+            ]
+        )
+    else:
+        raise SystemExit(f"{path} is version {version}, this tool reads 1 or 2")
     m = np.memmap(path, dtype=dt, mode="r", offset=HEADER_BYTES)
     if len(m) != rows:
         raise SystemExit(f"{path} header claims {rows} rows, file holds {len(m)}")
     print(f"matrix   {path}")
     print(f"         {rows:,} rows from {games:,} games, {n_in} features, {n_out} outcomes")
+    print(f"         matrix format v{version}")
     return m, n_in, n_out, games
 
 
@@ -129,13 +151,53 @@ class Mlp:
             out.append(self.forward(x[i : i + batch])[1])
         return np.concatenate(out) if out else np.zeros((0, self.w2.shape[1]), np.float32)
 
-    def step(self, x, target, lr, weight_decay):
+    def step(self, x, target, lr, weight_decay, q=None, lam=1.0):
         """One Adam step on a minibatch. `target` is one-hot (softmax) or a
         column of 0/1 (sigmoid); the gradient of cross-entropy through either
-        output layer is the same `p - target`."""
+        output layer is the same `p - target`.
+
+        `q` and `lam` implement `--value-target-lambda`'s two-term loss
+        (decomposed/softmax model only; `q is None` is the plain
+        single-target path and is **exactly** the original code, unchanged,
+        so `lam = 1.0` / no `q` is bit-identical to training before this
+        option existed):
+
+            lam * CE4(p, onehot(z)) + (1 - lam) * BCE(1 - p_loss, q)
+
+        `1 - p_loss` is `duels_value::Dist::win_probability`'s aggregate win
+        mass (`p_military + p_science + p_civilian`), and `q` is the corpus's
+        recorded `search_value` (`NaN` for a specialist row, in which case
+        this row's second term is skipped entirely, per
+        `examples/feature_dump.rs`'s module docs -- the row still trains on
+        `lam * CE4` alone, not on a locally-renormalised `lam = 1.0`).
+        Model selection never uses this blended loss -- see `train`'s docs.
+        """
         n = len(x)
         h, p = self.forward(x)
-        dz = (p - target) / n
+        if q is None or lam >= 1.0:
+            # The exact original path: no blend to compute, nothing to mask.
+            dz = (p - target) / n
+        else:
+            ce = p - target
+            valid = ~np.isnan(q)
+            # `BCE(1 - p_loss, q)` is algebraically `BCE(p_loss, 1 - q)` (the
+            # standard symmetric identity `BCE(1-x, q) = BCE(x, 1-q)`), which
+            # is why this only ever needs the softmax's own `LOSS` column:
+            # `q_safe`'s value is thrown away by the `valid` mask below for
+            # every row it would otherwise touch.
+            q_safe = np.where(valid, q, 0.5)
+            t = 1.0 - q_safe
+            s = np.clip(p[:, LOSS], 1e-7, 1 - 1e-7)
+            # d/dz of BCE(s, t) composed with the softmax that produced `s`:
+            # `g = (s - t) / (1 - s)` on the `LOSS` logit, `-g * p_k` on every
+            # other logit (derived from the softmax Jacobian; see the PR
+            # description for the algebra).
+            g = (s - t) / (1.0 - s)
+            bce = np.empty_like(p)
+            bce[:, LOSS] = g
+            bce[:, :LOSS] = -g[:, None] * p[:, :LOSS]
+            bce *= valid[:, None]
+            dz = (lam * ce + (1.0 - lam) * bce) / n
         gw2 = h.T @ dz
         gb2 = dz.sum(axis=0)
         dh = dz @ self.w2.T
@@ -265,13 +327,18 @@ def print_calibration(rows):
 # ---------------------------------------------------------------------------
 
 
-def train(net, xtr, ttr, xva, yva_win, args, tag):
+def train(net, xtr, ttr, xva, yva_win, args, tag, qtr=None, lam=1.0):
     """Minibatch Adam with validation-log-loss early stopping.
 
-    Selection is on the *aggregate win probability*'s log loss for both model
-    kinds, deliberately: it is the only quantity the two share, so choosing the
-    decomposed model on its own four-way loss and the scalar model on its
-    binary loss would compare two differently-selected models."""
+    Selection is on the *aggregate win probability's log loss against the
+    real outcome* (`yva_win`, derived from `z`) for both model kinds and
+    **regardless of `lam`** -- never on the blended training loss. This is
+    deliberate and load-bearing, not just "the only quantity the two model
+    kinds share" (though it is that too): it is what keeps different `lam`
+    values comparable to each other and to `lam = 1.0` on one common,
+    training-loss-independent yardstick, exactly as `docs/roadmap.md`'s Tier
+    1-E calls for ("ablate lam by arena result / a shared offline yardstick,
+    not by each arm's own training objective")."""
     n = len(xtr)
     rng = np.random.default_rng(args.seed + 1)
     best = (float("inf"), None, -1)
@@ -284,7 +351,8 @@ def train(net, xtr, ttr, xva, yva_win, args, tag):
         t0 = time.time()
         for i in range(0, n, args.batch):
             idx = order[i : i + args.batch]
-            net.step(xtr[idx], ttr[idx], lr, args.weight_decay)
+            q_batch = qtr[idx] if qtr is not None else None
+            net.step(xtr[idx], ttr[idx], lr, args.weight_decay, q=q_batch, lam=lam)
         p = net.predict(xva)
         pw = win_prob(p)
         ll = log_loss(pw, yva_win)
@@ -335,8 +403,24 @@ def main():
         action="store_true",
         help="train the single-sigmoid baseline of identical shape and compare",
     )
+    ap.add_argument(
+        "--value-target-lambda",
+        type=float,
+        default=1.0,
+        help=(
+            "blend weight for the decomposed model's training target: "
+            "lam * CE4(p, onehot(z)) + (1 - lam) * BCE(aggregate_win_mass, search_value). "
+            "1.0 (the default) is today's exact behaviour, bit-identical -- see "
+            "docs/roadmap.md Tier 1-E. Rows with a NaN search_value (specialist-agent "
+            "rows; see examples/feature_dump.rs) always skip the second term, "
+            "regardless of lam. Model selection is unaffected by this option: it is "
+            "always validation log loss against the real outcome z."
+        ),
+    )
     ap.add_argument("--max-rows", type=int, default=0, help="0 = all; for a quick smoke run")
     args = ap.parse_args()
+    if not (0.0 <= args.value_target_lambda <= 1.0):
+        raise SystemExit("--value-target-lambda must be in [0, 1]")
 
     m, n_in, n_out, games = load_matrix(args.matrix)
     if args.max_rows:
@@ -364,6 +448,7 @@ def main():
     x = np.asarray(m["x"])
     xtr, xva, xte = x[tr], x[va], x[te]
     ytr, yva, yte = labels[tr], labels[va], labels[te]
+    sv_tr = np.asarray(m["sv"])[tr]
     sv_va, sv_te = np.asarray(m["sv"])[va], np.asarray(m["sv"])[te]
     del x, m
     print(f"loaded   {xtr.nbytes / 1e9:.2f} GB train in {time.time() - t0:.1f}s")
@@ -371,11 +456,21 @@ def main():
     yva_win = (yva != LOSS).astype(np.float64)
     yte_win = (yte != LOSS).astype(np.float64)
 
+    lam = args.value_target_lambda
+    n_nan_tr = int(np.isnan(sv_tr).sum())
+    if n_nan_tr:
+        print(
+            f"note     {n_nan_tr:,} / {len(sv_tr):,} training rows have no search_value "
+            f"(specialist rows) -- their second loss term is always skipped, "
+            f"regardless of --value-target-lambda"
+        )
+
     results = {
         "matrix": args.matrix,
         "games": int(games),
         "hidden": args.hidden,
         "features": int(n_in),
+        "value_target_lambda": lam,
         "split": "seed % 10: 0-6 train, 7-8 validation, 9 test",
         "rows": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum())},
         "games_in_split": {
@@ -388,20 +483,33 @@ def main():
 
     # --- the decomposed model, the one that ships -------------------------
     print()
-    print("training the four-way decomposed model")
+    print(f"training the four-way decomposed model (value-target-lambda={lam})")
     onehot = np.zeros((len(ytr), n_out), np.float32)
     onehot[np.arange(len(ytr)), ytr] = 1.0
     net = Mlp(n_in, args.hidden, n_out, args.seed, softmax=True)
     results["decomposed_history"], results["decomposed_best_epoch"] = train(
-        net, xtr, onehot, xva, yva_win, args, "4way"
+        net,
+        xtr,
+        onehot,
+        xva,
+        yva_win,
+        args,
+        "4way",
+        qtr=sv_tr.astype(np.float64),
+        lam=lam,
     )
 
     print()
     print("held-out (validation) aggregate win probability")
     pva = net.predict(xva)
+    va_has_sv = ~np.isnan(sv_va)
     results["val"] = {
         "decomposed": scalar_report("decomposed (sum of 3 heads)", win_prob(pva), yva_win),
-        "search_root_value": scalar_report("mcts-eval root value", sv_va.astype(np.float64), yva_win),
+        "search_root_value": scalar_report(
+            f"search root value ({int(va_has_sv.sum()):,}/{len(sv_va):,} rows)",
+            sv_va[va_has_sv].astype(np.float64),
+            yva_win[va_has_sv],
+        ),
     }
 
     # --- the single-scalar control ---------------------------------------
@@ -450,9 +558,14 @@ def main():
     print()
     print("test set (never used for selection)")
     pte = net.predict(xte)
+    te_has_sv = ~np.isnan(sv_te)
     results["test"] = {
         "decomposed": scalar_report("decomposed (sum of 3 heads)", win_prob(pte), yte_win),
-        "search_root_value": scalar_report("mcts-eval root value", sv_te.astype(np.float64), yte_win),
+        "search_root_value": scalar_report(
+            f"search root value ({int(te_has_sv.sum()):,}/{len(sv_te):,} rows)",
+            sv_te[te_has_sv].astype(np.float64),
+            yte_win[te_has_sv],
+        ),
     }
     if snet is not None:
         results["test"]["scalar"] = scalar_report(
