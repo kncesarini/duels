@@ -639,9 +639,14 @@ mod tests {
         // two "identities" get different budgets -- this is the primitive a
         // budget-scaling self-play sweep is built on (see
         // `examples/budget_lab.rs`).
-        let records =
-            play_paired_match_at_budgets("phased", "phased", &[1], Budget::Nodes(1), Budget::Nodes(2))
-                .unwrap();
+        let records = play_paired_match_at_budgets(
+            "phased",
+            "phased",
+            &[1],
+            Budget::Nodes(1),
+            Budget::Nodes(2),
+        )
+        .unwrap();
         assert_eq!(records.len(), 2);
         for r in &records {
             let _ = r.result;

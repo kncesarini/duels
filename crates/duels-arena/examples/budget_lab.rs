@@ -93,12 +93,18 @@ fn main() {
     let flags = parse_flags(&args);
 
     let agent = *flags.get("agent").unwrap_or(&"mcts-value");
-    let budget_a =
-        parse_budget(flags.get("budget-a").unwrap_or_else(|| panic!("--budget-a is required")))
-            .unwrap_or_else(|e| panic!("{e}"));
-    let budget_b =
-        parse_budget(flags.get("budget-b").unwrap_or_else(|| panic!("--budget-b is required")))
-            .unwrap_or_else(|e| panic!("{e}"));
+    let budget_a = parse_budget(
+        flags
+            .get("budget-a")
+            .unwrap_or_else(|| panic!("--budget-a is required")),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let budget_b = parse_budget(
+        flags
+            .get("budget-b")
+            .unwrap_or_else(|| panic!("--budget-b is required")),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     let games: u32 = flags
         .get("games")
         .unwrap_or(&"400")
@@ -108,16 +114,12 @@ fn main() {
     let label = flags
         .get("label")
         .unwrap_or_else(|| panic!("--label is required (used for the output directory)"));
-    let out_dir = PathBuf::from(flags.get("out-dir").unwrap_or(&"arena/results/experiments"))
-        .join(label);
+    let out_dir =
+        PathBuf::from(flags.get("out-dir").unwrap_or(&"arena/results/experiments")).join(label);
 
     let sprt_params = SprtParams {
-        elo0: flags
-            .get("sprt-elo0")
-            .map_or(0.0, |v| v.parse().unwrap()),
-        elo1: flags
-            .get("sprt-elo1")
-            .map_or(20.0, |v| v.parse().unwrap()),
+        elo0: flags.get("sprt-elo0").map_or(0.0, |v| v.parse().unwrap()),
+        elo1: flags.get("sprt-elo1").map_or(20.0, |v| v.parse().unwrap()),
         alpha: flags.get("alpha").map_or(0.05, |v| v.parse().unwrap()),
         beta: flags.get("beta").map_or(0.05, |v| v.parse().unwrap()),
     };
