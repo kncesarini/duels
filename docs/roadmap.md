@@ -139,12 +139,140 @@ generation at `elo1 = 10` (per `docs/conventions.md`'s sample-size rule) plus 80
 games vs. each panel member, with the existing mechanism gate. Every generation's
 numbers are then comparable to every other generation's.
 
-**Then run it**: generate ~100k games with generation *k* (today: ~2.2 core-hours
-at ~1.1 core-seconds/game measured; ~35 minutes once Tier 0-A lands), train
+**Then run it**: generate ~100k games with generation *k* (~2.2 *wall* hours at
+~1.1 core-seconds/game on the 14-core workstation, correcting a units error in
+an earlier draft of this plan; ~35 minutes once Tier 0-A lands), train
 (~3 minutes), run the battery, promote or stop. Three generations is enough to
 see whether the gain per generation is holding (~+30 Elo, matching the one
 generation already measured) or decaying toward zero. Stop rule: two consecutive
 generations landing within ±10 Elo of the previous one against the frozen panel.
+
+### Tier 1 design (resolved 2026-09-11, a second architect pass)
+
+The four items above were re-planned to implementation-readiness once a new
+fact arrived: **one of the incoming Raspberry Pis has an external 2TB drive**,
+now mounted over NFS at `/Volumes/storage` from `pi2.local:/mnt/storage`. That
+pass also found something urgent: **`v2.bin`'s actual training corpus (40k
+`mcts-value` self-play games + 15k `mcts-eval` insurance games) no longer
+exists anywhere** — `arena/corpus/` is gitignored and got overwritten before
+anyone archived it. The 2TB drive exists specifically so this doesn't happen
+again, and backing up whatever's still on disk (the `v1.bin` corpus, both
+weights files) to `/Volumes/storage/duels/` was the first action taken, ahead
+of any code.
+
+**What the 2TB drive is for, and isn't.** Archival, not compute and not a
+database — sealed corpus shards from every generation and every generating
+machine, every generation's weights/training-metrics/battery-results, kept
+permanently (`arena/results/` and `.github` artifact retention are both
+ephemeral today). Explicitly ruled out: hosting a real database off it — SQLite
+over NFS has unsafe locking, and nothing here needs a query a few hundred JSON
+manifests can't answer already. Layout: `corpus/<label>/`, `weights/`,
+`generations/<id>/`, `archive-meta/` (see the drive's own `README.md`).
+
+**D, resolved.** Sampling lives in the **corpus generator**
+(`crates/duels-arena/examples/value_corpus_mv.rs`), not the agent — the agent
+builds a fresh tree per `choose()` with no state carried between moves, so the
+generator can play a different action than the agent returned with no side
+effects. Temperature: `visits^(1/τ)` at τ=1 for the first **14 plies** (roughly
+the wonder draft plus the first ~6 Age I decisions — the window where
+strategic direction actually gets set), argmax after; a decay schedule was
+considered and rejected for now (no evidence to tune it against). **25% of
+games get one specialist seat**, split evenly across
+`objective=science/military/civilian`; specialists always play argmax (their
+whole point is already a different target, sampling them would just add noise
+to an already-narrow signal), every generalist seat is temperature-sampled.
+**A real trap to avoid**: role/seat assignment must come from a hash of the
+seed (e.g. splitmix64 of `seed ^ ROLE_SALT`), never from `seed % 10` or seed
+parity — `train_value.py`'s existing train/val/test split is `seed % 10`, and
+a parity-based seat rule would silently put every specialist game in one
+split bucket. Corpus format gains a `role: u8` and `sampled: bool` per
+decision, and a manifest-level `sampling`/`roles`/`role_salt` block.
+`--verify`'s current "non-argmax is an error" assertion is replaced with five
+checks: unsampled decisions are still argmax; sampled decisions are within the
+window and never pick a zero-visit action; specialists never sample; a
+specialist decision is really on that specialist's assigned seat; and
+calibration is reported **per role** (a specialist's recorded value is
+`P(mover wins by its target kind)`, not a win probability — mixing it into
+`z`/`q_root` handling anywhere downstream without accounting for this is a
+correctness bug waiting to happen, not a subtlety).
+
+**E, resolved.** `q_root` already exists on every training row today with no
+new data collection needed (it's `RootStats.value`, the root's visit-weighted
+mean, already written to the corpus and read by `train_value.py` today purely
+as a held-out yardstick). Because the value head is a 4-way softmax, not a
+single win/loss scalar, the blend is implemented as a **two-term loss**
+(`λ·CE₄(p, onehot(z)) + (1−λ)·BCE(aggregate_win_mass, q_root)`), not a naive
+mixed target — there's no honest per-kind decomposition of `q_root` to blend
+against `z` with directly. Model selection during training stays on validation
+log loss against the real outcome `z`, never on the blended objective, so
+`λ`'s effect is judged from arena results, not from an offline metric biased
+toward whatever `λ` was used to fit it. **λ constant across a training run**,
+not phase-varying — the roadmap's original framing (weight `q_root` less
+early in a game where it's "noisier") turns out to argue backwards: `z` is the
+noisier label early on (a single Bernoulli outcome ~60 plies from resolution),
+while `q_root` is already the smoother signal there. **D and E are ablated
+separately**, not together, specifically to avoid conflating "did exploration
+help" with "did the training-target change help": generate once with
+exploration+specialists (arm B), train it twice with `λ ∈ {1.0, 0.5}` (arms B
+and C — cheap, ~3 minutes each from the same corpus), and keep a pure-argmax
+control (arm A) to isolate D's effect on its own. Differences under ~20 Elo
+won't be resolvable at a 2,000-game battery size — say so rather than
+over-reading a close result.
+
+**F, resolved.** A committed JSON index
+(`crates/duels-value/weights/generations.json`) plus a directory-of-manifests
+convention on the archive — not a database, matching how this project already
+does everything else (`experiment`'s `<label>/summary.json`, corpus
+`.manifest.json` sidecars, the generated-but-committed `arena/leaderboard.json`).
+Each entry: corpus manifest (shards, generator config, seed ranges, sha256),
+training args/metrics, the full promotion battery result, the golden-table
+values, and a `status` (`promoted`/`candidate`/`rejected`). `golden.rs` is
+re-pointed at this registry rather than a single hand-pinned hash: a retrain
+that isn't registered still fails a test in one line (same spirit as today,
+without the friction of hand-editing a table on every iteration), and — new —
+every *frozen* generation still in the repo for the reference panel gets its
+own golden check too, which the current single-table design can't express.
+**The promotion decision stays a human call via PR**, exactly as it is today
+for `v1`→`v2`; `leaderboard::CHAMPION` is untouched by any of this — it names
+the agent (`mcts-value`), not the weights generation, and a promotion changes
+`duels-value`'s default the same way `v2`'s promotion already did.
+
+**G, resolved, with one adjustment.** Drop `alphabeta` from the frozen
+reference panel (at its current ~87% win rate against the champion, its
+confidence interval is too wide to detect a 20-Elo change) and track the
+frozen `v2` champion itself at two budgets instead — `nodes:32000` (a strong,
+same-family yardstick) and `nodes:2000` (the most interpretable "cumulative
+gain since v2" series, since it's the direct ancestor at equal budget). Full
+panel: frozen `v2`@`nodes:32000` (800 games), frozen `v2`@`nodes:2000` (1,000
+games), `mcts-eval`@`nodes:8000` frozen at its current tuning (800 games,
+since `duels-eval` is retuned in its own numbered rounds and would otherwise
+silently move the yardstick), `mcts-uct`@`nodes:8000` (800 games, the
+non-learned/library-free route-substitution detector). Promotion battery per
+generation: the panel above plus 2,000 games vs. the immediately previous
+generation at `elo1=10` with the existing mechanism gate — that head-to-head
+is what actually gates promotion; the panel's job is catching drift and
+route-substitution across generations, which its smaller per-cell size is
+still precise enough to do. `ai-candidate.yml`/`nightly-arena.yml` need no
+changes; the battery runs separately (on the fleet, once it exists).
+
+**The fleet's role, concretely.** The Pi with the 2TB drive becomes an NFS
+archive host (already true — `/Volumes/storage`); the other two Pis just write
+sealed, immutable corpus shards into it with **no coordination protocol**:
+static seed partitioning by generation/host/counter keeps every machine's
+range disjoint without any handshake, and a shard is only "real" once an
+atomic rename has sealed it, so a mid-write crash or a generation switchover
+can't produce a half-written or ambiguous shard. The workstation trains from a
+**fixed, sha256-verified list** of sealed shards (never "whatever's in the
+directory right now"), which is what makes "the fleet keeps generating while
+the workstation trains" safe without any locking. The promotion battery also
+runs on the fleet (one cell per Pi, pooled afterward), freeing the workstation
+and the project owner's attention from a task that needs neither.
+
+**First concrete implementation step** (beyond the corpus/weights backup
+already done): `value_corpus_mv.rs` format v2 (the D/E changes above) and
+`feature_dump.rs`'s matching NaN-for-specialist-rows/ply-column/u64-seed
+update — this is the long pole everything else in Tier 1 depends on having
+real data to work with.
 
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
