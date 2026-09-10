@@ -221,6 +221,17 @@ pub struct Config {
     /// rather than being deleted (`mcts-value:value_sum=serial`) and why
     /// [`Config::describe`] records which order ran.
     pub value_summation: duels_value::Summation,
+    /// Pin the learned leaf to a specific frozen `duels-value` weights
+    /// generation instead of `duels_value::default_net()`.
+    ///
+    /// `None` (the default) reads the live embedded weights, same as every
+    /// other field on this struct that is not itself an ablation control.
+    /// `Some(bytes)` is an A/B-testing device with the identical purpose as
+    /// [`Config::eval_override`] one field up: it lets a `duels-value` retrain
+    /// be measured against its predecessor in one binary, one process, one
+    /// `duels-arena match`, rather than requiring two separately-built
+    /// binaries. `crate::WEIGHTS_V1` is the frozen copy this exists for.
+    pub value_weights_override: Option<&'static [u8]>,
 }
 
 impl Default for Config {
@@ -260,6 +271,7 @@ impl Default for Config {
             leaf: LeafValue::Learned,
             eval_override: None,
             value_summation: duels_value::Summation::default(),
+            value_weights_override: None,
         }
     }
 }
@@ -367,7 +379,10 @@ impl Config {
             // "learned" would make two results files indistinguishable.
             true => format!(
                 ";value={}/{}",
-                duels_value::default_weights_id(),
+                match self.value_weights_override {
+                    Some(bytes) => duels_value::weights_id(bytes),
+                    None => duels_value::default_weights_id().to_string(),
+                },
                 self.value_summation.name()
             ),
             false => String::new(),
@@ -550,10 +565,14 @@ impl Tree {
             .leaf
             .needs_eval_root()
             .then(|| duels_eval::Root::new(&state, state.current_player(), cfg.eval_config()));
-        let learned_net = cfg
-            .leaf
-            .needs_learned_net()
-            .then(|| duels_value::default_net().with_summation(cfg.value_summation));
+        let learned_net = cfg.leaf.needs_learned_net().then(|| {
+            match cfg.value_weights_override {
+                Some(bytes) => duels_value::Net::from_bytes(bytes)
+                    .expect("a pinned weights override matches this build's features"),
+                None => duels_value::default_net(),
+            }
+            .with_summation(cfg.value_summation)
+        });
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,

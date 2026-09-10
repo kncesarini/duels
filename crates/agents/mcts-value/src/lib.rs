@@ -401,6 +401,23 @@ pub use leaf::LeafValue;
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode, RootStats};
 
+/// A frozen historical `duels-value` weights generation, embedded for A/B
+/// measurement against the live default via
+/// [`Config::value_weights_override`] — the identical convention
+/// `duels-eval`'s `Config::v1()..v9()` establishes one layer down, applied to
+/// a fitted artefact instead of a hand-written one. Read from the crate next
+/// door rather than duplicated: `docs/conventions.md`'s "agent crates are
+/// self-contained" rule is about not depending on another *agent* crate, and
+/// `duels-value` is a library below the agents, exactly like `duels-eval`
+/// (whose generations every agent crate that uses it already embeds this
+/// same way via `include_bytes!` inside its own `Cargo.toml`-declared
+/// dependency).
+///
+/// Exists purely so "retrained weights vs the weights they replace" is one
+/// `duels-arena match --agent-a mcts-value --agent-b mcts-value:weights=v1`
+/// away in one process, rather than requiring two separately-built binaries.
+pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
+
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
 ///

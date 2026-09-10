@@ -843,6 +843,26 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                     }
                 };
             }
+            // Pins the learned leaf to a frozen historical `duels-value`
+            // weights generation instead of the live embedded default — see
+            // `duels_agent_mcts_value::Config::value_weights_override`. The
+            // whole point is measuring a retrain against its predecessor in
+            // one process (`duels-arena match --agent-a mcts-value
+            // --agent-b mcts-value:weights=v1`), so `v1` is the only
+            // generation kept; a later retrain that wants its own frozen
+            // predecessor names it the same way once one exists.
+            "weights" => {
+                cfg.value_weights_override = match v {
+                    "default" | "live" | "current" => None,
+                    "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown weights generation \"{other}\" (expected \
+                             \"default\" or \"v1\")"
+                        ))
+                    }
+                };
+            }
             "value_sum" | "value_summation" => {
                 cfg.value_summation = match v {
                     "serial" => duels_value::Summation::Serial,

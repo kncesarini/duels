@@ -479,13 +479,18 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// Produced by `tools/train_value.py` from a feature dump of
-/// `arena/corpus/mcts-eval-nodes2000.jsonl`; the crate docs record the exact
-/// commands, the seed split and the held-out metrics. Embedding it
-/// rather than loading a file at run time keeps this crate a pure function of
-/// its inputs and keeps an agent that uses it reproducible from its binary
-/// alone.
-const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v1.bin");
+/// `v2.bin`, produced by `tools/train_value.py` from a feature dump of a
+/// **mixed** corpus: 40,000 games of `mcts-value` self-play
+/// (`arena/corpus/mcts-value-nodes2000.jsonl`, via `value_corpus_mv.rs`) plus
+/// a fresh 15,000-game `mcts-eval` insurance batch
+/// (`arena/corpus/mcts-eval-insurance-nodes2000.jsonl`), merged with
+/// `tools/merge_feature_matrices.py`. `v1.bin` (the original, trained
+/// entirely on 100,000 games of `mcts-eval` self-play) is kept in the same
+/// directory for reference; the crate docs record both fits' commands, seed
+/// splits and held-out metrics side by side. Embedding it rather than loading
+/// a file at run time keeps this crate a pure function of its inputs and
+/// keeps an agent that uses it reproducible from its binary alone.
+const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v2.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
 /// the player a position is being evaluated for**.
@@ -633,21 +638,38 @@ pub fn default_net() -> Net {
 /// lines and this is a build-artifact fingerprint, not a security boundary.
 pub fn default_weights_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in DEFAULT_WEIGHTS {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-        let net = default_net();
-        format!(
-            "{}x{}x{}/{:08x}",
-            NUM_FEATURES,
-            net.hidden_width(),
-            NUM_OUTCOMES,
-            (h ^ (h >> 32)) as u32
-        )
-    })
+    ID.get_or_init(|| weights_id(DEFAULT_WEIGHTS))
+}
+
+/// [`default_weights_id`]'s computation, generalized to arbitrary weight
+/// bytes rather than only the embedded default.
+///
+/// For a consumer that pins an alternate, frozen weights generation for A/B
+/// measurement against the live default (the identical device
+/// `mcts-eval`-family agents use for `duels_eval::Config` — see
+/// `duels-agent-mcts-value`'s `Config::value_weights_override`): the
+/// resulting `AgentSpec` needs *this* generation's identity in it, not the
+/// binary's embedded default's, or two results files from either side of a
+/// retrain would both claim the same weights.
+///
+/// Not cached, unlike [`default_weights_id`]: a caller pinning a frozen
+/// generation already holds it as a `&'static` slice, so paying the hash
+/// again per call is a few dozen bytes' worth of work, not worth a global
+/// cache keyed on byte identity.
+pub fn weights_id(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    let net = Net::from_bytes(bytes).expect("the weights bytes match this build's features");
+    format!(
+        "{}x{}x{}/{:08x}",
+        NUM_FEATURES,
+        net.hidden_width(),
+        NUM_OUTCOMES,
+        (h ^ (h >> 32)) as u32
+    )
 }
 
 #[cfg(test)]
