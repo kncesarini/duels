@@ -180,7 +180,9 @@
 //!
 //! Both learned leaves were measured with `duels-arena experiment` against
 //! `mcts-eval`'s own default (`LeafValue::Blend { weight: 0.5 }`, `c = 0.5` —
-//! the reigning champion, not `mcts-uct`), paired-seed and seat-swapped, at
+//! the reigning champion when this was measured, not `mcts-uct`; the learned
+//! leaf has since become `mcts-value` and taken that title), paired-seed and
+//! seat-swapped, at
 //! `Nodes(32000)`, over two **disjoint** seed ranges of 300 games each.
 //! `Nodes(32000)` is a load-insensitive stand-in for the production
 //! `TimeMs(1000)`; a fixed node count cannot be corrupted by a busy machine,
@@ -425,7 +427,9 @@
 //! `.github/workflows/ai-candidate.yml` runs — cannot detect it. **A third
 //! opponent is what distinguishes a stronger agent from a counter to a
 //! specific one**, and that is worth remembering the next time a leaf change
-//! measures well against the champion alone.
+//! measures well against the designated champion alone — all the more so now
+//! that the champion *is* this leaf, so an `ai-candidate` run measures one
+//! learned-leaf agent against another.
 //!
 //! ## The remaining next steps, reordered by what is now known
 //!
@@ -441,9 +445,10 @@
 //!    the corpus is the binding resource, not the architecture.
 //! 3. **Whatever is tried next, measure it against `mcts-uct` too**, for the
 //!    reason the section above gives. The strength this crate can demonstrate
-//!    against the champion is now well established at both budget types; what
-//!    it has never demonstrated is strength against a third party, and that is
-//!    the only measurement that would justify adopting any of it.
+//!    against `mcts-eval` is now well established at both budget types; what
+//!    it has never demonstrated is strength against a third party, and that
+//!    remains the measurement that would turn a targeted counter into a
+//!    general improvement.
 //!
 //! # Usage
 //!

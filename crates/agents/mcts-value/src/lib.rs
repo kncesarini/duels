@@ -6,10 +6,14 @@
 //! # Read this before you read the Elo numbers
 //!
 //! This agent measures very strongly against [`mcts-eval`][mcts_eval], the
-//! ladder's champion: `+140.1` Elo at `Nodes(32000)`, `+91.4` at the ladder's
-//! production `Nodes(2000)`, `+140.6` at `TimeMs(1000)`, reproduced on disjoint
-//! seed ranges at every one of those budgets. Those numbers are real,
-//! reproducible, and recorded below with the directory each came from.
+//! ladder's previous champion: `+140.1` Elo at `Nodes(32000)`, `+91.4` at the
+//! ladder's production `Nodes(2000)`, `+140.6` at `TimeMs(1000)`, reproduced on
+//! disjoint seed ranges at every one of those budgets. Those numbers are real,
+//! reproducible, and recorded below with the directory each came from. The
+//! production-budget figure was re-measured after `duels-core`'s chance model
+//! was fixed to condition on the public guild mask (R-105, R-110, PR #61) and
+//! holds at `+84.9` `[+60.1, +109.7]` over 800 games —
+//! `arena/results/experiments/post-r105r110-confirm/`.
 //!
 //! **They are not a general strength improvement, and this crate is not
 //! claiming to be one.** A round robin that measures the same margin *through a
@@ -24,13 +28,26 @@
 //! general. The "What it does not measure" section below is the load-bearing
 //! one; do not quote the headline numbers without it.
 //!
-//! It is registered and playable so that the measurement is reproducible in one
-//! binary and so a human can play it. It is deliberately **not** on
-//! `duels_arena::leaderboard::LADDER` and it is **not**
-//! `duels_arena::leaderboard::CHAMPION`. Putting it on either is the project
-//! owner's decision on its own evidence, and on this evidence the honest
-//! reading is "strength against `mcts-eval` is thoroughly established; strength
-//! against a third party has never been shown".
+//! This agent shipped *registered but deliberately unrated* — playable and
+//! spec-addressable, off `duels_arena::leaderboard::LADDER` — precisely
+//! because of the paragraph above, with promotion left as the project owner's
+//! decision on its own evidence. **That decision has since been made: it is on
+//! the ladder and it is `duels_arena::leaderboard::CHAMPION`.** Nothing in the
+//! evidence changed when the status did, so the honest reading is unchanged
+//! too: *strength against `mcts-eval` is thoroughly established; strength
+//! against a third party has never been shown.* Two things follow, and both
+//! matter more now that this is the bar `ai-candidate` measures against:
+//!
+//! * A candidate that beats this agent has cleared a real bar. A candidate
+//!   that *loses* to it may only have failed to counter one specific leaf —
+//!   check the victory-kind breakdown before reading such a result as weakness.
+//! * Its published rating is a joint fit over records that are not transitive,
+//!   so the gap between it and `mcts-eval` on the board reads smaller than the
+//!   head-to-head number. Both are correct and they answer different questions.
+//!
+//! `duels_arena::leaderboard::CHAMPION`'s own docs carry the same caveat, so a
+//! reader who arrives from the leaderboard rather than from here still meets
+//! it.
 //!
 //! # Why this is its own crate rather than a flag on `mcts-eval`
 //!
@@ -234,8 +251,8 @@
 //! calibration error in one specific opponent.** The error is not a surprise —
 //! `duels-eval`'s `science_calibration` (PR #57) measured and documented it
 //! before this line of work started — and exploiting it is a legitimate,
-//! reproducible Elo gain against the current champion. It is just not evidence
-//! of a better player.
+//! reproducible Elo gain against `mcts-eval`. It is just not evidence of a
+//! better player.
 //!
 //! ## The model itself is known to be incoherent
 //!
@@ -717,8 +734,8 @@ mod tests {
     /// Inherited from `mcts-eval`, where the same test pins that agent's
     /// deliberate live-tracking design, and it matters just as much here for a
     /// different reason: a control that froze the evaluation would stop being
-    /// the champion the moment a `duels-eval` round landed, and every Elo
-    /// number in the crate docs is measured against it.
+    /// `mcts-eval` the moment a `duels-eval` round landed, and every Elo
+    /// number in the crate docs is measured against that agent.
     ///
     /// Note what this does *not* say about the default path, which reads no
     /// evaluation at all — `tree::tests::the_evaluation_cannot_reach_the_default_leaf`

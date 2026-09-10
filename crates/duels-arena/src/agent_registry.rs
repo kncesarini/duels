@@ -6,13 +6,12 @@
 //! arm each, once they exist. Mirrors `duels-server`'s `room::make_agent`.
 //!
 //! Registration here is what makes an agent **constructible**: it is what
-//! `agent_spec` bare names resolve through. It is *not* by itself what puts an
-//! agent on the leaderboard —
+//! `agent_spec` bare names resolve through. It is also, again, exactly what
+//! puts an agent on the leaderboard —
 //! `leaderboard::tests::the_ladder_is_exactly_the_registered_agents` pins
-//! [`KNOWN_AGENTS`] and `leaderboard::LADDER` to each other **up to
-//! `leaderboard::REGISTERED_OFF_LADDER`**, the short list of agents that are
-//! deliberately constructible without being rated. Read that constant's docs
-//! before adding a name to it.
+//! [`KNOWN_AGENTS`] and `leaderboard::LADDER` equal, with no exception list.
+//! So adding an arm below adds a rated agent and ten-odd nightly games, and
+//! the two lists have to be edited together.
 //!
 //! `random`, `greedy`, `greedy-ev` and `strategist` were retired from the
 //! roster and so are absent here; `duels-agent-random`'s crate survives as a
@@ -24,8 +23,7 @@ use duels_agents_api::Agent;
 /// Every agent name this build of `duels-arena` knows how to construct, for
 /// `--help` text and error messages.
 ///
-/// Not every name here is on `leaderboard::LADDER`; see
-/// `leaderboard::REGISTERED_OFF_LADDER`.
+/// Kept equal to `leaderboard::LADDER` by a test in that module.
 pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval", "mcts-value"];
 
 /// Construct the named `Agent`, seeded from `seed`.
@@ -90,23 +88,24 @@ mod tests {
     /// `c = 0.15`, with the weights identity recorded so a results file says
     /// which network produced it.
     ///
-    /// Being here and **not** on `leaderboard::LADDER` is the deliberate
-    /// state: the agent is registered so its measurement is reproducible in
-    /// one binary and so it is playable, and unrated because its margin over
-    /// `mcts-eval` does not survive being measured through a third party. See
-    /// its crate docs and `leaderboard::REGISTERED_OFF_LADDER`.
+    /// The bare name is what `leaderboard::LADDER` and `duels-server`
+    /// construct, and it is now also `leaderboard::CHAMPION`, so a config
+    /// drift here would silently re-define both the published ratings and the
+    /// `ai-candidate` bar. Hence asserting the parameters and not just the
+    /// name. Read `CHAMPION`'s docs for the caveat that comes with that
+    /// promotion.
     #[test]
-    fn mcts_value_is_registered_but_deliberately_unrated() {
+    fn mcts_value_is_registered_at_its_measured_config() {
         let agent = make_agent("mcts-value", 1).expect("mcts-value should be a known agent");
         assert_eq!(agent.spec().name, "mcts-value");
         assert!(agent.spec().params.contains("leaf=learned"));
         assert!(agent.spec().params.contains("c=0.150"));
         // The provenance record: which weights, and which summation order.
         assert!(agent.spec().params.contains("value="));
-        assert!(!crate::leaderboard::LADDER
+        assert!(crate::leaderboard::LADDER
             .iter()
             .any(|e| e.agent == "mcts-value"));
-        assert!(crate::leaderboard::REGISTERED_OFF_LADDER.contains(&"mcts-value"));
+        assert_eq!(crate::leaderboard::CHAMPION.agent, "mcts-value");
     }
 
     #[test]

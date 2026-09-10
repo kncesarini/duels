@@ -18,9 +18,10 @@ duels-value = { path = "../duels-value" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 duels-agent-mcts-eval = { path = "../agents/mcts-eval" }
-# Registered and constructible, deliberately NOT on `leaderboard::LADDER`:
-# measured strongly against `mcts-eval` and level with it through any third
-# party. See its crate docs and `leaderboard::REGISTERED_OFF_LADDER`.
+# On `leaderboard::LADDER` and the current `leaderboard::CHAMPION`. Measured
+# strongly against `mcts-eval` and much less so through any third party, which
+# is a caveat on how to read its rating rather than a reason it is absent —
+# see that constant's docs and this agent's crate docs.
 duels-agent-mcts-value = { path = "../agents/mcts-value" }
 serde = { workspace = true }
 serde_json = { workspace = true }

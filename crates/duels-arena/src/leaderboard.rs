@@ -12,10 +12,10 @@
 //!
 //! [`LADDER`] names the agents tracked and the budget each is *understood* to
 //! play at: `Nodes(1)` for `phased`, the one remaining 1-ply agent, and
-//! `Nodes(2000)` for the three search agents, matching how every ladder
+//! `Nodes(2000)` for the four search agents, matching how every ladder
 //! comparison in this project's history has been run.
 //!
-//! The ladder is deliberately four agents. `strategist` retired first (its
+//! The ladder is deliberately five agents. `strategist` retired first (its
 //! research question, whether `duels-strategy`'s prior helps `greedy-ev`, was
 //! answered statistically indistinguishable), and then `random`, `greedy` and
 //! `greedy-ev` — the whole 1-ply floor tier below `phased` — went for measured
@@ -23,7 +23,8 @@
 //! three inside a 200-Elo band scoring 0.0%-0.5% against every top-half agent,
 //! so they cost the nightly fifteen of its twenty-one pairings and told it
 //! nothing it did not already know. See `docs/milestones.md`; that retirement
-//! is also what moved [`ANCHOR_AGENT`].
+//! is also what moved [`ANCHOR_AGENT`]. `mcts-value` then joined, taking the
+//! round robin from `C(4, 2)` = 6 pairings back to `C(5, 2)` = 10.
 //!
 //! `duels-arena match` grants both sides the same budget, so a mixed pairing
 //! (`phased` vs `mcts-uct`, say) looks at first like it cannot honour both
@@ -41,17 +42,30 @@
 //! that mixed defaults and variants would invite reading a within-agent
 //! ablation as a between-agent ranking.
 //!
-//! # Registered is not the same as rated
+//! # Registered is the same as rated, again
 //!
-//! Being constructible through `agent_registry` no longer implies being on
-//! [`LADDER`]. [`REGISTERED_OFF_LADDER`] is the explicit list of agents that
-//! are runnable, playable and spec-string addressable while carrying no
-//! rating, and `tests::the_ladder_is_exactly_the_registered_agents` still pins
-//! the two lists to each other up to it — so nothing falls off the board
-//! silently, and every exception has to justify itself in that constant's
-//! docs. `mcts-value` is the current entry, and the reason is worth reading
-//! there: a large, reproducible margin over one specific opponent is not a
-//! position in a transitive ranking.
+//! Being constructible through `agent_registry` means being on [`LADDER`]:
+//! `tests::the_ladder_is_exactly_the_registered_agents` pins the two lists
+//! equal, so an agent can neither fall off the board nor appear on it by
+//! accident.
+//!
+//! That equality briefly had an exception. When `mcts-value` first landed it
+//! was registered and unrated, held there by a `REGISTERED_OFF_LADDER`
+//! constant, because its large margin over `mcts-eval` had been measured
+//! against exactly one opponent and did not survive a third party — and a
+//! rating asserts a position in a *transitive* ordering. Rating it was left as
+//! the project owner's decision on its own evidence, and that decision has
+//! since been made: it is on the ladder and it is [`CHAMPION`]. The escape
+//! hatch had no other member, so it is gone rather than left empty; a future
+//! agent that needs it should reintroduce it with its own justification, which
+//! is what its docs asked for anyway.
+//!
+//! What that history leaves behind is a live caveat on how to read this board,
+//! not a footnote: `mcts-value`'s strength over `mcts-eval` is **route
+//! substitution against one opponent's documented blind spot**, so a joint fit
+//! that includes both of them is doing more interpolation between
+//! non-transitive records than the ladder's other rows require. [`CHAMPION`]'s
+//! docs carry the numbers.
 //!
 //! # The champion
 //!
@@ -102,47 +116,16 @@ pub const LADDER: &[LadderEntry] = &[
         agent: "mcts-eval",
         budget: "nodes:2000",
     },
+    // Also a search, at the same `Nodes(2000)` production budget as the three
+    // above — and the current `CHAMPION`. Default config: `c = 0.15` with the
+    // learned leaf, which is what the bare name builds. Read `CHAMPION`'s docs
+    // before reading this row as a uniform strength ranking; the margin that
+    // put it here is specific to one opponent.
+    LadderEntry {
+        agent: "mcts-value",
+        budget: "nodes:2000",
+    },
 ];
-
-/// Agents that `agent_registry` can construct but that are deliberately
-/// **not** on [`LADDER`]: constructible, playable, spec-string addressable,
-/// and unrated.
-///
-/// # Why this list exists at all
-///
-/// Registration and rating used to be the same act — `KNOWN_AGENTS` and
-/// [`LADDER`] were pinned equal to each other, and a retired agent was deleted
-/// from both. That equality was a good default and it is kept: this list is
-/// the *explicit, documented* exception, and
-/// `tests::the_ladder_is_exactly_the_registered_agents` still holds up to it,
-/// so an agent cannot drift off the board by accident.
-///
-/// An entry belongs here when an agent should be **runnable but not
-/// ranked** — typically because a measurement is real but does not support a
-/// ranking claim. Putting an agent on [`LADDER`] asserts that its rating is a
-/// meaningful position in a transitive ordering; an agent whose strength is
-/// established against exactly one opponent has not earned that.
-///
-/// # The current entry
-///
-/// `mcts-value` measures `+91.4` Elo `[+66.5, +116.3]` over 800 games against
-/// [`CHAMPION`] at [`ROUND_ROBIN_BUDGET`], and larger at higher budgets. It is
-/// off the ladder anyway, because a mini round robin found that margin does
-/// not survive a third party: 28% of it through `mcts-uct` and 12% through
-/// `alphabeta`, both intervals containing zero, with a joint Bradley-Terry fit
-/// over all five records putting the pair 74 points apart where the direct
-/// match says 91.5. The mechanism is route substitution against one opponent's
-/// documented science-value miscalibration rather than added strength — that
-/// agent's crate docs have the whole measurement, including the victory-kind
-/// table that says so.
-///
-/// Rating it would put a number on the board that means "beats `mcts-eval`"
-/// while reading as "is the strongest agent", and the nightly refit would keep
-/// republishing it. Whether to promote it is the project owner's decision on
-/// its own evidence, exactly as moving [`CHAMPION`] is; this constant is where
-/// that decision is *deferred*, visibly, rather than made by a side effect of
-/// registering a crate.
-pub const REGISTERED_OFF_LADDER: &[&str] = &["mcts-value"];
 
 /// The budget every round-robin pairing is actually played at. Equivalent to
 /// each agent's own [`LadderEntry::budget`] because the 1-ply agents ignore
@@ -162,9 +145,9 @@ pub const ROUND_ROBIN_BUDGET: &str = "nodes:2000";
 /// hand-written formula in its own crate that nothing else tuned.
 ///
 /// `greedy` was retired from the roster, so the scale needed a new pin from
-/// what is left: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`. The obvious
-/// positional analogue is `phased` — the weakest survivor, 1-ply, and
-/// budget-invariant. It is the wrong choice, and for exactly the reason above:
+/// what was left at the time: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`.
+/// The obvious positional analogue is `phased` — the weakest survivor, 1-ply,
+/// and budget-invariant. It is the wrong choice, for exactly the reason above:
 /// `phased`'s `Config` *is* [`duels_eval::Config`], and `PhasedAgent::new`
 /// reads `duels_eval::Config::default()` live. `duels-eval` is re-tuned in
 /// numbered rounds (ten of them so far, the most recent moving a default
@@ -183,7 +166,12 @@ pub const ROUND_ROBIN_BUDGET: &str = "nodes:2000";
 /// * It is already this project's canonical yardstick: every knob in
 ///   `mcts-eval` was tuned against it, and it held [`CHAMPION`] until
 ///   `mcts-eval` measured past it.
-/// * It sits second of four, so ratings still spread either side of 1000.
+/// * It sits mid-ladder — third of five now that `mcts-value` has joined — so
+///   ratings still spread either side of 1000.
+///
+/// Adding `mcts-value` above it does not disturb any of this: the pin is
+/// justified by `mcts-uct` being the thing no library round can move, and
+/// nothing about a new agent joining the ladder changes that.
 ///
 /// What it gives up against `greedy` is budget-independence: it is a search,
 /// so its strength is a function of its budget. That is pinned too — the whole
@@ -203,13 +191,68 @@ pub const ANCHOR_ELO: f64 = 1000.0;
 /// The reigning champion: the agent and budget a candidate agent is measured
 /// against by the `ai-candidate` CI check. See the module docs on why this is
 /// a hand-maintained constant.
+///
+/// # Why `mcts-value`, and the caveat that comes with it
+///
+/// It beats the agent it replaces, `mcts-eval`, by a margin that has now been
+/// measured four times over on paired-seed, seat-swapped matches:
+///
+/// | Budget | Games | Elo vs `mcts-eval` | 95% CI |
+/// | ------ | ----: | -----------------: | ------ |
+/// | [`ROUND_ROBIN_BUDGET`] | 800 | `+91.4` | `[+66.5, +116.3]` |
+/// | [`ROUND_ROBIN_BUDGET`], re-run post-R-105/R-110 | 800 | `+84.9` | `[+60.1, +109.7]` |
+/// | `nodes:32000` | 600 | `+140.1` | `[+110.0, +170.2]` |
+/// | `time_ms:1000` | 400 | `+140.6` | `[+103.8, +177.5]` |
+///
+/// Every one of those accepts H1 under SPRT, and every individual cell is
+/// positive, so the production-budget figure reproduces on disjoint seed
+/// ranges and the result holds at a `TimeMs` budget as well as a `Nodes` one.
+/// The second row is a deliberate re-measurement: the first was taken before
+/// `duels-core`'s chance model was fixed to condition on the public guild mask
+/// (R-105, R-110), which changed what every search in this repo samples. The
+/// margin survived that fix — `+84.9` against `+91.4`, intervals overlapping
+/// heavily — so the older numbers were not an artifact of the old model.
+/// `arena/results/experiments/post-r105r110-confirm/` holds it.
+///
+/// **The caveat is not a footnote, and promoting this agent does not retire
+/// it: the margin is a targeted counter to one opponent's known blind spot,
+/// not a uniform improvement in strength.** `mcts-eval`'s value is
+/// miscalibrated on the science read (`docs/` has the `science_calibration`
+/// investigation that established this independently), and `mcts-value` wins
+/// by *routing through* that gap rather than by playing better everywhere. The
+/// victory-kind breakdown is unambiguous about it — in the confirmation run
+/// above, `mcts-value` took **134** of its 496 wins by scientific supremacy
+/// where `mcts-eval` took **4** of its 304 that way, with the civilian counts
+/// nearly level (279 vs 266).
+///
+/// Measured through a third party, most of the margin is gone: a mini round
+/// robin at [`ROUND_ROBIN_BUDGET`] put `mcts-value` `+186.8` on `mcts-uct`
+/// where `mcts-eval` is `+161.5`, and `+328.8` on `alphabeta` where
+/// `mcts-eval` is `+317.7` — about 28% and 12% of the direct margin
+/// respectively, both differences with intervals containing zero. A joint
+/// Bradley-Terry fit over all five records put the pair 74 points apart where
+/// the direct match said 91.5. That non-transitivity is the reason this agent
+/// spent its first day registered but deliberately unrated (see the module
+/// docs); putting it here is the project owner's decision on that evidence,
+/// taken with the evidence in view rather than against it.
+///
+/// Two consequences worth keeping in mind:
+///
+/// * As the `ai-candidate` opponent, this champion is *harder* to beat by
+///   exploiting a science-value gap and no easier to beat generally. A
+///   candidate that measures well against it has cleared a real bar; one that
+///   measures badly may only have found `mcts-value`'s own blind spot.
+/// * Its rating on the published board is a fitted interpolation over
+///   non-transitive records, so the gap between rows 1 and 2 there will read
+///   smaller than the head-to-head number above. Both are correct; they answer
+///   different questions.
 pub const CHAMPION: LadderEntry = LadderEntry {
-    agent: "mcts-eval",
+    agent: "mcts-value",
     budget: "nodes:2000",
 };
 
 /// Every unordered pairing of [`LADDER`] agents, in a stable order — the
-/// `C(n, 2)` = 6 matches one nightly round robin consists of.
+/// `C(n, 2)` = 10 matches one nightly round robin consists of.
 pub fn pairings() -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
     for (i, a) in LADDER.iter().enumerate() {
@@ -690,8 +733,11 @@ mod tests {
     /// leaderboard assembly can be tested without playing 60,000 games.
     fn synthetic_round_robin() -> Vec<PairwiseRecord> {
         // Strength order, weakest first; the win rate of the stronger side is
-        // set by how far apart they are on this list.
-        let order = ["phased", "alphabeta", "mcts-uct", "mcts-eval"];
+        // set by how far apart they are on this list. `mcts-value` is top,
+        // matching how it measures head-to-head against `mcts-eval` — the
+        // point of this fixture is a *known* order to read back out, not a
+        // claim about the real ladder, which the nightly refits from games.
+        let order = ["phased", "alphabeta", "mcts-uct", "mcts-eval", "mcts-value"];
         let mut out = Vec::new();
         for (i, a) in order.iter().enumerate() {
             for (j, b) in order.iter().enumerate().skip(i + 1) {
@@ -705,44 +751,36 @@ mod tests {
     }
 
     #[test]
-    /// Registration and rating stay pinned to each other — **up to
-    /// [`REGISTERED_OFF_LADDER`]**, the documented list of agents that are
-    /// deliberately runnable and unrated.
+    /// Registration and rating are pinned equal to each other, with no
+    /// exceptions.
     ///
-    /// So an agent still cannot fall off the board by accident: the only way
-    /// to be registered and unrated is to be named in that constant, whose
-    /// docs have to say why. And the reverse direction is unconditional — a
-    /// ladder entry that nothing can construct is always a bug.
+    /// Both directions are bugs. A registered agent missing from [`LADDER`]
+    /// has fallen off the board silently; a ladder entry nothing can construct
+    /// makes the nightly fail halfway through a round robin. The
+    /// `REGISTERED_OFF_LADDER` escape hatch this test used to allow for is
+    /// gone — `mcts-value`, its only member, is now rated and is
+    /// [`CHAMPION`] — so the assertion is back to plain equality. Reintroducing
+    /// the hatch is a deliberate act that has to justify itself; letting this
+    /// test go slack is not.
     fn the_ladder_is_exactly_the_registered_agents() {
         use crate::agent_registry::KNOWN_AGENTS;
         let ladder: BTreeSet<&str> = LADDER.iter().map(|e| e.agent).collect();
         let known: BTreeSet<&str> = KNOWN_AGENTS.iter().copied().collect();
-        let off: BTreeSet<&str> = REGISTERED_OFF_LADDER.iter().copied().collect();
 
-        // Nothing is both rated and declared unrated.
-        assert!(
-            ladder.is_disjoint(&off),
-            "an agent is on the ladder and in REGISTERED_OFF_LADDER: {:?}",
-            &ladder & &off
-        );
-        // Every deliberately-unrated agent is really registered, so the
-        // exception list cannot accumulate dead names.
-        assert!(
-            off.is_subset(&known),
-            "REGISTERED_OFF_LADDER names an unregistered agent: {:?}",
-            &off - &known
-        );
-        // ...and the exception list is exactly the difference.
         assert_eq!(
+            ladder,
+            known,
+            "registered agents and rated agents have diverged; registered but \
+             unrated: {:?}, rated but unregistered: {:?}",
             &known - &ladder,
-            off,
-            "a registered agent is neither on the leaderboard nor documented in \
-             REGISTERED_OFF_LADDER — read that constant's docs before adding it there"
-        );
-        assert!(
-            ladder.is_subset(&known),
-            "a ladder agent is not registered: {:?}",
             &ladder - &known
+        );
+        // The ladder is a set, so the equality above would still hold if an
+        // entry were duplicated.
+        assert_eq!(
+            ladder.len(),
+            LADDER.len(),
+            "an agent appears on LADDER more than once"
         );
     }
 
@@ -779,7 +817,7 @@ mod tests {
         let p = pairings();
         let n = LADDER.len();
         assert_eq!(p.len(), n * (n - 1) / 2);
-        assert_eq!(p.len(), 6);
+        assert_eq!(p.len(), 10);
         let unique: BTreeSet<(&str, &str)> = p.iter().map(|&(a, b)| unordered(a, b)).collect();
         assert_eq!(unique.len(), p.len(), "no pairing should repeat");
         assert!(p.iter().all(|&(a, b)| a != b), "no self-play pairings");
@@ -862,25 +900,27 @@ mod tests {
         let board = build(&synthetic_round_robin(), "2026-09-06T00:00:00Z", "abc1234").unwrap();
         assert_eq!(board.schema, SCHEMA_VERSION);
         assert_eq!(board.rows.len(), LADDER.len());
-        assert_eq!(board.pairings.len(), 6);
-        assert_eq!(board.total_games, 6 * 100);
+        assert_eq!(board.pairings.len(), 10);
+        assert_eq!(board.total_games, 10 * 100);
         assert!(board.converged);
 
         let order: Vec<&str> = board.rows.iter().map(|r| r.agent.as_str()).collect();
         assert_eq!(
             order,
-            vec!["mcts-eval", "mcts-uct", "alphabeta", "phased"],
+            vec!["mcts-value", "mcts-eval", "mcts-uct", "alphabeta", "phased"],
             "the synthetic ladder's order should come straight back out"
         );
         assert_eq!(board.rows[0].rank, 1);
         // The champion is a hand-maintained constant, not "whoever is top of
         // this table" — see the module docs; the two coincide here because
-        // `CHAMPION` was moved to `mcts-eval` once it measured strongest, not
-        // because `champion` is derived from `rank`. `champion` is computed
-        // by matching `CHAMPION.agent` against each row's own agent name
-        // (see `champion: r.agent == CHAMPION.agent` above) — a future ladder
-        // shuffle that outranked `mcts-eval` again would immediately show the
-        // two diverge, without this test needing to change.
+        // `CHAMPION` was moved to `mcts-value` on its own measured evidence,
+        // not because `champion` is derived from `rank`. `champion` is
+        // computed by matching `CHAMPION.agent` against each row's own agent
+        // name (see `champion: r.agent == CHAMPION.agent` above) — a future
+        // ladder shuffle that outranked the champion would immediately show
+        // the two diverge, without this test needing to change. That has
+        // genuinely happened before (the two differed while `mcts-eval` was
+        // being promoted), which is why it is asserted this way.
         assert!(board.rows[0].champion, "the top row should be the champion");
         assert!(
             board
@@ -893,9 +933,9 @@ mod tests {
         assert!(board.rows.iter().filter(|r| r.champion).count() == 1);
 
         // The anchor is pinned exactly where `ANCHOR_ELO` says. It is
-        // `mcts-uct`, second of four here rather than near the bottom as
-        // `greedy` was, so unlike before some ratings come out *below* 1000 —
-        // see `ANCHOR_AGENT`'s docs for why the pin moved there.
+        // `mcts-uct`, mid-ladder here rather than near the bottom as `greedy`
+        // was, so unlike before some ratings come out *below* 1000 — see
+        // `ANCHOR_AGENT`'s docs for why the pin moved there.
         let anchor = board.rows.iter().find(|r| r.agent == ANCHOR_AGENT).unwrap();
         assert_eq!(anchor.elo, ANCHOR_ELO);
         assert!(
@@ -904,9 +944,9 @@ mod tests {
              agents below it"
         );
 
-        // Each agent plays 3 opponents x 100 games.
+        // Each agent plays 4 opponents x 100 games.
         for row in &board.rows {
-            assert_eq!(row.games, 300, "{} played the wrong number", row.agent);
+            assert_eq!(row.games, 400, "{} played the wrong number", row.agent);
             assert_eq!(row.wins + row.losses + row.draws, row.games);
         }
         // The budget label follows the ladder, not the run.
@@ -936,7 +976,7 @@ mod tests {
         records.pop();
         let err = build(&records, "t", "c").unwrap_err();
         assert!(err.contains("incomplete"), "unexpected: {err}");
-        assert!(err.contains("1 of 6"), "should say what is missing: {err}");
+        assert!(err.contains("1 of 10"), "should say what is missing: {err}");
     }
 
     #[test]

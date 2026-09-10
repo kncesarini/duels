@@ -9,7 +9,12 @@ const AGENT_LABELS: Record<string, string> = {
   phased: "Phased — shifts priorities by age",
   alphabeta: "Alpha-Beta — searches, thinks up to 1s",
   "mcts-uct": "MCTS — searches with playouts, thinks up to 1s",
-  "mcts-eval": "MCTS+Eval — strongest, thinks up to 1s",
+  "mcts-eval": "MCTS+Eval — searches with an evaluation, thinks up to 1s",
+  // Deliberately not labelled "strongest". It is the arena's champion and it
+  // beats `mcts-eval` head-to-head, but most of that margin comes from
+  // countering one specific weakness rather than from better play overall -
+  // see `duels_arena::leaderboard::CHAMPION`.
+  "mcts-value": "MCTS+Learned — champion, thinks up to 1s",
 };
 
 export default function Home() {

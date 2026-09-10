@@ -39,14 +39,14 @@ fn next_id() -> u64 {
 /// at `phased`. `duels-agent-random` still exists as a test fixture but is
 /// deliberately not linked by this crate at all.
 ///
-/// **`mcts-value` is last on purpose, and being here is not a ranking claim.**
-/// This list is ordered for the picker, and that agent is unrated: it is not
-/// on `duels_arena::leaderboard::LADDER` (see
-/// `duels_arena::leaderboard::REGISTERED_OFF_LADDER`) because its large,
-/// reproducible margin over `mcts-eval` does not survive being measured
-/// through a third party. It is offered because it is a real, playable agent
-/// and a human may want to play it, not because it is the strongest thing
-/// here. `mcts-eval` remains the champion.
+/// `mcts-value` is last because this list is ordered weakest-first for the
+/// picker and it is the strongest thing here: it is on
+/// `duels_arena::leaderboard::LADDER` and is the current
+/// `duels_arena::leaderboard::CHAMPION`. Its margin comes largely from
+/// countering `mcts-eval`'s science-value miscalibration rather than from
+/// uniformly better play, so it is a harder opponent than `mcts-eval` without
+/// being a strictly better one — read that constant's docs before treating
+/// this order as a clean difficulty ramp at the top end.
 pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval", "mcts-value"];
 
 /// Construct the `Agent` for an agent seat. Unknown names are rejected when
