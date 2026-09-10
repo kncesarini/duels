@@ -22,7 +22,7 @@ milestone table is too coarse to show.
 | **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — first `mcts-eval` and then `mcts-value` (below) have since surpassed it; `mcts-uct` is now the Elo anchor |
 | **M6a** Arena skeleton | runner, paired seeds, Elo/SPRT | ✅ Done |
 | **M6b** Arena live | real agents, leaderboard, nightly workflow, `ai-candidate` gate | ✅ Done (PR #35) — nightly opens a PR that needs a manual close/reopen to trigger `gate` (deliberate: avoids adding a PAT secret, keeping ADR 0004's CI-stays-secret-free stance) |
-| **M5** RL pipeline | PyO3 bindings, self-play, ONNX, training loop, `mcts-valuenet`/`mcts-nn` | ❌ Not started — deferred; see Current work below for the bridge step happening first |
+| **M5** RL pipeline | PyO3 bindings, self-play, ONNX, training loop, `mcts-valuenet`/`mcts-nn` | 🚧 Underway in a different shape than originally scoped — `duels-value`/`mcts-value` are the bridge step and have already run one generate-train-promote iteration; `docs/roadmap.md` is the live plan for iterating further |
 | **M7** Promotion automation | `promote.yml` bot PR, champion epoching | ❌ Not started |
 | **M8** Polish | replay scrubber, AI-eval panel, AI-vs-AI spectating, remote human-vs-human, hosting | ❌ Not started |
 
@@ -113,6 +113,17 @@ pushed the science-conversion share of its wins over `mcts-eval` higher still, a
 meaningfully closed the `mcts-uct` third-party gap (about 65%, up from `v1`'s 28%) while
 leaving `alphabeta`'s (~15%) about where it was. See `duels_value`'s crate docs and
 `leaderboard::CHAMPION`'s for the full numbers.
+
+**`docs/roadmap.md` is where M5 (RL pipeline, below) actually lives now.** An
+explicitly unconstrained architect planning pass (2026-09-10) concluded the `v1`→`v2`
+retrain above was, without either being named that at the time, one full iteration of an
+AlphaZero-style generate-train-promote loop — and laid out what a real second and third
+iteration need first (exploration in the self-play generator, a lower-variance training
+target, a promotion mechanism that doesn't hard-fail on every retrain) plus a tiered plan
+covering a measured 5.8x value-net speedup, per-card features, a zero-sum-coherent output
+head, a learned policy head, and an honest sizing of what the project's incoming
+Raspberry Pi fleet is (and isn't) good for. Read it before starting any new AI-strength
+work in this area.
 
 **The Elo anchor moved from `greedy` to `mcts-uct`, and the scale changed with it.**
 Deleting `greedy` removed `ANCHOR_AGENT` entirely, so the joint Bradley-Terry fit needed a
