@@ -144,9 +144,12 @@ async fn creating_a_room_with_an_unknown_agent_is_rejected() {
 /// ("always pick `legal[0]`"), checking that the agent seat actually replies
 /// with a fresh `State` broadcast each time rather than erroring or hanging.
 /// Doesn't play to completion (unlike the `phased` test above) since
-/// `alphabeta`, `mcts-uct` and `mcts-eval` run a real, if bounded, search per
-/// move under the server's interactive `Budget` and this only needs to prove
-/// the wiring works.
+/// `alphabeta`, `mcts-uct`, `mcts-eval` and `mcts-value` run a real, if
+/// bounded, search per move under the server's interactive `Budget` and this
+/// only needs to prove the wiring works.
+///
+/// Driven off `KNOWN_AGENTS` rather than a hand-written list, so a newly
+/// registered agent is smoke-tested here without anyone remembering to add it.
 #[tokio::test]
 async fn every_known_agent_besides_the_cheapest_can_play_a_few_turns() {
     for name in duels_server::room::KNOWN_AGENTS

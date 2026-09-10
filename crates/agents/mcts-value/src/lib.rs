@@ -1,642 +1,392 @@
-//! `duels-agent-mcts-eval`: Monte Carlo Tree Search with UCT selection and
-//! **explicit chance nodes**, whose leaf value is **half playout and half
-//! [`duels_eval`]'s hand-crafted evaluation**.
+//! `duels-agent-mcts-value`: Monte Carlo Tree Search with UCT selection and
+//! **explicit chance nodes**, whose leaf value is [`duels_value`]'s **learned**
+//! four-way outcome model — no playout at all — at the re-derived exploration
+//! constant `c = 0.15`.
 //!
-//! That leaf value is the whole point of this crate, and it is the largest
-//! single strength effect this project has measured: `+89.2` Elo
-//! `[+77.5, +101.0]` over 3,600 paired, seat-swapped games against the same
-//! search with a pure playout leaf, positive on three of three disjoint seed
-//! ranges, and *larger* at a wall-clock budget than at a node budget. The
-//! measurement is reproduced in full below.
+//! # Read this before you read the Elo numbers
 //!
-//! # Why this is its own crate rather than a flag on `mcts-uct`
+//! This agent measures very strongly against [`mcts-eval`][mcts_eval], the
+//! ladder's previous champion: `+140.1` Elo at `Nodes(32000)`, `+91.4` at the
+//! ladder's production `Nodes(2000)`, `+140.6` at `TimeMs(1000)`, reproduced on
+//! disjoint seed ranges at every one of those budgets. Those numbers are real,
+//! reproducible, and recorded below with the directory each came from. The
+//! production-budget figure was re-measured after `duels-core`'s chance model
+//! was fixed to condition on the public guild mask (R-105, R-110, PR #61) and
+//! holds at `+84.9` `[+60.1, +109.7]` over 800 games —
+//! `arena/results/experiments/post-r105r110-confirm/`.
 //!
-//! The blend was first built and measured as an opt-in `Config::leaf` option
-//! inside `mcts-uct`. Promoting it *there* would have meant moving that
-//! crate's tuned `Config::exploration` — a blended reward has half the spread
-//! a Bernoulli playout does, so `c` has to be rescaled with it (see
-//! [`LeafValue::Blend`]) — and every other knob in that `Config` was tuned
-//! against `c = 1.0`: the rollout weights, the race tables, the widening
-//! constants, the prior sweep. Flipping it in place would have re-defined
-//! `mcts-uct` and moved `leaderboard::CHAMPION` in the same breath as the PR
-//! that merely *measured* the leaf value.
+//! **They are not a general strength improvement, and this crate is not
+//! claiming to be one.** A round robin that measures the same margin *through a
+//! third party* finds it almost entirely gone: 28% of it survives being
+//! measured through `mcts-uct` and 12% through `alphabeta`, both intervals
+//! containing zero. The victory-kind breakdown says why, and it is specific:
+//! the learned leaf converts scientific supremacies `mcts-eval` never sees, but
+//! it wins them out of its *own* civilian column rather than adding to its
+//! total. What this agent is, on the evidence, is **a targeted counter to
+//! `mcts-eval`'s already-documented science-value miscalibration** (see
+//! `duels-eval`'s `science_calibration`, PR #57) rather than a better player in
+//! general. The "What it does not measure" section below is the load-bearing
+//! one; do not quote the headline numbers without it.
 //!
-//! So the two configurations are now two agents, each internally consistent,
-//! each on the ladder in its own right, and the ablation between them is one
-//! spec string away in one binary:
+//! This agent shipped *registered but deliberately unrated* — playable and
+//! spec-addressable, off `duels_arena::leaderboard::LADDER` — precisely
+//! because of the paragraph above, with promotion left as the project owner's
+//! decision on its own evidence. **That decision has since been made: it is on
+//! the ladder and it is `duels_arena::leaderboard::CHAMPION`.** Nothing in the
+//! evidence changed when the status did, so the honest reading is unchanged
+//! too: *strength against `mcts-eval` is thoroughly established; strength
+//! against a third party has never been shown.* Two things follow, and both
+//! matter more now that this is the bar `ai-candidate` measures against:
+//!
+//! * A candidate that beats this agent has cleared a real bar. A candidate
+//!   that *loses* to it may only have failed to counter one specific leaf —
+//!   check the victory-kind breakdown before reading such a result as weakness.
+//! * Its published rating is a joint fit over records that are not transitive,
+//!   so the gap between it and `mcts-eval` on the board reads smaller than the
+//!   head-to-head number. Both are correct and they answer different questions.
+//!
+//! `duels_arena::leaderboard::CHAMPION`'s own docs carry the same caveat, so a
+//! reader who arrives from the leaderboard rather than from here still meets
+//! it.
+//!
+//! # Why this is its own crate rather than a flag on `mcts-eval`
+//!
+//! The same argument that made `mcts-eval` its own crate rather than a flag on
+//! `mcts-uct`, one step further along. The learned leaf was built and measured
+//! as `mcts-eval`'s opt-in [`LeafValue::Learned`], and promoting it *there*
+//! would have moved that crate's tuned [`Config::exploration`] — a leaf that
+//! **replaces** the playout rather than mixing with it needs a completely
+//! different `c` (see "The exploration constant" below) — and re-defined the
+//! ladder's champion in the same breath as the PR that merely measured a leaf
+//! value. `mcts-eval` keeps its default; this is the other configuration, as
+//! its own agent, with its own internally consistent `Config`.
+//!
+//! So the ablation is one spec string away in one binary:
 //!
 //! ```text
-//! cargo run --release -p duels-arena -- match \
-//!     --agent-a mcts-eval --agent-b mcts-eval:base=rollout \
-//!     --games 1200 --budget nodes:2000 --seed 1 --sprt-elo0 0 --sprt-elo1 20
+//! cargo run --release -p duels-arena -- experiment \
+//!     --candidate mcts-value --control mcts-value:base=eval \
+//!     --pairs 400 --budget nodes:2000 --seed 1 --label mcts-value-ablation
 //! ```
 //!
-//! [`Config::rollout_base`] is that control, and it is not a claim about
-//! being `mcts-uct` — it is *checked* to be, node for node, against a
-//! verbatim copy of that agent's `expand`/`select_ucb1`/`simulate`
-//! (`tree::tests::the_rollout_base_grows_the_mcts_uct_tree_node_for_node`,
-//! with `tree::tests::the_default_search_is_not_the_mcts_uct_search` as the
-//! non-vacuity check).
+//! [`Config::eval_base`] is that control, and it is not a *claim* about being
+//! `mcts-eval` — it is **checked** to be, node for node, against a verbatim
+//! frozen copy of that agent's `expand`/`select_ucb1`/`leaf_value`/`simulate`
+//! (`tree::tests::the_copied_search_is_the_mcts_eval_search_node_for_node`,
+//! with `tree::tests::the_default_search_is_not_the_mcts_eval_search` as the
+//! non-vacuity check and
+//! `tests::the_eval_base_is_the_mcts_eval_agent_move_for_move` as the
+//! whole-agent, whole-game form). [`Config::rollout_base`] is inherited from
+//! `mcts-eval` and is checked the same way against `mcts-uct`.
 //!
-//! The search machinery itself — `tree`, `chance`, `rollout`, and the
-//! [`Agent`] impl below — is a deliberate **copy** of `mcts-uct`'s, not a
-//! dependency on it. `CLAUDE.md`'s "agent crates are self-contained"
-//! invariant forbids one agent crate depending on another, and this is the
-//! same accepted, intentional duplication `greedy-ev` carries against
-//! `greedy`. `duels-eval` is a different matter: it is a shared library
-//! *below* the agents, so both this crate and `phased` depend on it, which is
-//! exactly what the layering is for.
+//! The search machinery itself — `tree`, `chance`, `rollout`, `leaf` and the
+//! [`Agent`] impl below — is a deliberate **copy** of `mcts-eval`'s (which is
+//! itself a copy of `mcts-uct`'s), not a dependency on it. `CLAUDE.md`'s "agent
+//! crates are self-contained" invariant forbids one agent crate depending on
+//! another, and this is the same accepted, intentional duplication `mcts-eval`
+//! already carries. `duels-value` and `duels-eval` are a different matter: they
+//! are shared libraries *below* the agents, which is exactly what the layering
+//! is for.
 //!
-//! # Tracking `duels-eval` live, on purpose
+//! ## The copies drift, and nothing mechanical stops them
 //!
-//! **This crate evaluates against [`duels_eval::Config::default`] — whatever
-//! that is in the build you are running — and holds no version pin.** There
-//! is no `Config::eval_generation` field, no `Config::vN()` snapshot, and no
-//! golden-values test freezing what `evaluate` returns. The configuration is
-//! read in `tree::Tree::new`, once per search tree, at the moment the tree is
-//! built.
+//! Worth stating plainly, because this crate ran into it inside a day. `chance`
+//! and `rollout` are **byte-identical** to `mcts-eval`'s and are meant to stay
+//! that way; `tree` and `lib` diverge only in [`Config`] and documentation. But
+//! there is no test, and no lint, that says so — a test in an agent crate
+//! cannot read another agent crate, which is the same rule that forced the copy
+//! in the first place.
 //!
-//! ## This is the opposite of what `mcts-uct` did, deliberately
+//! It is not a hypothetical. `duels-core` PR #61 changed the chance model to
+//! condition on the public guild mask and had to hand-edit **three** copies of
+//! `chance.rs` (`mcts-uct`'s, `mcts-eval`'s, and this crate's) to keep them the
+//! same file. A missed one would not have failed anything here: the ablation
+//! tests below compare the live search against a *frozen copy inside this
+//! crate*, so they would have gone on passing while the crate's claim to be
+//! `mcts-eval`'s search quietly stopped being true.
 //!
-//! `mcts-uct`'s leaf-value option pinned `duels_eval::Config::v6()` and held a
-//! golden-values test against ~50 fixed positions, precisely so that a
-//! seventh `phased`/`duels-eval` tuning round could not silently move a
-//! measured `mcts-uct` strength number. `CLAUDE.md` still records that as a
-//! standing prior — *"a search that consumes `duels-eval` must pin a
-//! generation"* — and for an agent whose *identity* is its search, that is the
-//! right call: the evaluation is an incidental input there, and an incidental
-//! input moving under a measurement is a bug.
+//! So when changing anything in the shared search, `diff` the copies:
 //!
-//! Here the relationship is inverted. This agent's identity **is**
-//! `duels-eval` inside a search. The project's reason for creating it, stated
-//! when the decision was made, is that as `duels-eval` keeps improving
-//! through future `phased`-style rounds this agent should get stronger right
-//! along with it, automatically, with no manual version-bump step. A pin
-//! would defeat that: it would freeze this crate at the sixth evaluation
-//! round forever, and every future round's gain would need a deliberate,
-//! easily-forgotten edit here to reach the ladder at all.
+//! ```text
+//! for f in chance.rs rollout.rs; do
+//!     diff crates/agents/mcts-eval/src/$f crates/agents/mcts-value/src/$f
+//! done
+//! ```
 //!
-//! **So: do not "fix" this into a pin by copying `mcts-uct`'s pattern.** It
-//! looks like an oversight and it is not one. If you are reading this because
-//! a `duels-eval` round moved this agent's rating, that is the design
-//! working.
+//! And note what the frozen `eval_legacy` copy in `tree` *does* protect, since
+//! it is a narrower thing than it first looks: it catches a change to the live
+//! search made **inside this crate**, not a change made next door.
 //!
-//! ## What is given up, and what replaces it
+//! # The weights are pinned, and that is the opposite of `mcts-eval`'s call
 //!
-//! Being honest about the cost, because there is one. A pin buys
-//! *comparability across time*: two results files from different months
-//! measure the same agent. Live tracking gives that up — two builds of
-//! `mcts-eval` either side of a `duels-eval` round are genuinely different
-//! players, and pooling their games would be a mistake.
+//! `mcts-eval` reads `duels_eval::Config::default()` **live** and holds no
+//! version pin, on the argument that its identity *is* "`duels-eval` inside a
+//! search" and it should therefore get stronger automatically as future
+//! evaluation rounds land. That argument does not transfer here, and this crate
+//! makes the opposite choice on purpose:
 //!
-//! Three things stand in for it:
+//! - **`duels-value`'s weights are a fitted artefact, not a tuned
+//!   configuration.** A retrain is not an incremental improvement to a
+//!   hand-written weight vector that a code owner reviewed; it is a different
+//!   function, and the honest expectation is that it changes this agent's
+//!   behaviour everywhere at once.
+//! - **The measured effect here is narrow and mechanism-specific** (see below).
+//!   An effect that runs through one opponent's calibration error is precisely
+//!   the kind that a retrain can silently delete, leaving the crate docs'
+//!   numbers describing an agent that no longer exists.
 //!
-//! 1. **The spec string records the evaluation itself, not a label.**
-//!    [`Config::describe`] ends with the whole
-//!    [`duels_eval::Config::params_string`] this search will use. A results
-//!    file therefore says exactly which evaluation produced it, which makes
-//!    two files from different rounds *distinguishable* — strictly more
-//!    information than a `v6` tag, and the thing a pin was protecting.
-//! 2. **The nightly round robin re-measures everything anyway.** The ladder
-//!    is refitted from scratch every night at whatever the current code is
-//!    (see `duels_arena::leaderboard`), so this agent's rating is never a
-//!    remembered number in the first place.
-//! 3. **`duels-eval` owns its own identity tests.** Its `tests/vN_identity.rs`
-//!    files and its `CODEOWNERS` mandatory-review rule are where a change to
-//!    the evaluation gets noticed. That is the right layer for it; a
-//!    downstream golden-values test in an agent crate was always a proxy.
+//! So the `golden` module pins twenty fixed positions' predictions to
+//! `weights/v1.bin` within a tight tolerance, and pins
+//! [`duels_value::default_weights_id`]'s content hash outright. A retrain
+//! **fails a test** rather than re-defining the agent, exactly as `CLAUDE.md`'s
+//! standing prior asks for a search whose identity is its search and whose
+//! value input is incidental. `Config::describe` records the same weights
+//! identity in every [`AgentSpec`], so a results file names the model that
+//! produced it.
 //!
-//! What live tracking does **not** relax is the per-decision invariant: within
-//! one search, the leaf value must not depend on which hidden world the root
-//! determinization drew. See
-//! `tree::tests::a_static_leaf_value_is_determinization_invariant`, which
-//! spells out the difference.
+//! # What it measures
 //!
-//! One practical consequence worth naming: the configuration is read in
-//! `Tree::new`, **not** in [`MctsEvalAgent::new`]. Reading it at agent
-//! construction would capture a snapshot for that agent's whole lifetime — a
-//! long-lived `duels-server` room, say — which is the same pin wearing
-//! different clothes.
+//! Every number below is from a `duels-arena experiment` run committed to this
+//! branch under `arena/results/experiments/`, named per row. Paired-seed and
+//! seat-swapped throughout, against `mcts-eval` at its default unless stated.
+//! The candidate was spelled `mcts-eval:leaf=learned,c=0.15` — the
+//! configuration [`Config::default`] now *is*.
+//!
+//! | budget | games | Elo vs `mcts-eval` | per-range | SPRT | directory |
+//! |---|---|---|---|---|---|
+//! | `Nodes(32000)` | 600 (2 x 300) | **+140.1 [+110.0, +170.2]** | +163.4 / +117.4 | `AcceptH1` | `p0-learned-c0.15/` |
+//! | `Nodes(2000)` | 800 (2 x 400) | **+91.4 [+66.5, +116.3]** | +128.6 / +55.9 | `AcceptH1` | `p0-learned-nodes2000/` |
+//! | `TimeMs(1000)` | 400 (2 x 200) | **+140.6 [+103.8, +177.5]** | +118.5 / +163.1 | `AcceptH1` | `p1-timems-learned-c0.15/` |
+//!
+//! The `Nodes(2000)` row is the one that matters for the ladder, because it is
+//! the budget the nightly round robin runs at, and it is the weakest of the
+//! three — the effect grows with budget rather than being a low-budget
+//! artefact. The `TimeMs(1000)` row was taken with each candidate run strictly
+//! one after the other on a machine verified quiet by a process snapshot before
+//! and after every cell, per `CLAUDE.md`'s warning about load-sensitive
+//! wall-clock runs.
+//!
+//! ## The exploration constant, re-derived
+//!
+//! `CLAUDE.md`: *"any future change to what a leaf backs up should re-derive
+//! `c` before measuring"*. This is that re-derivation, and it was worth about
+//! 83 Elo. [`LeafValue::Blend`]'s `c = c₀·(1 - w)` rescaling gives no guidance
+//! for a leaf that replaces the playout outright — there is no Bernoulli spread
+//! left to shrink — so `c` was swept at `Nodes(32000)`, 600 games per row:
+//!
+//! | `c` | Elo vs `mcts-eval` | directory |
+//! |---|---|---|
+//! | `0.10` | +126.7 [+97.1, +156.4] | `p0-learned-c0.1/` |
+//! | **`0.15`** (this crate's default) | **+140.1 [+110.0, +170.2]** | `p0-learned-c0.15/` |
+//! | `0.25` | +101.0 [+72.1, +130.0] | `p0-learned-c0.25/` |
+//! | `0.50` (inherited from `mcts-eval`) | +57.2 [+29.0, +85.3] | `spike-learned-pure/` |
+//!
+//! A bracketed interior optimum, so read it as *"somewhere in `[0.10, 0.15]`"*
+//! rather than as a tuned peak; `0.15` is the argmax of four points at `+/-`
+//! about 30 Elo each. The inherited `0.5` was leaving roughly 83 Elo on the
+//! table, which is why a sweep here is not optional.
+//!
+//! ## Replacing the playout beats mixing with it, at this leaf
+//!
+//! The reverse of what the hand-crafted evaluation did, and the reason this
+//! agent is a *pure* learned leaf rather than the blend `mcts-eval`'s own
+//! history would predict. [`LeafValue::LearnedBlend`] at `weight = 0.5` stays
+//! available and is the measured second-best option:
+//!
+//! | leaf | `Nodes(32000)` | `TimeMs(1000)` |
+//! |---|---|---|
+//! | **`learned`, `c = 0.15`** | **+140.1** | **+140.6** |
+//! | `learned_blend:0.5`, `c = 0.5` | +106.1 (`spike-learned-blend/`) | +68.5 (`p1-timems-learnedblend-c0.5/`) |
+//!
+//! At the inherited `c = 0.5` the blend led at a fixed node count (`+106.1`
+//! against `+57.2`); re-deriving `c` reverses that, and a wall-clock budget
+//! widens the reversal to better than two to one. The wall-clock half is a cost
+//! story rather than an accuracy one and `duels-value`'s `value_bench` called
+//! it in advance: a leaf that **replaces** the playout runs at about `0.35x` a
+//! playout's cost against the blend's `1.45x`, so a fixed clock buys it roughly
+//! three times the simulations. A leaf **added** to a playout and one that
+//! **replaces** it have opposite wall-clock economics; that generalises past
+//! this crate.
+//!
+//! # What it does *not* measure — the part that decides what this agent is
+//!
+//! ## The margin does not survive a third party
+//!
+//! A mini round robin at `Nodes(2000)`, 400 games per pairing, asking whether
+//! the direct margin shows up as a rating difference measured through an
+//! opponent neither side was tuned against:
+//!
+//! | comparison | Elo | interval | share of direct | directory |
+//! |---|---|---|---|---|
+//! | direct: candidate - `mcts-eval` | +91.5 `+/- 12.7` | excludes zero | — | `p0-learned-nodes2000/` |
+//! | indirect, via `mcts-uct` | +25.5 `+/- 27.8` | **[-28.9, +79.9]** | **28%** | `p2-cand-vs-mctsuct/`, `p2-ctrl-vs-mctsuct/` |
+//! | indirect, via `alphabeta` | +11.2 `+/- 36.1` | **[-59.5, +82.0]** | **12%** | `p2-cand-vs-alphabeta/`, `p2-ctrl-vs-alphabeta/` |
+//!
+//! Both indirect intervals contain zero. A joint Bradley-Terry fit over all
+//! five head-to-head records puts the candidate at 1213.2 and `mcts-eval` at
+//! 1139.3 — `+74.0` where the direct match says `+91.5`, and that residual is
+//! real intransitivity, not noise in one cell.
+//!
+//! ## The mechanism: route substitution, not extra wins
+//!
+//! Sharper than "it beats one opponent". Victory kinds from the two
+//! `mcts-uct` pairings above, 400 games each:
+//!
+//! | vs `mcts-uct` at `Nodes(2000)` | this agent | `mcts-eval` |
+//! |---|---|---|
+//! | wins by scientific supremacy | **89** | 10 |
+//! | wins by civilian score | 171 | **237** |
+//! | wins by military supremacy | 38 | 34 |
+//! | **total wins** | **298** | 287 |
+//!
+//! The learned leaf genuinely *sees the science race* — 89 scientific
+//! supremacies against 10 is not a subtle difference — and it pays for them
+//! almost exactly out of its own civilian column. Against `mcts-eval` the same
+//! behaviour scores heavily only because `mcts-eval` concedes 129 science games
+//! in 800 and wins one. `science_share` reads `Inconclusive` in all four
+//! round-robin pairings and never `Pass`, always for the same reason: the
+//! control wins too few science games to form a ratio against.
+//!
+//! That is the whole finding, stated plainly: **this agent exploits a
+//! calibration error in one specific opponent.** The error is not a surprise —
+//! `duels-eval`'s `science_calibration` (PR #57) measured and documented it
+//! before this line of work started — and exploiting it is a legitimate,
+//! reproducible Elo gain against `mcts-eval`. It is just not evidence of a
+//! better player.
+//!
+//! ## The model itself is known to be incoherent
+//!
+//! `duels-value`'s `tests/probability_coherence.rs` measures that the shipped
+//! weights do not satisfy `P(win | One) + P(win | Two) ~= 1`: mean absolute gap
+//! `0.0559`, p90 `0.1208`, max `0.4814`, with **43% of legal positions missing
+//! a 0.05 bound** and the opening's two perspectives summing to `0.9396` on
+//! average. That file asserts the failure deliberately, so it stays a visible
+//! fact. Two things bound the damage — this search only ever asks for
+//! `Player::One`, so one consistent scale is used throughout and a tree can
+//! never disagree with itself about who is winning, and the aggregate
+//! calibration is good (Brier `0.172`, monotone reliability) — but the
+//! incoherence is **concentrated on science-lead positions**, which is the same
+//! place this agent's Elo comes from. Read that as known headroom that is not
+//! architectural: an antisymmetric head would make the property exact for free.
 //!
 //! # Why chance nodes
 //!
-//! 7 Wonders Duel is a two-player zero-sum *stochastic* game: the cards
-//! behind the face-down slots of the current age are unknown when a move is
-//! chosen, and taking a card can uncover them. There is no player-private
-//! information — both players always see the same public state — so the game
-//! is much simpler than poker, but it is not Go: a plain alternating-move
+//! 7 Wonders Duel is a two-player zero-sum *stochastic* game: the cards behind
+//! the face-down slots of the current age are unknown when a move is chosen,
+//! and taking a card can uncover them. There is no player-private information —
+//! both players always see the same public state — so a plain alternating-move
 //! tree would silently pretend the reveals were part of the mover's choice.
 //!
 //! This agent therefore builds a tree with three kinds of node:
 //!
 //! - **decision** nodes, one player to move, children = the legal actions,
 //!   selected by UCB1;
-//! - **chance** nodes, inserted between an action and the position it leads
-//!   to whenever the engine says the action resolves randomness, children =
+//! - **chance** nodes, inserted between an action and the position it leads to
+//!   whenever the engine says the action resolves randomness, children =
 //!   possible reveals, selected **by their real probability**, never by UCB1;
 //! - **terminal** nodes, where the [`duels_core::GameResult`] is settled.
 //!
 //! ## How chance is handled, precisely
 //!
-//! Worth being explicit about, because it bounds how strong the agent can
-//! get:
-//!
 //! 1. **The root is determinized.** `choose` only ever sees an
-//!    [`Observation`], so it calls [`Observation::sample_state`] once per
-//!    call to get one concrete world consistent with public knowledge.
-//! 2. **Reveals inside the tree are *not* taken from that world.** Every
-//!    chance node re-draws its outcome from the distribution the engine
-//!    computes from public information alone
-//!    (`engine::chance_outcomes`/`hidden_info`), and applies it with
-//!    `engine::apply_with_outcome`, which rewrites the hidden layout to stay
-//!    publicly consistent. So the tree integrates over reveals rather than
-//!    committing to the root's guess, and the agent can never exploit
-//!    knowledge of a card it should not know.
-//! 3. **The draw is exact but not enumerated.** A two-slot reveal has
-//!    hundreds of outcomes; the `chance` module draws from that distribution
-//!    in O(1) and reports the drawn outcome's exact probability, which is
-//!    verified statistically against `engine::chance_outcomes`.
-//! 4. **Progressive widening is an approximation.** A chance node that
-//!    created a fresh child on every visit would be a perfectly unbiased
-//!    estimator of the expectation but would never let the tree grow past it.
-//!    By default the number of distinct outcome children grows as
-//!    `sqrt(visits)` and further visits re-select an existing child in
-//!    proportion to its probability. That reweighting is the one place the
-//!    search is not a faithful expectation; set
+//!    [`Observation`], so it calls [`Observation::sample_state`] once per call
+//!    to get one concrete world consistent with public knowledge.
+//! 2. **Reveals inside the tree are *not* taken from that world.** Every chance
+//!    node re-draws its outcome from the distribution the engine computes from
+//!    public information alone (`engine::chance_outcomes`/`hidden_info`), and
+//!    applies it with `engine::apply_with_outcome`, which rewrites the hidden
+//!    layout to stay publicly consistent. So the tree integrates over reveals
+//!    rather than committing to the root's guess, and the agent can never
+//!    exploit knowledge of a card it should not know.
+//! 3. **The draw is exact but not enumerated.** A two-slot reveal has hundreds
+//!    of outcomes; the `chance` module draws from that distribution in O(1) and
+//!    reports the drawn outcome's exact probability.
+//! 4. **Progressive widening is an approximation.** By default the number of
+//!    distinct outcome children grows as `sqrt(visits)` and further visits
+//!    re-select an existing child in proportion to its probability. Set
 //!    [`Config::chance_widen_alpha`] to `1.0` with a large
 //!    [`Config::chance_widen_c`] to recover the unbiased estimator.
-//! 5. **Two sources of randomness are only root-determinized:** the
-//!    composition and order of the *next* age's deck, and the four wonders
-//!    not yet offered during the draft. Neither is exposed through the
-//!    per-action chance API, so they stay fixed for the duration of one
-//!    search.
+//! 5. **Two sources of randomness are only root-determinized:** the composition
+//!    and order of the *next* age's deck, and the four wonders not yet offered
+//!    during the draft.
 //!
 //! # The leaf value (`Config::leaf`)
 //!
-//! [`LeafValue`] decides what a freshly added leaf is worth: the default
-//! mixture, `duels-eval`'s evaluation alone through a calibrated sigmoid, a
-//! truncated playout that ends in one, or the plain playout. See the `leaf`
-//! module for the mechanism — the per-age temperature calibration, where the
-//! one [`duels_eval::Root`] is built, why the perspective is always Player
-//! One, and the algebra relating [`LeafValue::Blend`]'s weight to the
-//! exploration constant. This section is the measurement, carried over from
-//! the investigation that produced it (`mcts-uct` PR #38), where every number
-//! below was taken with the candidate spelled `mcts-uct:leaf=blend:0.5,c=0.5`
-//! — the configuration [`Config::default`] now *is*.
-//!
-//! ## What each variant costs
-//!
-//! `examples/leaf_bench.rs`, 30 positions at `Nodes(2000)` — a node budget, so
-//! the *work* is exactly fixed (52,000 simulations per column) and only the
-//! elapsed time moves. Run on a machine that was not quiet, so read the ratio
-//! column and not the absolute microseconds:
-//!
-//! | leaf | µs/simulation | throughput vs plain playout |
-//! |---|---|---|
-//! | `Rollout` | 18.84 | 1.00x |
-//! | `Static` | 1.55 | **12.15x** |
-//! | `Truncated { plies: 4 }` | 2.57 | 7.33x |
-//! | `Truncated { plies: 8 }` | 3.83 | 4.92x |
-//! | `Truncated { plies: 16 }` | 5.60 | 3.37x |
-//! | `Blend { weight: 0.3 }` | 18.83 | 1.00x |
-//! | **`Blend { weight: 0.5 }`** (default) | 18.66 | 1.01x |
-//!
-//! Read as a decomposition: if a whole simulation is 18.84 µs and the same
-//! simulation with the playout replaced by one cached-`Root` evaluation is
-//! 1.55 µs, then **the playout is about 92% of what a simulation costs** and
-//! everything else — descent, expansion, backpropagation, the evaluation
-//! itself — is the remaining 1.5 µs. The truncated rows interpolate between
-//! the two about as linearly as that implies.
-//!
-//! A blend measures at parity with a plain rollout rather than the few percent
-//! *slower* it must strictly be — it does the playout and then a 1.5 µs
-//! evaluation on top. That extra is about 8% of a simulation, which is inside
-//! this bench's run-to-run spread on a machine that is not quiet, so read the
-//! blend rows as "no measurable throughput cost" rather than as free. The
-//! consequence for a wall-clock budget is the same either way, and the
-//! `TimeMs` rows below are the actual test of it.
-//!
-//! ## The tuning sweep (a separate seed range, and **not** evidence)
-//!
-//! `20001..20151`, 300 games each against a pure-playout leaf at
-//! `Nodes(2000)`, `+/-` about 2.9. Kept for the record and for what it says
-//! about the shape of the family, not as a strength claim — the ranges below
-//! are the evidence:
-//!
-//! | candidate | score | Elo |
-//! |---|---|---|
-//! | `leaf=static` | 27.0% | -170.7 |
-//! | `leaf=static,c=0.5` | 35.3% | -104.6 |
-//! | `leaf=trunc:4` | 37.0% | -92.1 |
-//! | `leaf=trunc:8` | 40.7% | -65.4 |
-//! | `leaf=trunc:8,c=0.5` | 46.7% | -23.1 |
-//! | `leaf=trunc:16` | 47.0% | -20.8 |
-//! | `leaf=blend:0.9,c=0.1` | 47.3% | -18.5 |
-//! | `leaf=blend:0.3` | 55.0% | +34.7 |
-//! | `leaf=trunc:16,c=0.5` | 55.3% | +37.1 |
-//! | `leaf=blend:0.5` | 56.3% | +46.4 |
-//! | `leaf=blend:0.5,c=0.3` | 57.5% | +52.3 |
-//! | `leaf=blend:0.3,c=0.7` | 58.0% | +55.9 |
-//! | `leaf=blend:0.8,c=0.2` | 58.7% | +60.6 |
-//! | `leaf=blend:0.3,c=0.5` | 60.3% | +72.6 |
-//! | `leaf=blend:0.7,c=0.5` | 61.0% | +77.4 |
-//! | `leaf=blend:0.7,c=0.2` | 62.3% | +87.2 |
-//! | `leaf=blend:0.6,c=0.4` | 62.7% | +90.9 |
-//! | **`leaf=blend:0.5,c=0.5`** (this crate's default) | **63.7%** | **+97.1** |
-//! | `leaf=blend:0.7,c=0.3` | 65.0% | +107.2 |
-//! | `c=0.5` alone | 54.0% | +27.8 |
-//! | control (playout vs playout) | 52.0% | +13.9 |
-//!
-//! Three things to read off it. **A pure static leaf is much weaker than the
-//! playout it replaces** at a fixed node count — which is the project's
-//! standing prior, holding up. The family is *ordered*: the more playout is
-//! left in the leaf, the better, until the static term is gone entirely (at
-//! `blend:0.9` the playout is too diluted and the gain is gone again). And
-//! the good region is a broad **ridge running roughly along `c = 1 - weight`**
-//! — every candidate from `blend:0.5,c=0.5` to `blend:0.7,c=0.3` scores
-//! between 62% and 65%, which at `+/-` 2.9 is one indistinguishable plateau
-//! rather than a peak. That is the direction [`LeafValue::Blend`]'s rescaling
-//! algebra predicts, and it is as much as a 300-game sweep can confirm: at
-//! `weight = 0.3` the "matching" `c = 0.7` (+55.9) actually scored *below* the
-//! unmatched `c = 0.5` (+72.6), so the ridge's exact ridgeline is inside this
-//! sweep's noise.
-//!
-//! ### What a *pure* static leaf actually gets wrong
-//!
-//! Worth recording, because it is the sharpest diagnostic in this whole
-//! investigation and it is the reason a *mixture* is the right shape. Victory
-//! kinds for `leaf=static` in that sweep (300 games):
-//!
-//! | | `leaf=static` | plain playout |
-//! |---|---|---|
-//! | wins by military supremacy | **1** | 37 |
-//! | wins by scientific supremacy | **28** | 2 |
-//! | wins by civilian score | 51 | 177 |
-//!
-//! A static leaf wins by military supremacy **once in 81 wins** while
-//! conceding 37, and wins by *scientific* supremacy fourteen times more often
-//! than the agent it replaced. It is not uniformly blind: it over-values
-//! science and under-sees military. The `duels-eval` terms give a position
-//! credit for accumulated scientific symbols in a way the search can then go
-//! and collect, whereas a military race is a *tempo* fact about the next few
-//! moves that only a playout walking those moves discovers — and `Root`'s
-//! military smoothing is fixed at the search root, so it cannot even move as
-//! the leaf gets deeper (see `leaf`'s note on stale calibration).
-//!
-//! This is the concrete form of `CLAUDE.md`'s prior that win-condition
-//! awareness belongs in the search policy rather than the evaluation, and it
-//! is why the blend works: keeping half a playout keeps the military sight
-//! that the evaluation has no way to supply.
-//!
-//! Two candidates were carried forward: the sweep's nominal maximum
-//! (`blend:0.7,c=0.3`) and the middle of the plateau (`blend:0.5,c=0.5`).
-//! **The maximum did not survive** — see below. Reporting the sweep's argmax
-//! as the answer would have shipped the weaker of the two.
-//!
-//! ## What it measures: `+89` Elo, on three disjoint ranges
-//!
-//! 1,200 games per range at `Nodes(2000)`, paired and seat-swapped, against
-//! the pure-playout leaf at `c = 1.0` (verified, not assumed: `c=1.000`,
-//! `race=neutral`, `prior=none`, `dets=1`, `leaf=rollout` — which is exactly
-//! [`Config::rollout_base`]). `+/-` is one binomial standard error:
-//!
-//! | arm | `1..600` | `5001..5600` | `10001..10600` | pooled (3,600 games) | Elo |
-//! |---|---|---|---|---|---|
-//! | **`blend:0.5,c=0.5`** (default) | 64.42% | 62.04% | 61.21% | **62.56% +/- 0.81** | **+89.2 [+77.5, +101.0]** |
-//! | `blend:0.7,c=0.3` (the sweep's argmax) | 61.92% | 61.88% | 58.92% | 60.90% +/- 0.81 | +77.0 [+65.4, +88.7] |
-//! | `blend:0.5` (`c` unchanged) | 60.54% | 59.29% | 57.42% | 59.08% +/- 0.82 | +63.8 [+52.3, +75.4] |
-//! | `c=0.5` alone (attribution control) | 49.12% | 51.46% | 49.71% | 50.10% +/- 0.83 | +0.7 [-10.7, +12.0] |
-//! | `c=0.3` alone (attribution control) | 37.00% | 35.21% | 35.75% | 35.99% +/- 0.80 | -100.1 [-112.0, -88.3] |
-//! | playout vs playout (noise floor) | 48.96% | 48.25% | 49.83% | 49.01% +/- 0.83 | -6.9 [-18.2, +4.5] |
-//!
-//! Every range is positive for all three blend arms, SPRT (`elo0 = 0` vs
-//! `elo1 = 20`) reads `AcceptH1` on every one of their nine range-runs
-//! (`llr` 10.3 to 17.9 against a 2.944 bound), and the intervals are nowhere
-//! near the control's. This is by a wide margin the largest effect measured
-//! anywhere in this project: the previous best, `mcts-uct`'s terminal rails,
-//! was `+26` Elo.
-//!
-//! **The exploration constant is not the effect.** `c = 0.5` on its own scores
-//! 50.10% over the same 3,600 games — indistinguishable from the noise floor.
-//! It is worth about `+25` Elo *in combination* with the blend (62.56% against
-//! 59.08%), which is the direction [`LeafValue::Blend`]'s rescaling argument
-//! predicts: at `weight = 0.5` the reward's spread is halved, so the
-//! exploration bonus has to be halved with it to leave the balance where it
-//! was tuned. This is why [`Config::default`] moves both fields together and
-//! why they should not be thought of as two independent defaults.
-//!
-//! `c = 0.3` makes that argument much more sharply, which is why it is in the
-//! table. On its own it is a **disaster** — `-100` Elo — and yet
-//! `blend:0.7,c=0.3`, which contains it, is `+77`. A knob worth `-100` alone
-//! and `+77` in combination is not plausibly an independent contribution; it
-//! is the rescaling the blended reward requires.
-//!
-//! ## Why the sweep's argmax lost, and what it says about the mechanism
-//!
-//! `blend:0.7,c=0.3` won the 300-game sweep (+107 against +97) and then
-//! finished 12 Elo *behind* `blend:0.5,c=0.5` over 3,600, losing on all three
-//! ranges. Pooled victory kinds say why, and it is not noise:
-//!
-//! | pooled, 3,600 games | wins by military | wins by civilian score |
-//! |---|---|---|
-//! | `blend:0.5,c=0.5` vs playout | **342** - 288 | 1,815 - 992 |
-//! | `blend:0.7,c=0.3` vs playout | 170 - **323** | 1,911 - 1,036 |
-//!
-//! At `weight = 0.7` the search gets *better* at city quality (1,911 civilian
-//! wins, more than the 0.5 blend manages) and **loses the military race
-//! outright** — 170 military wins against the playout's 323, having been
-//! ahead 342-288 at `weight = 0.5`. The blend weight is not a free knob to
-//! push towards the evaluation; it is the balance between two different kinds
-//! of sight, and half is where it sits.
-//!
-//! ## Where the wins come from: points, not races
-//!
-//! Pooled victory kinds over the same 3,600 games, the default against the
-//! pure-playout arm:
-//!
-//! | | default (blend) | plain playout |
-//! |---|---|---|
-//! | wins by civilian score | **1,815** | 992 |
-//! | wins by military supremacy | 342 | 288 |
-//! | wins by scientific supremacy | 62 | 34 |
-//! | wins by tiebreak | 31 | 32 |
-//!
-//! `+823` of the `+904` win margin is **civilian score**. That matters because
-//! the other mechanism available here — [`RaceWeights::TIER1_ONLY`]'s terminal
-//! rails — is *entirely* military (`138-68` in its own measurement, with the
-//! number of military-decided games unmoved). These are not the same effect
-//! wearing two hats, and the composition test says so directly. With
-//! `race=tier1` on **both** sides, 1,200 games on each of two ranges:
-//!
-//! | | `1..600` | `5001..5600` | pooled (2,400) | Elo |
-//! |---|---|---|---|---|
-//! | `blend:0.5,c=0.5,race=tier1` vs `race=tier1` | 62.79% | 65.46% | **64.12% +/- 0.98** | **+100.9 [+86.6, +115.6]** |
-//! | `race=tier1` vs `race=tier1` (control) | 51.12% | 50.75% | 50.94% +/- 1.02 | +6.5 [-7.4, +20.4] |
-//!
-//! `+100.9` with the rails on both sides, against `+89.2` with them nowhere:
-//! the two mechanisms **add**, and if anything the blend is worth slightly
-//! *more* once the rails are present. With the rails on both sides the
-//! blend's military edge disappears — 191 military wins against 175,
-//! essentially level, where without rails it was 342-288 — while its civilian
-//! margin is undiminished (1,293 against 652). The rails were already
-//! supplying the military tempo sight, so the blend stops needing to; what it
-//! adds on top is entirely city quality.
-//!
-//! (`RaceWeights::TIER1_ONLY` is nonetheless **not** [`Config::default`] here,
-//! for the same reason it is not `mcts-uct`'s: its pre-registered mechanism
-//! criterion — measurably better science exposure or conversion in self-play —
-//! failed. Promoting it is a separate decision on its own evidence, and this
-//! crate deliberately does not smuggle it in.)
-//!
-//! ## Budget equivalence: worth more than a doubling
-//!
-//! 400 games each, `1..201`, candidate at `Nodes(1000)` against the
-//! pure-playout arm at `Nodes(2000)`:
-//!
-//! | half-budget side | score vs playout at `Nodes(2000)` | ms/game, half-budget side vs full |
-//! |---|---|---|
-//! | `blend:0.5,c=0.5` at `Nodes(1000)` | **55.5% +/- 2.5** | 437 vs 782 (56%) |
-//! | `leaf=rollout` at `Nodes(1000)` (control) | 40.0% +/- 2.4 | 408 vs 817 (50%) |
-//!
-//! Halving the node budget costs the playout arm 10 points of score; the blend
-//! at *half* the budget **beats** the full-budget playout outright. So the
-//! leaf value is worth more than a doubling of search — and it gets there on
-//! 56% of the opponent's wall clock against the control's 50%, i.e. its own
-//! throughput cost is about six points of extra wall clock for half the
-//! nodes, nothing like enough to consume a 15-point score advantage.
-//!
-//! ## Ladder: nothing regressed, and the gap to `phased` widened
-//!
-//! 400 games each at `Nodes(2000)`, seeds `1..200`:
-//!
-//! | opponent | default (blend) | plain playout |
-//! |---|---|---|
-//! | `greedy-ev` | **400/400** (+1161 Elo) | 399/400 (+970 Elo) |
-//! | `phased` | **89.25%** (+365.9 Elo) | 80.13% (+241.4 Elo) |
-//! | `alphabeta` | **84.50%** (+293.5 Elo) | 74.88% (+189.1 Elo) |
-//!
-//! The `phased` row was the pre-registered red flag, and it is the one to read
-//! first: this agent scores its leaves with `phased`'s *own* evaluation, so if
-//! it beat `phased` by **less** than a plain playout does, that would point at
-//! something wrong in the integration — an evaluation read with the wrong
-//! sign, a stale pricing context, a leaf value that is really just noise —
-//! rather than at a mechanism that merely fails to help. It beats `phased` by
-//! nine points more, which is the opposite of that failure signature.
-//!
-//! ## At a wall-clock budget
-//!
-//! The test this line of work has been burned by twice: a change that wins at
-//! a fixed node count can lose at a fixed clock if it costs more per unit of
-//! work (`mcts-uct`'s `Config::prior` is the cautionary tale — a `+11.7` point
-//! estimate at `Nodes` measured `-33` at `TimeMs`). 400 games per range,
-//! **one match at a time with `RAYON_NUM_THREADS=1`**, so each game gets a
-//! whole core and the per-decision work is production-like; nothing else was
-//! running.
-//!
-//! | budget | `1..200` | `5001..5200` | pooled (800) | Elo | control (playout vs playout) |
-//! |---|---|---|---|---|---|
-//! | `TimeMs(20)` | 67.13% | 62.25% | **64.69% +/- 1.69** | **+105.2 [+80.5, +130.9]** | 46.25%, -26.0 |
-//! | `TimeMs(100)` | 65.25% | 60.75% | **63.00% +/- 1.71** | **+92.5 [+67.9, +117.9]** | 48.50%, -10.4 |
-//!
-//! `AcceptH1` on all four range-runs. **The gain does not merely survive a
-//! wall-clock budget, it grows**: `+105` at `TimeMs(20)` and `+93` at
-//! `TimeMs(100)`, against `+89` at `Nodes(2000)`.
-//!
-//! That direction is the expected one rather than a surprise, and the cost
-//! table is why. A blend has no measurable throughput cost, so a wall-clock
-//! budget buys it essentially the same number of simulations it buys a plain
-//! playout, and the leaf-value advantage transfers intact. What is left is a
-//! budget effect: `TimeMs(20)` buys roughly a thousand simulations, which is
-//! the `Nodes(1000)` regime where the budget-equivalence table already showed
-//! the blend at its most valuable. A better leaf value is worth more when
-//! there are fewer leaves to average over — which is also why `TimeMs(100)`,
-//! at roughly five thousand simulations, lands slightly *below* `TimeMs(20)`
-//! and slightly above `Nodes(2000)`. The whole family of budgets is
-//! consistent: the effect is large everywhere and largest where search is
-//! scarcest. This is also why `duels-server` hands this agent a `TimeMs`
-//! budget in a live room and expects it to be the strongest thing there.
-//!
-//! Note the controls: `-26.0` at `TimeMs(20)` and `-10.4` at `TimeMs(100)`,
-//! against `-6.9` at `Nodes(2000)`. A wall-clock noise floor is genuinely
-//! wider, and wider still at the shorter budget where a scheduling hiccup is
-//! a larger fraction of a decision — which is the reason `CLAUDE.md` insists
-//! on running these one at a time. Both are nowhere near the candidate's
-//! interval: the closest approach is the `TimeMs(20)` control's upper bound
-//! against that budget's lower bound, and they are 106 points apart.
-//!
-//! ## Reproducing
-//!
-//! ```text
-//! cargo run --release -p duels-arena -- match \
-//!     --agent-a mcts-eval --agent-b mcts-eval:base=rollout \
-//!     --games 1200 --budget nodes:2000 --seed 1 --sprt-elo0 0 --sprt-elo1 20
-//! cargo run --release -p duels-agent-mcts-eval --example leaf_bench
-//! cargo run --release -p duels-eval --example calibrate -- 200
-//! ```
-//!
-//! # Re-measured at the production budget
-//!
-//! Every knob above was tuned at `Nodes(2000)`. `duels-server` hands this
-//! agent `Budget::TimeMs(1000)` in a live room, more than an order of
-//! magnitude away, and this section is what happens when the candidates that
-//! looked promising at the small budget are re-asked at a large one. The
-//! short version: **a small budget systematically overstates how much the
-//! rollout-policy knobs are worth**, because most of what they buy is
-//! something a deeper tree finds on its own.
-//!
-//! ## Why a node budget stands in for the wall-clock one
-//!
-//! A `TimeMs` comparison cannot be trusted on a shared machine. The "quiet
-//! machine" note in `duels_arena` is there because this project has thrown
-//! away results to exactly that, and this round was measured with three other
-//! agents' arena runs on the same box. A node budget is immune in the way
-//! that matters: contention makes a `Nodes` run *slower*, never *wrong*,
-//! because the simulations per decision are fixed by the budget instead of by
-//! whatever the scheduler handed out.
-//!
-//! So the protocol is a node budget picked to stand in for the production
-//! one. Self-play cost, measured on a quiet machine:
-//!
-//! | budget | wall clock per game |
-//! |---|---|
-//! | `Nodes(32000)` | **21.7 s** |
-//! | `TimeMs(1000)` | **68.6 s** |
-//!
-//! That table is a finding in its own right and worth reading before reusing
-//! the number. `Nodes(32000)` was chosen because an earlier estimate put
-//! `TimeMs(1000)` at 32-34k simulations; on this machine today it buys about
-//! **three times** that. So `Nodes(32000)` is a *conservative* stand-in — the
-//! right order of magnitude and sixteen times the budget every figure above
-//! was tuned at, but about a third of what the server actually spends. Read
-//! each row below as "at 16x the tuning budget"; a null there is strong
-//! evidence against a candidate at production scale without being proof.
-//!
-//! ## The rollout-policy knobs, at 16x the budget they were tuned at
-//!
-//! 1600 games per arm, two disjoint seed ranges (`1..401` and
-//! `200001..200401`, 800 games each), paired-seed and seat-swapped, candidate
-//! against [`Config::default`]. SPRT H0 = 0 vs H1 = 20 Elo, alpha = beta =
-//! 0.05. The mechanism gate was pre-registered as
-//! `civilian_share>=0.8x,science_share>=0.8x,military_share>=0.8x` — floors on
-//! all three lanes, because both candidates claim to change *how* the search
-//! wins and a floor objects to a lane getting worse without objecting to one
-//! that improved.
-//!
-//! | candidate | pooled Elo | 95% CI | cells | Elo verdict | gate |
-//! |---|---|---|---|---|---|
-//! | [`RaceWeights::TIER1_ONLY`] | **+6.3** | [-10.7, +23.3] | +3.9 / +8.7 | Inconclusive | Pass |
-//! | [`RolloutWeights::SMART`] | **+10.9** | [-6.2, +27.9] | +6.1 / +15.6 | Inconclusive | Pass |
-//!
-//! **[`RaceWeights::TIER1_ONLY`] does not reproduce at this budget.** Its
-//! `+26.1` Elo — measured over 1200 games at `Nodes(2000)`, quoted in its own
-//! documentation and in "The other knobs" below — becomes `+6.3` with an
-//! interval that comfortably contains zero. The two figures are not in
-//! conflict; they are the same effect at two budgets, and the mechanism says
-//! why it shrinks. Tier 1 is the *terminal rails*: a rollout that never misses
-//! a win already available. That is worth a lot when the tree is shallow
-//! enough that a rollout is most of what the search knows, and progressively
-//! less as the tree itself gets deep enough to see the win without help. Its
-//! military share does rise (14.7% against 12.5%), so it is still doing what
-//! it says — it just no longer buys Elo for it.
-//!
-//! **[`RolloutWeights::SMART`] was rejected on far too little data, and the
-//! honest re-read is still not an accept.** The standing verdict in
-//! `rollout`'s module docs came from two 40-game `TimeMs` runs on a loaded
-//! machine (47.5% and 50.0%), which at n=40 is a ~7.9-point standard error —
-//! wide enough to hide anything smaller than 55 Elo. At 1600 games it
-//! measures `+10.9` and reproduces its sign on both ranges, so "statistically
-//! indistinguishable from a coin flip" was an artefact of the sample size, not
-//! a finding. But `+10.9 [-6.2, +27.9]` is not an accept either, and it costs
-//! 10-25% throughput at a wall-clock budget, which this node-budget row does
-//! not charge it for. **Still non-default, now for a defensible reason.**
-//!
-//! The sharper result is the mechanism, which nothing at n=40 could have seen:
-//!
-//! | arm | military | science | civilian | tiebreak |
-//! |---|---|---|---|---|
-//! | `rollout=smart` | 13.5% | **6.2%** | 78.4% | 1.9% |
-//! | `Config::default` | 13.0% | **1.9%** | 84.3% | 0.8% |
-//!
-//! `SMART`'s per-card multipliers are exactly "prefer a build that grants a
-//! new scientific symbol or completes a pair", and they **triple** the share
-//! of wins that arrive as a scientific victory (z = 7.9) while leaving
-//! military alone. So the knob does what it was designed to do, at the
-//! mechanism level, unambiguously — and converts almost none of it into Elo.
-//! That is a cleaner statement of the same lesson the pure-static leaf
-//! taught: this game punishes a policy that commits to one win condition, and
-//! a science-biased rollout finds more science wins largely by trading away
-//! civilian ones (84.3% -> 78.4%).
-//!
-//! ## The R-105/R-110 chance-model fix, for the record
-//!
-//! Measured in the same round and at the same budget, because it changes what
-//! *this* agent's chance nodes sample and so needed the same protocol —
-//! though it is a `duels_core` correctness fix rather than a knob here, and it
-//! shipped on being correct rather than on this number.
-//!
-//! `engine::chance_outcomes` and `force_outcome` used to reason from the
-//! *count* of hidden guilds while R-110 had already made the per-slot purple
-//! back public. So a chance node uncovering a purple-backed slot enumerated
-//! ordinary cards for it, and a re-derived layout could move a guild between
-//! two slots that both stayed face down. Both are now conditioned on the mask,
-//! exactly as `sample_state` already was.
-//!
-//! | | games | W-L-D | Elo | 95% CI |
-//! |---|---:|---|---:|---|
-//! | seeds `1..401` | 800 | 411-387-2 | +10.4 | [-13.7, +34.5] |
-//! | seeds `200001..200401` | 800 | 391-409-0 | -7.8 | [-31.9, +16.3] |
-//! | **pooled** | **1600** | **802-796-2** | **+1.3** | **[-15.7, +18.3]** |
-//!
-//! `+1.3`, i.e. nothing, which is the answer the change's own prior predicted:
-//! only Age III has guilds and only a reveal of a covered slot is touched at
-//! all. Worth keeping the two cells rather than only the pooled row, because
-//! they are this round's cleanest illustration of why one seed range is not
-//! evidence — `+10.4` and then `-7.8`, a sign flip, and the first range alone
-//! would have read as a promising `+10`.
+//! [`LeafValue`] is inherited from `mcts-eval` whole, so this crate's default
+//! and its control arms are all one enum and one dispatch point. What changed
+//! is only which variant [`Config::default`] names. See the `leaf` module for
+//! the mechanism: where the one [`duels_eval::Root`] is built (for the
+//! inherited hand-crafted variants only), why the perspective is always Player
+//! One, why the learned variants need no sigmoid calibration on the way out,
+//! and the algebra relating [`LeafValue::Blend`]'s weight to the exploration
+//! constant.
+//!
+//! The learned variants consume **no randomness**, exactly as the hand-crafted
+//! static ones do, which is what keeps the tree's RNG stream a property of its
+//! chance nodes alone — and is why the ablation tests below can compare arenas
+//! node for node across the whole leaf family from one seeded stream.
 //!
 //! # The other knobs
 //!
 //! Every remaining [`Config`] field is `mcts-uct`'s, at `mcts-uct`'s tuned
-//! value, and its measurement lives in that crate's documentation rather than
-//! being restated here:
+//! value, inherited through `mcts-eval` unchanged, and its measurement lives in
+//! those crates' documentation rather than being restated here:
+//! [`Config::race`], [`Config::prior`], [`Config::root_determinizations`],
+//! [`Config::rollout`], the two widening constants.
 //!
-//! - [`Config::race`] — [`RaceWeights::TIER1_ONLY`]'s terminal rails,
-//!   `+26.1` Elo **at `Nodes(2000)`**, additive with this crate's leaf value
-//!   (see the composition table above), and non-default because the hypothesis
-//!   it was built to test did not survive. Re-measured at `Nodes(32000)` it is
-//!   `+6.3 [-10.7, +23.3]` over 1600 games and no longer distinguishable from
-//!   zero — see "Re-measured at the production budget" above before quoting
-//!   the `+26.1` at any budget near the server's.
-//! - [`Config::prior`] — [`PriorMode`], `duels-strategy` steering the tree.
-//!   Reproducibly steers visits towards races; reproducibly fails to convert
-//!   that into Elo (`+11.7` at `Nodes` with an interval containing zero,
-//!   `-33` at `TimeMs` once its 6-8% throughput cost is paid).
-//! - [`Config::root_determinizations`] — root ensembling. Measured at `N` of
-//!   1, 2, 4 and 8, at two budget kinds, against a same-configuration control:
-//!   no gain anywhere, a mild loss by `N = 8`.
+//! Two are this crate's own concern:
+//!
+//! - [`Config::value_summation`] selects `duels_value::Summation`. The
+//!   four-way accumulator unroll is the default; it is worth `1.41x` on the
+//!   forward pass and measured Elo-neutral at `-1.7 [-25.8, +22.3]` over 798
+//!   games (`p1-unroll-ab/`, `p1-unroll-ab-extended/`). It reassociates a
+//!   floating-point sum, so `Summation::Serial` stays reachable
+//!   (`mcts-value:value_sum=serial`) and the spec string records which order
+//!   ran.
+//! - [`Config::eval_override`] is inherited and is only read by the inherited
+//!   hand-crafted leaves. It does nothing on this crate's default path. Note
+//!   that [`Config::eval_base`] deliberately leaves it `None`, so the ablation
+//!   control is `mcts-eval` **as shipped** — tracking `duels-eval` live — and
+//!   not a frozen snapshot of it.
 //!
 //! The value convention (every node accumulates the result from
 //! [`duels_core::Player::One`]'s perspective; the zero-sum flip happens once,
 //! at selection) and the widening rule are documented in the `tree` module.
 //!
+//! # Reproducing
+//!
+//! ```text
+//! cargo run --release -p duels-arena -- experiment \
+//!     --candidate mcts-value --control mcts-eval \
+//!     --pairs 400 --budget nodes:2000 --seed 1 --label mcts-value-vs-champion
+//! cargo run --release -p duels-value --example value_bench
+//! ```
+//!
 //! # Example
 //!
 //! ```
-//! use duels_agent_mcts_eval::MctsEvalAgent;
+//! use duels_agent_mcts_value::MctsValueAgent;
 //! use duels_agents_api::{Agent, Budget};
 //! use duels_core::engine;
 //!
-//! let mut agent = MctsEvalAgent::new(7);
+//! let mut agent = MctsValueAgent::new(7);
 //! let state = engine::new_game(7);
 //! let legal = engine::legal_actions(&state);
 //! let action = agent.choose(&state.observation(), &legal, Budget::Nodes(64));
 //! assert!(legal.contains(&action));
 //! ```
+//!
+//! [mcts_eval]: https://github.com/kncesarini/duels/tree/main/crates/agents/mcts-eval
 
 #![deny(clippy::disallowed_methods)]
 #![warn(missing_docs)]
 
 mod chance;
+/// The learned weights, pinned to a table of twenty fixed positions. Tests
+/// only — see the module's own docs for why this crate pins what `mcts-eval`
+/// deliberately tracks live.
+#[cfg(test)]
+mod golden;
 mod leaf;
 mod rollout;
 mod tree;
@@ -651,9 +401,13 @@ pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode, RootStats};
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
-/// half a playout and half [`duels_eval`]'s evaluation.
+/// [`duels_value`]'s learned outcome model and no playout at all.
+///
+/// Read the crate docs' "Read this before you read the Elo numbers" section
+/// before treating this as the stronger agent: it is measured a long way ahead
+/// of `mcts-eval` and essentially level with it through any third party.
 #[derive(Debug)]
-pub struct MctsEvalAgent {
+pub struct MctsValueAgent {
     cfg: Config,
     rng: StdRng,
     /// Simulations run over the agent's whole lifetime, for throughput
@@ -666,13 +420,16 @@ pub struct MctsEvalAgent {
     last_root: Option<RootStats>,
 }
 
-impl MctsEvalAgent {
-    /// A new agent with the default configuration, seeded from `seed`.
+impl MctsValueAgent {
+    /// A new agent with the default configuration, seeded from `seed`:
+    /// [`LeafValue::Learned`] at `exploration = 0.15`.
     ///
-    /// The [`duels_eval::Config`] the search will score against is **not**
-    /// captured here — it is read in `tree::Tree::new`, per search. See the
-    /// crate docs' "Tracking `duels-eval` live" section for why that
-    /// distinction is load-bearing rather than incidental.
+    /// The [`duels_value::Net`] the search scores against is **not** parsed
+    /// here — it is built in `tree::Tree::new`, per search, so that a
+    /// long-lived `duels-server` room holds no hidden cached state. The
+    /// weights it reads are pinned by the `golden` module, which is the
+    /// opposite call from `mcts-eval`'s on `duels-eval`; the crate docs' "The
+    /// weights are pinned" section is the argument for it.
     pub fn new(seed: u64) -> Self {
         Self::with_config(seed, Config::default())
     }
@@ -720,10 +477,10 @@ impl MctsEvalAgent {
     }
 }
 
-impl Agent for MctsEvalAgent {
+impl Agent for MctsValueAgent {
     fn spec(&self) -> AgentSpec {
         AgentSpec {
-            name: "mcts-eval".to_string(),
+            name: "mcts-value".to_string(),
             version: "1.0.0".to_string(),
             params: self.cfg.describe(),
         }
@@ -905,7 +662,7 @@ mod tests {
     const CI_BUDGET: Budget = Budget::Nodes(48);
 
     fn play(seed: u64, seat: Player, budget: Budget) -> (GameResult, u64) {
-        let mut mcts = MctsEvalAgent::new(seed ^ 0x0BAD_1DEA_0BAD_1DEA);
+        let mut mcts = MctsValueAgent::new(seed ^ 0x0BAD_1DEA_0BAD_1DEA);
         let mut opponent = RandomAgent::new(seed ^ 0x5EED_5EED);
         let mut state = engine::new_game(seed);
         let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
@@ -937,9 +694,9 @@ mod tests {
     }
 
     /// **The crate's identity, asserted rather than described.** The default
-    /// configuration is exactly the one the `+89.2` Elo measurement was taken
-    /// on: `leaf=blend:0.5` with `c` rescaled to `0.5`, and every other knob
-    /// left at `mcts-uct`'s tuned value.
+    /// configuration is exactly the one the crate docs' Elo tables were taken
+    /// on: `leaf=learned` at the swept `c = 0.15`, and every other knob left at
+    /// `mcts-uct`'s tuned value, inherited through `mcts-eval`.
     ///
     /// If this test ever has to be *changed*, the crate documentation's
     /// measurement tables no longer describe the shipped agent, and the fix is
@@ -947,14 +704,14 @@ mod tests {
     #[test]
     fn the_default_configuration_is_the_one_that_was_measured() {
         let cfg = Config::default();
-        assert_eq!(cfg.leaf, LeafValue::Blend { weight: 0.5 });
-        assert_eq!(cfg.exploration.to_bits(), 0.5f64.to_bits());
-        // The rescaling relation the blend's algebra derives, spelled out:
-        // `c = c0 * (1 - weight)` against `mcts-uct`'s tuned `c0 = 1.0`.
-        let LeafValue::Blend { weight } = cfg.leaf else {
-            panic!("the default leaf is a blend")
-        };
-        assert_eq!(cfg.exploration.to_bits(), (1.0 * (1.0 - weight)).to_bits());
+        assert_eq!(cfg.leaf, LeafValue::Learned);
+        assert_eq!(cfg.exploration.to_bits(), 0.15f64.to_bits());
+        // `c` here is *swept*, not derived. Spelled out as a negative, because
+        // the one thing a reader is likely to assume is the relation that does
+        // apply next door: `LeafValue::Blend`'s `c = c0 * (1 - weight)` against
+        // `mcts-uct`'s `c0 = 1.0` would prescribe 1.0 for a leaf with no
+        // playout weight at all, and 1.0 is nowhere near what measured best.
+        assert_ne!(cfg.exploration.to_bits(), 1.0f64.to_bits());
         // Everything else is untouched.
         assert_eq!(cfg.race, RaceWeights::NEUTRAL);
         assert_eq!(cfg.prior, PriorMode::None);
@@ -962,19 +719,29 @@ mod tests {
         assert_eq!(cfg.root_determinizations, 1);
         assert_eq!(cfg.chance_widen_c.to_bits(), 1.0f64.to_bits());
         assert_eq!(cfg.chance_widen_alpha.to_bits(), 0.5f64.to_bits());
+        assert_eq!(cfg.value_summation, duels_value::Summation::default());
+        // Nothing on the default path reads the hand-crafted evaluation.
+        assert_eq!(cfg.eval_override, None);
+        assert!(!cfg.leaf.needs_eval_root());
+        assert!(cfg.leaf.needs_learned_net());
     }
 
-    /// **The live-tracking design, asserted rather than described.** There is
-    /// no configuration field to pin, so the check has to be behavioural: the
-    /// search's static leaf value must equal what a `duels_eval::Root` built
-    /// from `duels_eval::Config::default()` produces — bit for bit, at
-    /// whatever that default currently is.
+    /// **The ablation control is `mcts-eval` as shipped**, not a frozen copy of
+    /// it: [`Config::eval_base`]'s static leaf value must equal what a
+    /// `duels_eval::Root` built from `duels_eval::Config::default()` produces —
+    /// bit for bit, at whatever that default currently is.
     ///
-    /// This is what a `Config::eval_generation` pin, or a golden-values table,
-    /// would break. See the crate docs' "Tracking `duels-eval` live" section:
-    /// the opposite choice from `mcts-uct`'s is deliberate.
+    /// Inherited from `mcts-eval`, where the same test pins that agent's
+    /// deliberate live-tracking design, and it matters just as much here for a
+    /// different reason: a control that froze the evaluation would stop being
+    /// `mcts-eval` the moment a `duels-eval` round landed, and every Elo
+    /// number in the crate docs is measured against that agent.
+    ///
+    /// Note what this does *not* say about the default path, which reads no
+    /// evaluation at all — `tree::tests::the_evaluation_cannot_reach_the_default_leaf`
+    /// is the complementary statement.
     #[test]
-    fn the_evaluation_configuration_is_duels_evals_live_default() {
+    fn the_eval_base_control_tracks_duels_evals_live_default() {
         for seed in 0..8u64 {
             let mut state = engine::new_game(seed);
             let mut rng = StdRng::seed_from_u64(seed ^ 0x7E57);
@@ -1010,44 +777,74 @@ mod tests {
 
     #[test]
     fn spec_reports_the_expected_name_version_and_params() {
-        let agent = MctsEvalAgent::new(1);
+        let agent = MctsValueAgent::new(1);
         let spec = agent.spec();
-        assert_eq!(spec.name, "mcts-eval");
+        assert_eq!(spec.name, "mcts-value");
         assert_eq!(spec.version, "1.0.0");
-        assert!(spec.params.contains("c=0.500"), "{}", spec.params);
-        assert!(spec.params.contains("leaf=blend(0.500)"), "{}", spec.params);
+        assert!(spec.params.contains("c=0.150"), "{}", spec.params);
+        assert!(spec.params.contains("leaf=learned"), "{}", spec.params);
         assert!(spec.params.contains("chance="), "{}", spec.params);
         assert!(spec.params.contains("rollout="), "{}", spec.params);
     }
 
-    /// The spec string has to record the *evaluation itself*, not a
-    /// generation label — that is what replaces the pin `mcts-uct` used, and
-    /// it is what makes a results file from before a `duels-eval` round
-    /// distinguishable from one after it. See the crate docs.
+    /// **The spec string has to record which weights produced a results
+    /// file.** The default path scores every leaf with a fitted artefact, so
+    /// the params string carries [`duels_value::default_weights_id`] — the
+    /// network's shape plus a content hash of the embedded bytes — and the
+    /// summation order the forward pass used.
+    ///
+    /// This is the provenance half of the pinning design; the `golden`
+    /// module's table is the other half. Between them a retrain cannot land
+    /// silently *and* cannot leave an old results file uninterpretable.
     #[test]
-    fn the_spec_records_the_live_evaluation_configuration() {
-        let params = MctsEvalAgent::new(1).spec().params;
-        let live = duels_eval::Config::default().params_string();
+    fn the_spec_records_which_learned_weights_it_used() {
+        let params = MctsValueAgent::new(1).spec().params;
         assert!(
-            params.ends_with(&format!("eval={live}")),
-            "the spec must carry the whole live duels-eval configuration: {params}"
+            params.ends_with(&format!(
+                "value={}/{}",
+                duels_value::default_weights_id(),
+                duels_value::Summation::default().name()
+            )),
+            "the spec must name the weights and the summation order: {params}"
         );
-        // ...and no frozen generation label anywhere.
+        // The hash is a real hash of real bytes, not a placeholder.
+        assert!(
+            duels_value::default_weights_id().contains('/'),
+            "{}",
+            duels_value::default_weights_id()
+        );
+        // The default path reads no hand-crafted evaluation, and says so
+        // rather than recording a configuration it never consults.
+        assert!(params.contains("eval=unused"), "{params}");
         assert!(!params.contains("evalgen="), "{params}");
 
-        // The pure-playout ablation does not score anything, so it says so
-        // rather than recording a configuration it never reads.
-        let base = MctsEvalAgent::with_config(1, Config::rollout_base())
+        // The `mcts-eval` control is the mirror image: it records the whole
+        // live `duels-eval` configuration and no weights identity, because it
+        // parses no network. That is what makes two results files from either
+        // side of this ablation tell you which arm they came from.
+        let base = MctsValueAgent::with_config(1, Config::eval_base())
             .spec()
             .params;
-        assert!(base.contains("eval=unused"), "{base}");
-        assert!(base.contains("leaf=rollout"), "{base}");
-        assert!(base.contains("c=1.000"), "{base}");
+        let live = duels_eval::Config::default().params_string();
+        assert!(base.ends_with(&format!("eval={live}")), "{base}");
+        assert!(base.contains("leaf=blend(0.500)"), "{base}");
+        assert!(base.contains("c=0.500"), "{base}");
+        assert!(!base.contains("value="), "{base}");
+
+        // ...and the pure-playout ablation at the bottom of the chain records
+        // neither.
+        let rollout = MctsValueAgent::with_config(1, Config::rollout_base())
+            .spec()
+            .params;
+        assert!(rollout.contains("eval=unused"), "{rollout}");
+        assert!(rollout.contains("leaf=rollout"), "{rollout}");
+        assert!(rollout.contains("c=1.000"), "{rollout}");
+        assert!(!rollout.contains("value="), "{rollout}");
     }
 
     #[test]
     fn a_single_legal_action_is_returned_without_searching() {
-        let mut agent = MctsEvalAgent::new(3);
+        let mut agent = MctsValueAgent::new(3);
         let state = engine::new_game(3);
         let only = [engine::legal_actions(&state)[0]];
         let chosen = agent.choose(&state.observation(), &only, Budget::Nodes(10_000));
@@ -1057,7 +854,7 @@ mod tests {
 
     #[test]
     fn every_returned_action_is_one_of_the_offered_ones() {
-        let mut agent = MctsEvalAgent::new(11);
+        let mut agent = MctsValueAgent::new(11);
         let state = engine::new_game(11);
         let legal = engine::legal_actions(&state);
         for _ in 0..5 {
@@ -1068,7 +865,7 @@ mod tests {
 
     #[test]
     fn a_node_budget_runs_exactly_that_many_simulations() {
-        let mut agent = MctsEvalAgent::new(5);
+        let mut agent = MctsValueAgent::new(5);
         let state = engine::new_game(5);
         let legal = engine::legal_actions(&state);
         agent.choose(&state.observation(), &legal, Budget::Nodes(37));
@@ -1079,7 +876,7 @@ mod tests {
 
     #[test]
     fn a_time_budget_returns_promptly_and_does_some_work() {
-        let mut agent = MctsEvalAgent::new(9);
+        let mut agent = MctsValueAgent::new(9);
         let state = engine::new_game(9);
         let legal = engine::legal_actions(&state);
         let a = agent.choose(&state.observation(), &legal, Budget::TimeMs(20));
@@ -1093,7 +890,7 @@ mod tests {
         let legal = engine::legal_actions(&state);
         let obs = state.observation();
         let pick = |seed: u64| {
-            let mut agent = MctsEvalAgent::new(seed);
+            let mut agent = MctsValueAgent::new(seed);
             agent.choose(&obs, &legal, Budget::Nodes(200))
         };
         assert_eq!(pick(4), pick(4));
@@ -1150,7 +947,7 @@ mod tests {
     fn the_rollout_base_is_the_mcts_uct_agent_move_for_move() {
         for seed in 0..8u64 {
             let cfg = Config::rollout_base();
-            let mut agent = MctsEvalAgent::with_config(seed, cfg);
+            let mut agent = MctsValueAgent::with_config(seed, cfg);
             // The same seed, so the same stream, driven by the copy above.
             let mut legacy_rng = StdRng::seed_from_u64(seed);
 
@@ -1178,6 +975,99 @@ mod tests {
         }
     }
 
+    /// `choose` exactly as `mcts-eval`'s reads: one determinization, one tree,
+    /// the whole node budget, that agent's ensemble move-selection rule — and,
+    /// since it drives `tree::Tree::eval_legacy_simulate` rather than
+    /// `simulate`, that agent's search and leaf dispatch too.
+    ///
+    /// It is a copy on purpose: a test that called the live code would prove
+    /// nothing. The `Slices` budget arithmetic is not reproduced because this
+    /// is only ever called at `root_determinizations == 1`, where that arm
+    /// reduces to `nodes.max(1)` simulations on one tree — which is what the
+    /// loop below does.
+    fn mcts_eval_choose(
+        rng: &mut StdRng,
+        cfg: Config,
+        obs: &Observation,
+        legal: &[Action],
+        nodes: u64,
+    ) -> Action {
+        if legal.len() == 1 {
+            return legal[0];
+        }
+        let root = obs.sample_state(rng);
+        let mut actions: Vec<Action> = legal
+            .iter()
+            .copied()
+            .filter(|&a| engine::is_legal(&root, a))
+            .collect();
+        if actions.is_empty() {
+            actions = legal.to_vec();
+        }
+        let mut tree = tree::Tree::new(root, actions, cfg, rng);
+        for _ in 0..nodes.max(1) {
+            tree.eval_legacy_simulate(rng);
+        }
+        let chosen = tree::eval_legacy_best_of(std::slice::from_ref(&tree)).unwrap_or(legal[0]);
+        if legal.contains(&chosen) {
+            chosen
+        } else {
+            legal[0]
+        }
+    }
+
+    /// **The copied agent is `mcts-eval`**, at the whole-agent level and across
+    /// the whole leaf family: this crate's `choose` plays move for move with
+    /// the verbatim frozen copy above, over whole seeded games, at its own
+    /// default and at both ablation controls.
+    ///
+    /// Checked over games rather than only at the opening position, so that the
+    /// RNG streams have to stay in step across dozens of `choose` calls, chance
+    /// nodes, pending choices and all.
+    /// `tree::tests::the_copied_search_is_the_mcts_eval_search_node_for_node`
+    /// is the stronger, arena-for-arena form of the same claim.
+    ///
+    /// Running it at [`Config::default`] as well as at [`Config::eval_base`] is
+    /// the point: what is being pinned is not "the control arm is `mcts-eval`"
+    /// alone but "*everything below the leaf value* is `mcts-eval`", which is
+    /// what makes the crate docs' Elo numbers an ablation on one variable.
+    #[test]
+    fn the_eval_base_is_the_mcts_eval_agent_move_for_move() {
+        for (name, cfg) in [
+            ("eval_base", Config::eval_base()),
+            ("default", Config::default()),
+            ("rollout_base", Config::rollout_base()),
+        ] {
+            for seed in 0..4u64 {
+                let mut agent = MctsValueAgent::with_config(seed, cfg);
+                // The same seed, so the same stream, driven by the copy above.
+                let mut legacy_rng = StdRng::seed_from_u64(seed);
+
+                let mut state = engine::new_game(seed ^ 0xC0FF_EE00);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0xFEED);
+                let mut decisions = 0u32;
+                loop {
+                    let legal = engine::legal_actions(&state);
+                    if legal.is_empty() {
+                        break;
+                    }
+                    let obs = state.observation();
+                    let budget = 24 + u64::from(decisions % 7);
+                    let got = agent.choose(&obs, &legal, Budget::Nodes(budget));
+                    let want = mcts_eval_choose(&mut legacy_rng, cfg, &obs, &legal, budget);
+                    assert_eq!(
+                        got, want,
+                        "{name}, seed {seed}, decision {decisions}: not the mcts-eval agent"
+                    );
+                    engine::apply(&mut state, got, &mut rng).expect("a legal action");
+                    decisions += 1;
+                    assert!(decisions < 5_000);
+                }
+                assert!(decisions > 20, "the game was too short to prove much");
+            }
+        }
+    }
+
     /// A leaf variant must not change *what* the agent is allowed to do: full
     /// seeded games from both seats, every variant, no panic and no illegal
     /// move — and every variant has to actually search.
@@ -1201,7 +1091,7 @@ mod tests {
                 } else {
                     Player::Two
                 };
-                let mut mcts = MctsEvalAgent::with_config(
+                let mut mcts = MctsValueAgent::with_config(
                     seed ^ 0x0BAD_1DEA,
                     Config {
                         leaf,
@@ -1240,7 +1130,7 @@ mod tests {
     #[test]
     fn the_spec_reports_the_leaf_value() {
         let describe = |leaf| {
-            MctsEvalAgent::with_config(
+            MctsValueAgent::with_config(
                 1,
                 Config {
                     leaf,
@@ -1280,11 +1170,15 @@ mod tests {
             )),
             "the spec does not name the summation order: {learned}"
         );
-        // ...and the default configuration's spec string is untouched by any
-        // of this, because a learned leaf is strictly opt-in.
+        // ...and the *default* configuration's spec string carries all of it,
+        // because here a learned leaf is not an option but the product.
         let default = describe(Config::default().leaf);
-        assert!(!default.contains("value="), "{default}");
-        assert!(!default.contains("learned"), "{default}");
+        assert!(default.contains("leaf=learned;"), "{default}");
+        assert!(default.contains("value="), "{default}");
+        // The hand-crafted variants, which are the controls, carry none of it.
+        for control in [LeafValue::Blend { weight: 0.5 }, LeafValue::Rollout] {
+            assert!(!describe(control).contains("value="), "{control:?}");
+        }
     }
 
     /// A race variant must not change *what* the agent is allowed to do: full
@@ -1309,7 +1203,7 @@ mod tests {
                 } else {
                     Player::Two
                 };
-                let mut mcts = MctsEvalAgent::with_config(
+                let mut mcts = MctsValueAgent::with_config(
                     seed ^ 0x0BAD_1DEA,
                     Config {
                         race,
@@ -1355,7 +1249,7 @@ mod tests {
     #[test]
     fn the_spec_reports_the_race_variant() {
         let describe = |race| {
-            MctsEvalAgent::with_config(
+            MctsValueAgent::with_config(
                 1,
                 Config {
                     race,
@@ -1391,7 +1285,7 @@ mod tests {
                 } else {
                     Player::Two
                 };
-                let mut mcts = MctsEvalAgent::with_config(
+                let mut mcts = MctsValueAgent::with_config(
                     seed ^ 0x0BAD_1DEA,
                     Config {
                         prior,
@@ -1430,7 +1324,7 @@ mod tests {
     #[test]
     fn the_spec_reports_the_prior_mode() {
         let describe = |prior| {
-            MctsEvalAgent::with_config(
+            MctsValueAgent::with_config(
                 1,
                 Config {
                     prior,
@@ -1454,7 +1348,7 @@ mod tests {
         let obs = state.observation();
         let legal = engine::legal_actions(&state);
         for n in [1usize, 2, 4, 8] {
-            let mut agent = MctsEvalAgent::with_config(
+            let mut agent = MctsValueAgent::with_config(
                 5,
                 Config {
                     root_determinizations: n,
@@ -1476,7 +1370,7 @@ mod tests {
         let state = engine::new_game(17);
         let obs = state.observation();
         let legal = engine::legal_actions(&state);
-        let mut agent = MctsEvalAgent::with_config(
+        let mut agent = MctsValueAgent::with_config(
             2,
             Config {
                 root_determinizations: 4,
@@ -1536,7 +1430,7 @@ mod tests {
         );
     }
 
-    /// [`MctsEvalAgent::last_root`] must be **only** a readout: adding it may
+    /// [`MctsValueAgent::last_root`] must be **only** a readout: adding it may
     /// not change a single decision the agent makes.
     ///
     /// Driven the way the gold-standard identity tests in this repository are:
@@ -1548,8 +1442,8 @@ mod tests {
     #[test]
     fn reading_the_root_readout_changes_no_decision() {
         for seed in 0..6u64 {
-            let mut quiet = MctsEvalAgent::new(seed);
-            let mut watched = MctsEvalAgent::new(seed);
+            let mut quiet = MctsValueAgent::new(seed);
+            let mut watched = MctsValueAgent::new(seed);
             let mut state = engine::new_game(seed);
             let mut rng = StdRng::seed_from_u64(seed ^ 0xC0FFEE);
             loop {
@@ -1581,7 +1475,7 @@ mod tests {
         let budget = Budget::Nodes(200);
         let mut seen_searched_plies = 0u32;
         for seed in 0..4u64 {
-            let mut agent = MctsEvalAgent::new(seed);
+            let mut agent = MctsValueAgent::new(seed);
             let mut state = engine::new_game(seed);
             let mut rng = StdRng::seed_from_u64(seed ^ 0xD15EA5E);
             loop {

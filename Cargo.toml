@@ -5,6 +5,10 @@ members = [
     "crates/duels-agents-api",
     "crates/duels-strategy",
     "crates/duels-eval",
+    # A learned position value, below the agents next to `duels-eval`. Opt-in
+    # research work: nothing on any agent's default path reads it. See its
+    # crate docs, which hold the whole measurement record.
+    "crates/duels-value",
     "crates/duels-arena",
     "crates/duels-server",
     # Retired from the agent roster, kept as a test-only fixture: the
@@ -15,6 +19,11 @@ members = [
     "crates/agents/phased",
     "crates/agents/mcts-uct",
     "crates/agents/mcts-eval",
+    # `mcts-eval`'s search with `duels-value`'s learned leaf at the re-derived
+    # `c = 0.15`. Registered and playable, deliberately NOT on
+    # `duels_arena::leaderboard::LADDER`: it is measured strongly against
+    # `mcts-eval` and not against any third party. See its crate docs.
+    "crates/agents/mcts-value",
     "crates/agents/alphabeta",
 ]
 

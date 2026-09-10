@@ -18,6 +18,12 @@ duels-strategy = { path = "../../duels-strategy" }
 # rather than a dependency on it, per the "agent crates are self-contained"
 # invariant.
 duels-eval = { path = "../../duels-eval" }
+# The *learned* position value, read only by the opt-in
+# `LeafValue::Learned` / `LeafValue::LearnedBlend` variants. Nothing on this
+# crate's default path touches it, and it is a library below the agents for the
+# same reason `duels-eval` is. See `duels-value`'s crate docs for what it
+# measures inside this search.
+duels-value = { path = "../../duels-value" }
 rand = { workspace = true }
 
 [dev-dependencies]

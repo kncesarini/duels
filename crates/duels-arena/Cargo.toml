@@ -11,9 +11,18 @@ duels-core = { path = "../duels-core" }
 duels-agents-api = { path = "../duels-agents-api" }
 duels-agent-phased = { path = "../agents/phased" }
 duels-eval = { path = "../duels-eval" }
+# Read by `examples/feature_dump.rs`, which turns a `value_corpus.rs` corpus
+# into a `duels-value` training matrix. A normal dependency rather than a
+# dev-dependency only because cargo examples are built from `[dependencies]`.
+duels-value = { path = "../duels-value" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 duels-agent-mcts-eval = { path = "../agents/mcts-eval" }
+# On `leaderboard::LADDER` and the current `leaderboard::CHAMPION`. Measured
+# strongly against `mcts-eval` and much less so through any third party, which
+# is a caveat on how to read its rating rather than a reason it is absent —
+# see that constant's docs and this agent's crate docs.
+duels-agent-mcts-value = { path = "../agents/mcts-value" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }

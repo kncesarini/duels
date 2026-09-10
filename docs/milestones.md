@@ -69,9 +69,31 @@ as the anchor and the easy end of the opponent picker** — that policy is withd
 misread. Each was removed from `LADDER`, `agent_registry`/`duels-server::room`'s
 `KNOWN_AGENTS`, the web UI's opponent picker, and `agent_spec`'s parameter parsers.
 `greedy` and `greedy-ev`'s crates are deleted outright; **`crates/agents/random` survives
-as a test-only fixture** (see "the one crate that stayed" below). The ladder is now four
-agents and six pairings: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`
+as a test-only fixture** (see "the one crate that stayed" below). That left four agents and
+six pairings; adding `mcts-value` (below) brings the ladder to five agents and ten
+pairings: `phased`, `alphabeta`, `mcts-uct`, `mcts-eval`, `mcts-value`
 (`leaderboard::CHAMPION`).
+
+**`duels-value` and `mcts-value` — a learned leaf value, and the new champion.**
+`duels-value` is a learned 4-way outcome model (211x128x4) sitting alongside `duels-eval`
+in the layering; `mcts-value` is the same MCTS search as `mcts-eval` with that network as
+its leaf instead of the playout/eval blend, at a re-derived `c = 0.15`. It measures
+**+91.4 Elo `[+66.5, +116.3]`** over 800 games against `mcts-eval` at `nodes:2000`, and
+larger at `nodes:32000` (+140.1) and `time_ms:1000` (+140.6). Re-measured after #61 fixed
+the chance model to condition on the public guild mask (R-105, R-110), it holds at
+**+84.9 `[+60.1, +109.7]`** — see `arena/results/experiments/post-r105r110-confirm/`.
+
+**The caveat is part of the result, not a hedge.** The margin is a *targeted counter to
+`mcts-eval`'s known science-value miscalibration* (the `science_calibration` investigation,
+#57, established that gap independently) rather than uniformly stronger play: in the
+confirmation run `mcts-value` took 134 of its 496 wins by scientific supremacy where
+`mcts-eval` took 4 of its 304, with civilian wins nearly level. Through a third party most
+of the margin evaporates — about 28% of it survives via `mcts-uct` and 12% via
+`alphabeta`, both differences with intervals containing zero, and a joint Bradley-Terry fit
+put the pair 74 points apart where the direct match said 91.5. It therefore shipped
+*registered but deliberately unrated* at first, with the promotion left as an explicit
+project-owner call; that call has since been made, and
+`leaderboard::CHAMPION`'s docs carry the numbers and the caveat together.
 
 **The Elo anchor moved from `greedy` to `mcts-uct`, and the scale changed with it.**
 Deleting `greedy` removed `ANCHOR_AGENT` entirely, so the joint Bradley-Terry fit needed a
@@ -89,7 +111,8 @@ and it is already this project's canonical yardstick. `ANCHOR_ELO` stays at 1000
 `arena/leaderboard.md`/`.json` predating this was measured against `greedy` = 1000 and is
 not comparable to anything measured after it.** The next nightly round robin refits from
 scratch against the new anchor; nothing rescales the old numbers, and with the anchor now
-second of four rather than second-from-bottom of seven, ratings below 1000 are expected.
+mid-ladder (third of five) rather than second-from-bottom of seven, ratings below 1000 are
+expected.
 Those two files were left as the nightly last generated them (they are generated artifacts,
 and #55 set the same precedent) — they will be stale, listing retired agents, until that
 run lands.

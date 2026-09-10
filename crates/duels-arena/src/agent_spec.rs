@@ -45,8 +45,10 @@
 //!   `rollout`, `race`, `chance_widen_c`, `chance_widen_alpha`,
 //!   `max_rollout_plies`, `time_check_interval`,
 //!   `root_determinizations`/`dets`, `prior`), plus the keys that are its
-//!   own: `leaf` (`rollout`, `static`, `truncated:<plies>` or
-//!   `blend:<weight>` — `blend:0.5` by default) and `base`
+//!   own: `leaf` (`rollout`, `static`, `truncated:<plies>`,
+//!   `blend:<weight>` — `blend:0.5` by default — and the two opt-in
+//!   `duels-value` learned leaves, `learned` and `learned_blend:<weight>`)
+//!   and `base`
 //!   (`default`, or `rollout` for [`duels_agent_mcts_eval::Config::rollout_base`],
 //!   the pure-playout `c = 1.0` control that is `mcts-uct` move for move).
 //!   By default this agent tracks `duels_eval::Config::default()` live
@@ -57,7 +59,23 @@
 //!   A/B-testing-only exception: it pins this one agent instance to a frozen
 //!   `duels_eval::Config::vN()` snapshot so it can be matched directly, in one
 //!   binary, against a live (unpinned) `mcts-eval` — see
-//!   [`duels_agent_mcts_eval::Config::eval_override`].
+//!   [`duels_agent_mcts_eval::Config::eval_override`]. `value_sum=serial` is
+//!   the analogous exception for the learned leaves' arithmetic: it selects
+//!   `duels_value::Summation::Serial`, the accumulation order that predates
+//!   the four-way unroll, so the two can be matched directly in one binary.
+//!   It is read only by a learned leaf and so cannot move the default.
+//! * `mcts-value` -- the same search again, keyed identically to `mcts-eval`
+//!   (including `leaf`, `value_sum`, `eval=vN` and the `duels-eval` scalar
+//!   fallthrough), with a different `base` set: `eval` selects
+//!   [`duels_agent_mcts_value::Config::eval_base`], which is `mcts-eval` at
+//!   its default, and `rollout` selects
+//!   [`duels_agent_mcts_value::Config::rollout_base`], which is `mcts-uct`.
+//!   Both are asserted move-for-move against verbatim frozen copies inside
+//!   that agent crate, so the whole ablation chain runs in one binary:
+//!   `mcts-value` vs `mcts-value:base=eval` vs `mcts-value:base=rollout`.
+//!   Note the reversal against `mcts-eval`: here `value_sum` is on the
+//!   default path and the `duels-eval` keys are not, because the default leaf
+//!   reads no hand-crafted evaluation at all.
 //! * `phased` -- `base` (`v1`..`v8`/`default`), the
 //!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
 //!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
@@ -120,6 +138,11 @@ use duels_agent_mcts_eval::{
 use duels_agent_mcts_uct::{
     Config as MctsConfig, MctsAgent, PriorMode, RaceWeights, RolloutWeights,
 };
+use duels_agent_mcts_value::{
+    Config as MctsValueConfig, LeafValue as ValueLeafValue, MctsValueAgent,
+    PriorMode as ValuePriorMode, RaceWeights as ValueRaceWeights,
+    RolloutWeights as ValueRolloutWeights,
+};
 use duels_agent_phased::{
     Blend as PhasedBlend, CoinModel, Config as PhasedConfig, EconomyModel, GuildPricing, MenuFloor,
     MenuShieldPricing, MilitaryModel, PendingModel, PhasedAgent, RailModel, SupplyModel,
@@ -155,6 +178,10 @@ pub fn make_agent_from_spec(spec: &str, seed: u64) -> Result<Box<dyn Agent + Sen
         "mcts-eval" => {
             let cfg = parse_mcts_eval_config(params)?;
             Ok(Box::new(MctsEvalAgent::with_config(seed, cfg)))
+        }
+        "mcts-value" => {
+            let cfg = parse_mcts_value_config(params)?;
+            Ok(Box::new(MctsValueAgent::with_config(seed, cfg)))
         }
         "phased" => {
             let cfg = parse_phased_config(params)?;
@@ -521,22 +548,56 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                         }
                         LeafValue::Blend { weight }
                     }
+                    // The learned leaves (`duels-value`) mirror `static` and
+                    // `blend`, and their blend weight is range-checked for
+                    // exactly the same reason.
+                    Some(("learned_blend" | "lblend", w)) => {
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-eval: leaf blend weight must be in [0, 1], got \"{w}\" \
+                                 (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        LeafValue::LearnedBlend { weight }
+                    }
                     None => match v {
                         "rollout" | "off" => LeafValue::Rollout,
                         "static" => LeafValue::Static,
                         "trunc" | "truncated" => LeafValue::Truncated { plies: 8 },
                         "blend" => LeafValue::Blend { weight: 0.5 },
+                        "learned" => LeafValue::Learned,
+                        "learned_blend" | "lblend" => LeafValue::LearnedBlend { weight: 0.5 },
                         other => {
                             return Err(format!(
                                 "mcts-eval: unknown leaf \"{other}\" (expected \"rollout\", \
-                                 \"static\", \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                                 \"static\", \"truncated[:<plies>]\", \"blend[:<weight>]\", \
+                                 \"learned\", or \"learned_blend[:<weight>]\")"
                             ))
                         }
                     },
                     Some((other, _)) => {
                         return Err(format!(
                             "mcts-eval: leaf \"{other}\" takes no parameter (only \
-                             \"truncated:<plies>\" and \"blend:<weight>\" do)"
+                             \"truncated:<plies>\", \"blend:<weight>\" and \
+                             \"learned_blend:<weight>\" do)"
+                        ))
+                    }
+                };
+            }
+            // Which accumulation order the learned leaves' forward pass uses.
+            // Read only by a learned leaf, so it cannot move the default
+            // configuration; it is here so the four-way accumulator unroll can
+            // be A/B tested against the arithmetic the crate docs' Elo numbers
+            // were taken with. See `duels_value::Summation`.
+            "value_sum" | "value_summation" => {
+                cfg.value_summation = match v {
+                    "serial" => duels_value::Summation::Serial,
+                    "unrolled4" | "unrolled" => duels_value::Summation::Unrolled4,
+                    other => {
+                        return Err(format!(
+                            "mcts-eval: unknown value summation \"{other}\" (expected \
+                             \"serial\" or \"unrolled4\")"
                         ))
                     }
                 };
@@ -569,6 +630,241 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                     .eval;
                 if !apply_eval_config_key(eval, other, v)? {
                     return Err(format!("mcts-eval: unknown key \"{other}\""));
+                }
+            }
+        }
+    }
+    Ok(cfg)
+}
+
+/// Parse a `mcts-value:...` parameter list into a [`MctsValueConfig`].
+///
+/// The search keys are `mcts-eval`'s, spelled identically, because it is the
+/// same search — `mcts-value`'s whole content is a different
+/// [`duels_agent_mcts_value::Config::leaf`] and the exploration constant that
+/// was swept for it. What is new is the two `base` values, which are this
+/// agent's ablation chain and the arms its measured Elo is quoted against:
+///
+/// * `base=eval` selects [`duels_agent_mcts_value::Config::eval_base`], which
+///   is `mcts-eval` at its default — proven so, node for node, against a
+///   verbatim frozen copy of that agent's search inside the agent crate.
+/// * `base=rollout` selects
+///   [`duels_agent_mcts_value::Config::rollout_base`], which is `mcts-uct`,
+///   proven the same way.
+///
+/// So the whole chain is measurable in one binary and one process:
+/// `mcts-value` against `mcts-value:base=eval` against
+/// `mcts-value:base=rollout`.
+///
+/// Two keys have no effect on this agent's default configuration and are
+/// accepted for its `base=eval`/`base=rollout` arms, where they do: `eval=vN`
+/// and the `duels-eval` scalar fallthrough. That is the reverse of
+/// `mcts-eval`, and it is not a quirk of the parser — the default leaf here
+/// reads no hand-crafted evaluation at all, which
+/// `duels_agent_mcts_value`'s `tree::tests::the_evaluation_cannot_reach_the_default_leaf`
+/// asserts directly. `value_sum=serial`, conversely, *is* on this agent's
+/// default path: it selects `duels_value::Summation::Serial`, the accumulation
+/// order that predates the four-way unroll.
+pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> {
+    let mut cfg = MctsValueConfig::default();
+    for (k, v) in parse_params(params)? {
+        match k {
+            "base" => match v {
+                // Deliberately first-listed and last-applied like every other
+                // agent's `base`: keys after it override.
+                "eval" | "mcts-eval" | "blend" => cfg = MctsValueConfig::eval_base(),
+                "rollout" | "mcts-uct" => cfg = MctsValueConfig::rollout_base(),
+                "default" | "learned" => {}
+                other => {
+                    return Err(format!(
+                        "mcts-value: unknown base \"{other}\" (expected \"default\", \
+                         \"eval\" for the mcts-eval control, or \"rollout\" for the \
+                         mcts-uct one)"
+                    ))
+                }
+            },
+            // Only reachable on the `base=eval` arm; see this function's docs.
+            "eval" => {
+                cfg.eval_override = Some(match v {
+                    "default" | "live" => {
+                        return Err(
+                            "mcts-value: eval=default/live is the same as omitting the key -- \
+                             pass no eval key at all to read duels-eval live"
+                                .to_string(),
+                        )
+                    }
+                    "v1" => duels_eval::Config::v1(),
+                    "v2" => duels_eval::Config::v2(),
+                    "v3" => duels_eval::Config::v3(),
+                    "v4" => duels_eval::Config::v4(),
+                    "v5" => duels_eval::Config::v5(),
+                    "v6" => duels_eval::Config::v6(),
+                    "v7" => duels_eval::Config::v7(),
+                    "v8" => duels_eval::Config::v8(),
+                    "v9" => duels_eval::Config::v9(),
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown eval generation \"{other}\" (expected v1-v9)"
+                        ))
+                    }
+                });
+            }
+            "sci_progress" | "sciprog" => {
+                let eval = cfg
+                    .eval_override
+                    .get_or_insert_with(duels_eval::Config::default);
+                eval.blend.science_progress = match v {
+                    "root" | "off" => duels_eval::ScienceProgress::Root,
+                    "leaf" | "on" => duels_eval::ScienceProgress::Leaf,
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown sci_progress \"{other}\" (expected \"root\" \
+                             or \"leaf\")"
+                        ))
+                    }
+                };
+            }
+            "exploration" | "c" => cfg.exploration = parse_field(k, v)?,
+            "chance_widen_c" => cfg.chance_widen_c = parse_field(k, v)?,
+            "chance_widen_alpha" => cfg.chance_widen_alpha = parse_field(k, v)?,
+            "max_rollout_plies" => cfg.max_rollout_plies = parse_field(k, v)?,
+            "time_check_interval" => cfg.time_check_interval = parse_field(k, v)?,
+            "root_determinizations" | "dets" => cfg.root_determinizations = parse_field(k, v)?,
+            // Like `race` below, a playout-policy knob: inert on this agent's
+            // default leaf, which runs no playout. Accepted rather than
+            // rejected because it is live on both `base=` arms, and because
+            // `LeafValue::LearnedBlend` brings a playout back.
+            "rollout" => {
+                cfg.rollout = match v {
+                    "uniform" => ValueRolloutWeights::UNIFORM,
+                    "biased" => ValueRolloutWeights::BIASED,
+                    "smart" => ValueRolloutWeights::SMART,
+                    other => return Err(format!("mcts-value: unknown rollout \"{other}\"")),
+                };
+            }
+            "race" => {
+                cfg.race = match v {
+                    "neutral" | "off" => ValueRaceWeights::NEUTRAL,
+                    "tier1" | "tier1_only" => ValueRaceWeights::TIER1_ONLY,
+                    "mild" => ValueRaceWeights::mild(),
+                    "medium" => ValueRaceWeights::MEDIUM,
+                    "strong" => ValueRaceWeights::strong(),
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown race \"{other}\" (expected \"neutral\", \
+                             \"mild\", \"medium\", \"strong\", or \"tier1_only\")"
+                        ))
+                    }
+                };
+            }
+            "prior" => {
+                cfg.prior = match v.split_once(':') {
+                    Some(("progressive_bias" | "bias", w)) => ValuePriorMode::ProgressiveBias {
+                        weight: parse_field("prior", w)?,
+                    },
+                    None => match v {
+                        "none" | "off" => ValuePriorMode::None,
+                        "expansion_order" | "order" => ValuePriorMode::ExpansionOrder,
+                        "progressive_bias" | "bias" => {
+                            ValuePriorMode::ProgressiveBias { weight: 1.0 }
+                        }
+                        other => {
+                            return Err(format!(
+                                "mcts-value: unknown prior \"{other}\" (expected \"none\", \
+                                 \"expansion_order\", or \"progressive_bias[:<weight>]\")"
+                            ))
+                        }
+                    },
+                    Some((other, _)) => {
+                        return Err(format!(
+                            "mcts-value: prior \"{other}\" takes no weight (only \
+                             \"progressive_bias:<weight>\" does)"
+                        ))
+                    }
+                };
+            }
+            "leaf" => {
+                // Note that `leaf` alone does **not** change `exploration`:
+                // what a leaf backs up decides what `c` means, and the two
+                // move together only in `Config::default`/`eval_base`. A
+                // caller changing one has to decide about the other — see
+                // `duels_agent_mcts_value::Config::default`'s doc comment,
+                // where the sweep that produced `c = 0.15` is recorded.
+                cfg.leaf = match v.split_once(':') {
+                    Some(("trunc" | "truncated", p)) => ValueLeafValue::Truncated {
+                        plies: parse_field("leaf", p)?,
+                    },
+                    Some(("blend", w)) => {
+                        // Range-checked, unlike the other float keys here: a
+                        // blend weight outside `[0, 1]` makes the leaf value
+                        // stop being a probability, which silently violates
+                        // the value convention every node in that tree
+                        // accumulates.
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-value: leaf blend weight must be in [0, 1], got \"{w}\" \
+                                 (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        ValueLeafValue::Blend { weight }
+                    }
+                    Some(("learned_blend" | "lblend", w)) => {
+                        let weight: f64 = parse_field("leaf", w)?;
+                        if !(0.0..=1.0).contains(&weight) {
+                            return Err(format!(
+                                "mcts-value: leaf blend weight must be in [0, 1], got \"{w}\" \
+                                 (outside it the leaf value is not a probability)"
+                            ));
+                        }
+                        ValueLeafValue::LearnedBlend { weight }
+                    }
+                    None => match v {
+                        "rollout" | "off" => ValueLeafValue::Rollout,
+                        "static" => ValueLeafValue::Static,
+                        "trunc" | "truncated" => ValueLeafValue::Truncated { plies: 8 },
+                        "blend" => ValueLeafValue::Blend { weight: 0.5 },
+                        "learned" => ValueLeafValue::Learned,
+                        "learned_blend" | "lblend" => ValueLeafValue::LearnedBlend { weight: 0.5 },
+                        other => {
+                            return Err(format!(
+                                "mcts-value: unknown leaf \"{other}\" (expected \"learned\", \
+                                 \"learned_blend[:<weight>]\", \"rollout\", \"static\", \
+                                 \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                            ))
+                        }
+                    },
+                    Some((other, _)) => {
+                        return Err(format!(
+                            "mcts-value: leaf \"{other}\" takes no parameter (only \
+                             \"truncated:<plies>\", \"blend:<weight>\" and \
+                             \"learned_blend:<weight>\" do)"
+                        ))
+                    }
+                };
+            }
+            "value_sum" | "value_summation" => {
+                cfg.value_summation = match v {
+                    "serial" => duels_value::Summation::Serial,
+                    "unrolled4" | "unrolled" => duels_value::Summation::Unrolled4,
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown value summation \"{other}\" (expected \
+                             \"serial\" or \"unrolled4\")"
+                        ))
+                    }
+                };
+            }
+            // As on `mcts-eval`: anything left is tried as a `duels-eval`
+            // scalar, which necessarily pins `eval_override` and so is only
+            // meaningful alongside `base=eval`.
+            other => {
+                let eval = &mut cfg
+                    .eval_override
+                    .get_or_insert_with(duels_eval::Config::default)
+                    .eval;
+                if !apply_eval_config_key(eval, other, v)? {
+                    return Err(format!("mcts-value: unknown key \"{other}\""));
                 }
             }
         }
@@ -1187,6 +1483,11 @@ mod tests {
             ("truncated", LeafValue::Truncated { plies: 8 }),
             ("blend:0.3", LeafValue::Blend { weight: 0.3 }),
             ("blend", LeafValue::Blend { weight: 0.5 }),
+            // The two opt-in `duels-value` learned leaves.
+            ("learned", LeafValue::Learned),
+            ("learned_blend", LeafValue::LearnedBlend { weight: 0.5 }),
+            ("learned_blend:0.3", LeafValue::LearnedBlend { weight: 0.3 }),
+            ("lblend:0.7", LeafValue::LearnedBlend { weight: 0.7 }),
         ] {
             let cfg = parse_mcts_eval_config(&format!("leaf={value}")).unwrap();
             assert_eq!(cfg.leaf, want, "leaf={value}");
@@ -1204,9 +1505,17 @@ mod tests {
         assert!(parse_mcts_eval_config("leaf=blend:-0.5").is_err());
         assert!(parse_mcts_eval_config("leaf=blend:0.0").is_ok());
         assert!(parse_mcts_eval_config("leaf=blend:1.0").is_ok());
+        // ...and the learned blend is range-checked for exactly the same
+        // reason, so the check cannot be added to one and forgotten on the
+        // other.
+        assert!(parse_mcts_eval_config("leaf=learned_blend:1.5").is_err());
+        assert!(parse_mcts_eval_config("leaf=learned_blend:-0.5").is_err());
+        assert!(parse_mcts_eval_config("leaf=learned:3").is_err());
 
         for (spec, want) in [
             ("mcts-eval:leaf=static", "leaf=static"),
+            ("mcts-eval:leaf=learned", "leaf=learned"),
+            ("mcts-eval:leaf=lblend:0.25", "leaf=learned_blend(0.250)"),
             ("mcts-eval:leaf=trunc:8", "leaf=truncated(8)"),
             ("mcts-eval:leaf=blend:0.3", "leaf=blend(0.300)"),
         ] {
@@ -1252,6 +1561,137 @@ mod tests {
         assert!(agent.spec().params.contains("eval=unused"));
         assert!(make_agent_from_spec("mcts-eval:race=tier1,dets=2,prior=order", 1).is_ok());
         assert!(make_agent_from_spec("mcts-eval:nonsense=1", 1).is_err());
+    }
+
+    /// **`mcts-value`'s whole ablation chain is addressable from one binary**,
+    /// and each link is the agent it claims to be.
+    ///
+    /// The chain is `mcts-value` (learned leaf, swept `c = 0.15`) against
+    /// `base=eval` (`mcts-eval`) against `base=rollout` (`mcts-uct`). The
+    /// *identity* of the two controls is asserted move-for-move inside
+    /// `duels-agent-mcts-value` against verbatim frozen copies of those
+    /// searches; what is checked here is that these spec strings really select
+    /// them, since a typo in this parser would silently benchmark the wrong
+    /// arm and still produce a plausible win rate.
+    #[test]
+    fn the_mcts_value_ablation_chain_is_addressable() {
+        // The bare name is the measured configuration.
+        let cfg = parse_mcts_value_config("").unwrap();
+        assert_eq!(cfg, MctsValueConfig::default());
+        assert_eq!(cfg.leaf, ValueLeafValue::Learned);
+        assert_eq!(cfg.exploration, 0.15);
+
+        // The two controls, whole: leaf *and* exploration constant, since the
+        // two move together in each.
+        let eval = parse_mcts_value_config("base=eval").unwrap();
+        assert_eq!(eval, MctsValueConfig::eval_base());
+        assert_eq!(eval.leaf, ValueLeafValue::Blend { weight: 0.5 });
+        assert_eq!(eval.exploration, 0.5);
+        // `eval_base` must not pin the evaluation: the control has to be
+        // `mcts-eval` as shipped, tracking `duels-eval` live.
+        assert_eq!(eval.eval_override, None);
+
+        let rollout = parse_mcts_value_config("base=rollout").unwrap();
+        assert_eq!(rollout, MctsValueConfig::rollout_base());
+        assert_eq!(rollout.leaf, ValueLeafValue::Rollout);
+        assert_eq!(rollout.exploration, 1.0);
+
+        // Keys after `base` override it, as everywhere else in this module.
+        assert_eq!(
+            parse_mcts_value_config("base=eval,c=0.7")
+                .unwrap()
+                .exploration,
+            0.7
+        );
+        assert_eq!(
+            parse_mcts_value_config("base=default").unwrap(),
+            MctsValueConfig::default()
+        );
+        assert!(parse_mcts_value_config("base=sideways").is_err());
+
+        // ...and the three arms are distinguishable in the spec string a
+        // results file records, which is what makes a run interpretable after
+        // the fact.
+        for (spec, wants, rejects) in [
+            (
+                "mcts-value",
+                vec!["leaf=learned;", "c=0.150", "eval=unused", "value="],
+                vec!["leaf=blend"],
+            ),
+            (
+                "mcts-value:base=eval",
+                vec!["leaf=blend(0.500)", "c=0.500"],
+                vec!["value="],
+            ),
+            (
+                "mcts-value:base=rollout",
+                vec!["leaf=rollout", "c=1.000", "eval=unused"],
+                vec!["value="],
+            ),
+        ] {
+            let agent = make_agent_from_spec(spec, 1).unwrap();
+            assert_eq!(agent.spec().name, "mcts-value");
+            let params = agent.spec().params;
+            for want in wants {
+                assert!(params.contains(want), "{spec} lacks {want}: {params}");
+            }
+            for reject in rejects {
+                assert!(!params.contains(reject), "{spec} has {reject}: {params}");
+            }
+        }
+    }
+
+    /// `mcts-value` keeps `mcts-eval`'s keys, and the two agents' defaults
+    /// disagree about which of them is on the default path — asserted here
+    /// because it is the kind of asymmetry a reader will assume away.
+    ///
+    /// `value_sum` is live for `mcts-value` and opt-in-only for `mcts-eval`;
+    /// the `duels-eval` keys are the other way round. Both parsers accept both
+    /// sets, so the difference is in what reaches a *default* search, not in
+    /// what parses.
+    #[test]
+    fn the_mcts_value_keys_are_the_mcts_eval_keys_with_the_defaults_reversed() {
+        // The learned summation order is on `mcts-value`'s default path...
+        let serial = parse_mcts_value_config("value_sum=serial").unwrap();
+        assert_eq!(serial.value_summation, duels_value::Summation::Serial);
+        assert!(serial.leaf.needs_learned_net());
+        let params = make_agent_from_spec("mcts-value:value_sum=serial", 1)
+            .unwrap()
+            .spec()
+            .params;
+        assert!(params.contains("/serial"), "{params}");
+        assert!(parse_mcts_value_config("value_sum=sideways").is_err());
+
+        // ...and the hand-crafted evaluation is not: pinning a generation
+        // parses, but the default leaf reads no evaluation, so the spec string
+        // still says `eval=unused`.
+        let pinned = make_agent_from_spec("mcts-value:eval=v6", 1)
+            .unwrap()
+            .spec()
+            .params;
+        assert!(pinned.contains("eval=unused"), "{pinned}");
+        // On the `base=eval` control the same key does reach the search.
+        let pinned = make_agent_from_spec("mcts-value:base=eval,eval=v6", 1)
+            .unwrap()
+            .spec()
+            .params;
+        assert!(
+            pinned.contains(&duels_eval::Config::v6().params_string()),
+            "{pinned}"
+        );
+        assert!(parse_mcts_value_config("eval=live").is_err());
+        assert!(parse_mcts_value_config("eval=v99").is_err());
+
+        // The search keys are `mcts-eval`'s, spelled identically.
+        assert!(make_agent_from_spec("mcts-value:race=tier1,dets=2,prior=order", 1).is_ok());
+        assert!(make_agent_from_spec("mcts-value:leaf=lblend:0.5,c=0.5", 1).is_ok());
+        assert!(make_agent_from_spec("mcts-value:nonsense=1", 1).is_err());
+        // And the leaf blend weights are range-checked here too, so the check
+        // cannot be added to one parser and forgotten in the other.
+        assert!(parse_mcts_value_config("leaf=blend:1.5").is_err());
+        assert!(parse_mcts_value_config("leaf=lblend:-0.5").is_err());
+        assert!(parse_mcts_value_config("leaf=learned:3").is_err());
+        assert!(parse_mcts_value_config("leaf=sideways").is_err());
     }
 
     /// **`mcts-eval` tracks `duels-eval` live by default, on purpose**, so

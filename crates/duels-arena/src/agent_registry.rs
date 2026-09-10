@@ -5,12 +5,16 @@
 //! crates (`phased`, `alphabeta`, `mcts-uct`, ...) be wired in with one new
 //! arm each, once they exist. Mirrors `duels-server`'s `room::make_agent`.
 //!
-//! Registration here is what makes an agent part of the roster: it is what
-//! `agent_spec` bare names resolve through, and
+//! Registration here is what makes an agent **constructible**: it is what
+//! `agent_spec` bare names resolve through. It is also, again, exactly what
+//! puts an agent on the leaderboard —
 //! `leaderboard::tests::the_ladder_is_exactly_the_registered_agents` pins
-//! [`KNOWN_AGENTS`] and `leaderboard::LADDER` to each other. `random`,
-//! `greedy`, `greedy-ev` and `strategist` were retired from the roster and so
-//! are absent here; `duels-agent-random`'s crate survives as a
+//! [`KNOWN_AGENTS`] and `leaderboard::LADDER` equal, with no exception list.
+//! So adding an arm below adds a rated agent and ten-odd nightly games, and
+//! the two lists have to be edited together.
+//!
+//! `random`, `greedy`, `greedy-ev` and `strategist` were retired from the
+//! roster and so are absent here; `duels-agent-random`'s crate survives as a
 //! *dev-dependency* test fixture and deliberately cannot be named through
 //! this function. See `docs/milestones.md`.
 
@@ -18,7 +22,9 @@ use duels_agents_api::Agent;
 
 /// Every agent name this build of `duels-arena` knows how to construct, for
 /// `--help` text and error messages.
-pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval"];
+///
+/// Kept equal to `leaderboard::LADDER` by a test in that module.
+pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval", "mcts-value"];
 
 /// Construct the named `Agent`, seeded from `seed`.
 ///
@@ -30,6 +36,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         "mcts-eval" => Ok(Box::new(duels_agent_mcts_eval::MctsEvalAgent::new(seed))),
+        "mcts-value" => Ok(Box::new(duels_agent_mcts_value::MctsValueAgent::new(seed))),
         other => Err(format!(
             "unknown agent \"{other}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")
@@ -74,6 +81,31 @@ mod tests {
         // is what the leaderboard and `duels-server` construct.
         assert!(agent.spec().params.contains("leaf=blend(0.500)"));
         assert!(agent.spec().params.contains("c=0.500"));
+    }
+
+    /// `mcts-value` is constructible from its bare name, and the bare name
+    /// builds the *measured* configuration — `leaf=learned` at the swept
+    /// `c = 0.15`, with the weights identity recorded so a results file says
+    /// which network produced it.
+    ///
+    /// The bare name is what `leaderboard::LADDER` and `duels-server`
+    /// construct, and it is now also `leaderboard::CHAMPION`, so a config
+    /// drift here would silently re-define both the published ratings and the
+    /// `ai-candidate` bar. Hence asserting the parameters and not just the
+    /// name. Read `CHAMPION`'s docs for the caveat that comes with that
+    /// promotion.
+    #[test]
+    fn mcts_value_is_registered_at_its_measured_config() {
+        let agent = make_agent("mcts-value", 1).expect("mcts-value should be a known agent");
+        assert_eq!(agent.spec().name, "mcts-value");
+        assert!(agent.spec().params.contains("leaf=learned"));
+        assert!(agent.spec().params.contains("c=0.150"));
+        // The provenance record: which weights, and which summation order.
+        assert!(agent.spec().params.contains("value="));
+        assert!(crate::leaderboard::LADDER
+            .iter()
+            .any(|e| e.agent == "mcts-value"));
+        assert_eq!(crate::leaderboard::CHAMPION.agent, "mcts-value");
     }
 
     #[test]
