@@ -212,6 +212,65 @@ pub(crate) fn learned_value(
     }
 }
 
+/// The **learned, symmetrized** static value of `state`, also always on this
+/// tree's `[0, 1]` [`Player::One`] scale — [`LeafValue::LearnedSymmetric`]'s
+/// reading.
+///
+/// # Why: the net's two perspectives disagree, and averaging them is free
+///
+/// `duels-value`'s `tests/probability_coherence.rs` measures that
+/// `P(win | Player::One)` and `1 - P(win | Player::Two)` are not the same
+/// number for the shipped weights, even though they should be in a two-player
+/// zero-sum game with no hidden information: a mean absolute gap of about
+/// `0.056` over 1,277 reachable positions, worse yet at the opening (mass
+/// `0.94` where it must be `1`). Averaging the two readings is a free
+/// two-member ensemble over that disagreement, and it was checked offline
+/// (`docs/roadmap.md`'s Tier 0-B) before being wired in here — not asserted:
+/// on the `v1` corpus's held-out test split (`arena/corpus/
+/// mcts-eval-nodes2000.jsonl`, `seed % 10 == 9`, 10,000 games, ~1.34M
+/// (position, perspective) rows — the exact corpus `v2.bin` itself trained on
+/// is not checked into the repository and regenerating it was out of this
+/// check's scope, but this corpus is a fully disjoint seed range from either
+/// of `v2`'s two training corpora, so it is a valid held-out set for it too),
+/// `p_sym` beat the single-perspective `win_probability()` on every metric
+/// measured: Brier `0.17266` against `0.17436`, log loss `0.51006` against
+/// `0.51480`, ROC AUC `0.82017` against `0.81680`.
+///
+/// # The cost: one extra forward pass per leaf
+///
+/// This evaluates the network for **both** [`Player::One`] and
+/// [`Player::Two`] instead of one, so it is strictly more expensive than
+/// [`learned_value`]'s `WinProbability` arm — an accuracy-for-throughput
+/// trade, never a speed-up, exactly the shape [`LeafValue::Blend`]'s doc
+/// comment describes for mixing in a second signal. Nothing here has been
+/// measured at a fixed *time* budget; see this variant's own doc comment for
+/// what has and has not been checked.
+///
+/// # `TargetKind` has no symmetric counterpart
+///
+/// At [`crate::tree::Objective::TargetKind`] there is nothing to average:
+/// unlike the aggregate win probability, a single outcome-kind probability
+/// `P(me wins by kind K)` has no `1 - x` complement in the other seat's
+/// distribution (`P(other wins by kind K)` is a different, unrelated
+/// quantity). So this objective reads exactly what [`learned_value`] does —
+/// the symmetrization is specific to [`Objective::WinProbability`][crate::tree::Objective::WinProbability].
+#[inline]
+pub(crate) fn learned_symmetric_value(
+    state: &GameState,
+    net: &duels_value::Net,
+    objective: crate::tree::Objective,
+    me: Player,
+) -> f64 {
+    match objective {
+        crate::tree::Objective::WinProbability => {
+            let p_one = f64::from(net.win_probability(state, Player::One));
+            let p_two = f64::from(net.win_probability(state, Player::Two));
+            (p_one + (1.0 - p_two)) / 2.0
+        }
+        crate::tree::Objective::TargetKind(_) => learned_value(state, net, objective, me),
+    }
+}
+
 /// Which [`duels_value::Outcome`] class a [`crate::tree::Objective::TargetKind`]
 /// reads off the model's four-way head — the learned-leaf mirror of
 /// [`crate::tree::kind_matches_target`], which makes the identical call for
@@ -351,6 +410,22 @@ pub enum LeafValue {
         /// How much of the learned value to mix in, on `[0, 1]`.
         weight: f64,
     },
+    /// [`leaf::learned_symmetric_value`]: `(P(win|One) + (1 - P(win|Two))) /
+    /// 2` — the average of the net's two perspectives on the same position,
+    /// rather than reading just [`Player::One`]'s.
+    ///
+    /// Exists because `duels-value`'s two perspectives measurably disagree
+    /// (`tests/probability_coherence.rs`, mean gap `~0.056`) and averaging
+    /// them is a free two-member ensemble over that disagreement — checked
+    /// offline before being added here, not assumed; see
+    /// [`leaf::learned_symmetric_value`]'s doc comment for the numbers.
+    /// Costs one extra forward pass per leaf relative to
+    /// [`Learned`](LeafValue::Learned): both perspectives are evaluated
+    /// instead of one. Opt-in, never the default — an exploratory offline
+    /// win is not the same claim as a measured arena one, and this variant's
+    /// crate-docs entry records what arena testing has (and has not) shown
+    /// so far.
+    LearnedSymmetric,
 }
 
 impl LeafValue {
@@ -375,7 +450,10 @@ impl LeafValue {
     /// leaf is actually configured.
     #[inline]
     pub fn needs_learned_net(&self) -> bool {
-        matches!(self, LeafValue::Learned | LeafValue::LearnedBlend { .. })
+        matches!(
+            self,
+            LeafValue::Learned | LeafValue::LearnedBlend { .. } | LeafValue::LearnedSymmetric
+        )
     }
 
     /// A compact, stable description for [`crate::Config::describe`].
@@ -387,6 +465,7 @@ impl LeafValue {
             LeafValue::Blend { weight } => format!("blend({weight:.3})"),
             LeafValue::Learned => "learned".to_string(),
             LeafValue::LearnedBlend { weight } => format!("learned_blend({weight:.3})"),
+            LeafValue::LearnedSymmetric => "learned_symmetric".to_string(),
         }
     }
 }
@@ -535,6 +614,55 @@ mod tests {
                         f64::from(dist.p(outcome)),
                         "me={me:?}: objective TargetKind({kind:?}) did not read \
                          Outcome::{outcome:?} from me's own distribution"
+                    );
+                }
+            }
+        }
+    }
+
+    /// [`crate::tree::Objective::WinProbability`] must average the *two*
+    /// perspectives — `(P(win|One) + (1 - P(win|Two))) / 2` — not just read
+    /// [`Player::One`]'s, which is [`learned_value`]'s behaviour and exactly
+    /// what this variant exists to be different from. The result must also
+    /// stay a probability, since it feeds the same `[0, 1]`-scale tree.
+    #[test]
+    fn learned_symmetric_value_at_win_probability_averages_both_perspectives() {
+        use crate::tree::Objective;
+        let net = duels_value::default_net();
+        for state in fixed_positions() {
+            let p_one = f64::from(net.win_probability(&state, Player::One));
+            let p_two = f64::from(net.win_probability(&state, Player::Two));
+            let want = (p_one + (1.0 - p_two)) / 2.0;
+            for me in [Player::One, Player::Two] {
+                let got = learned_symmetric_value(&state, &net, Objective::WinProbability, me);
+                assert_eq!(got, want, "me={me:?} must not change the averaged result");
+                assert!((0.0..=1.0).contains(&got), "{got} is not a probability");
+            }
+        }
+    }
+
+    /// At [`crate::tree::Objective::TargetKind`] there is nothing to average
+    /// — see [`learned_symmetric_value`]'s doc comment — so it must read
+    /// exactly what [`learned_value`] reads for the same objective and `me`.
+    #[test]
+    fn learned_symmetric_value_at_target_kind_matches_learned_value() {
+        use crate::tree::Objective;
+        use duels_value::Outcome;
+        let net = duels_value::default_net();
+        let cases = [
+            (VictoryKind::MilitarySupremacy, Outcome::MilitaryWin),
+            (VictoryKind::ScientificSupremacy, Outcome::ScienceWin),
+            (VictoryKind::CivilianVictory, Outcome::CivilianWin),
+        ];
+        for state in fixed_positions() {
+            for me in [Player::One, Player::Two] {
+                for (kind, _) in cases {
+                    let objective = Objective::TargetKind(kind);
+                    assert_eq!(
+                        learned_symmetric_value(&state, &net, objective, me),
+                        learned_value(&state, &net, objective, me),
+                        "me={me:?} objective={objective:?}: LearnedSymmetric must not \
+                         change the TargetKind reading"
                     );
                 }
             }

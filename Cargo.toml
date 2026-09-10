@@ -41,6 +41,14 @@ tokio = { version = "1", features = ["full"] }
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng", "small_rng"] }
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# Portable, software-implemented libm: `ln`/`powf` from the platform's own
+# libm can differ in the last bit between architectures (e.g. glibc on ARM
+# Linux vs. Apple's libm on macOS), which would make seeded self-play
+# non-reproducible across machines. Used in place of `f64`/`f32` methods like
+# `.ln()` and `.powf()` at call sites that feed a search's own decisions
+# (UCB1, progressive widening) rather than at every transcendental call in
+# the workspace — see the call sites themselves for which ones and why.
+libm = "0.2"
 
 [profile.bench]
 debug = true

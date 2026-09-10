@@ -628,6 +628,33 @@
 //! pursues its target victory kind rather than how strong it is overall. See
 //! that crate's own docs for the design and the purity numbers it measured.
 //!
+//! ## An inference-time patch for coherence, tried before the architectural fix
+//!
+//! The remaining-next-steps item above — "make the model zero-sum
+//! coherent" — names an antisymmetric head as the real, architectural fix.
+//! `docs/roadmap.md`'s Tier 0-B asked a cheaper question first: does simply
+//! *averaging* the two disagreeing perspectives — `p_sym = (P(win|One) + (1 -
+//! P(win|Two))) / 2` — improve on the single-perspective `win_probability()`
+//! as an offline predictor, since that would be a free two-member ensemble
+//! available today, with no retrain?
+//!
+//! **Yes, on every metric measured** (held-out test split, `seed % 10 == 9`,
+//! `arena/corpus/mcts-eval-nodes2000.jsonl`, 10,000 games, 1,343,298
+//! (position, perspective) rows): Brier `0.17266` against `0.17436`, log loss
+//! `0.51006` against `0.51480`, ROC AUC `0.82017` against `0.81680`. So it was
+//! implemented as a new, opt-in leaf,
+//! `duels_agent_mcts_value::LeafValue::LearnedSymmetric` — see that crate's
+//! docs for the arena result and why it is not (yet) a default.
+//!
+//! **This does not replace the architectural fix**, and should not be read as
+//! evidence the coherence defect is "handled." Averaging two miscalibrated
+//! numbers can only ever partially cancel their disagreement — it is a patch
+//! on the symptom measured in `tests/probability_coherence.rs`, at the cost of
+//! a second forward pass, not a fix to why the two perspectives disagree in
+//! the first place. The joint 7-outcome softmax with shared weights
+//! (`docs/roadmap.md`'s Tier 2-J) remains the real fix, and remains a
+//! separate, larger, future retrain.
+//!
 //! # Usage
 //!
 //! ```
