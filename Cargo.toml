@@ -5,9 +5,10 @@ members = [
     "crates/duels-agents-api",
     "crates/duels-strategy",
     "crates/duels-eval",
-    # A learned position value, below the agents next to `duels-eval`. Opt-in
-    # research work: nothing on any agent's default path reads it. See its
-    # crate docs, which hold the whole measurement record.
+    # A learned position value, below the agents next to `duels-eval`. Read on
+    # the default path of `mcts-value`, the ladder's champion, so this is no
+    # longer opt-in research work: a retrain moves the champion. See its crate
+    # docs, which hold the whole measurement record.
     "crates/duels-value",
     "crates/duels-arena",
     "crates/duels-server",
@@ -20,9 +21,8 @@ members = [
     "crates/agents/mcts-uct",
     "crates/agents/mcts-eval",
     # `mcts-eval`'s search with `duels-value`'s learned leaf at the re-derived
-    # `c = 0.15`. Registered and playable, deliberately NOT on
-    # `duels_arena::leaderboard::LADDER`: it is measured strongly against
-    # `mcts-eval` and not against any third party. See its crate docs.
+    # `c = 0.15`. On `duels_arena::leaderboard::LADDER` and its `CHAMPION`.
+    # See its crate docs, which hold the measurement and its caveats.
     "crates/agents/mcts-value",
     "crates/agents/alphabeta",
 ]

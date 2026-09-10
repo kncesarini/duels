@@ -5,13 +5,15 @@ Agora, no Pantheon), built as: a Rust rules engine, an `Agent` trait for
 AI/bot players (hand-written or RL-trained via future PyO3 bindings), a
 server-authoritative game server, and a TypeScript/React web client.
 
-## Status: M2 (playable slice)
+## Status: M6b (arena live)
 
-A person can now play a full game of 7 Wonders Duel end to end in a browser,
+A person can play a full game of 7 Wonders Duel end to end in a browser,
 human vs. an AI opponent or hot-seat (two humans, one tab). `duels-core`
 (M1) is a complete, tested implementation of the base game; everything
 downstream — the server, agents, the web client — reads state from it and
-submits `Action`s back, never implementing rules logic itself.
+submits `Action`s back, never implementing rules logic itself. Five agents
+sit on a ladder that a nightly round robin re-rates. `docs/milestones.md` is
+the source of truth for what is done and what is in flight.
 
 - **Cargo workspace** (`cargo build` / `cargo test` from repo root):
   - `crates/duels-core` — **the rules engine**: static data loading, setup,
@@ -25,8 +27,17 @@ submits `Action`s back, never implementing rules logic itself.
     uniformly picks among the actions it's offered. Retired from the agent
     roster and kept only as a **test fixture** — the correctness floor other
     agents are measured against; a dev-dependency, not registered anywhere.
-  - `crates/agents/phased`, `alphabeta`, `mcts-uct`, `mcts-eval` — the four
-    agents on the ladder, weakest first. `mcts-eval` is the champion.
+  - `crates/duels-strategy` — the shared strategic reads (race magnitudes,
+    threat and stance calculations, action priors) that sit below both the
+    evaluations and the agents' search policies.
+  - `crates/duels-eval` — the hand-crafted position evaluation, every weight a
+    continuous function of how committed each player is to a win condition.
+    `docs/eval-rounds/` is the round-by-round record of how it was tuned.
+  - `crates/duels-value` — a learned position value: a small network over
+    public features, trained on a search-derived corpus.
+  - `crates/agents/phased`, `alphabeta`, `mcts-uct`, `mcts-eval`,
+    `mcts-value` — the five agents on the ladder, weakest first.
+    `mcts-value` is the champion (`duels_arena::leaderboard::CHAMPION`).
   - `crates/duels-arena` — the tournament runner: paired-seed seat-swapped
     matches, logistic Elo (pairwise and jointly over a whole round robin),
     SPRT, and the leaderboard published at
@@ -59,6 +70,12 @@ submits `Action`s back, never implementing rules logic itself.
     the rulebook.
   - `docs/agent-contract.md` — the versioned contract between the engine and
     any `Agent` implementation.
+  - `docs/conventions.md` — the standing invariants (the crate layering, the
+    determinization-invariance test), the protocol for validating an agent
+    change, and the measured priors about this game that the code acts on.
+  - `docs/milestones.md` — the milestone table and what is being worked on.
+  - `docs/strategy-backlog.md` — game-strategy ideas not yet implemented.
+  - `docs/eval-rounds/` — `duels-eval`'s round-by-round tuning history.
   - `docs/adr/` — architecture decision records.
 
 ### What the engine covers
@@ -128,9 +145,13 @@ crates/
     tests/                  cost_engine, golden_scenarios, properties
     benches/                apply/legal_actions throughput
   duels-agents-api/         Agent trait, AgentSpec, Budget
+  duels-strategy/           shared strategic reads: races, threats, stance, action priors
+  duels-eval/               the hand-crafted position evaluation (see docs/eval-rounds/)
+  duels-value/              a learned position value over public features
   duels-arena/              tournament runner, Elo, SPRT, leaderboard
     src/elo.rs                logistic Elo: pairwise, and joint over a round robin
     src/leaderboard.rs        the ladder, the anchor, the champion, arena/leaderboard.*
+    src/experiment.rs         the measurement protocol as one command
   duels-server/             room-based REST + WebSocket game server
     src/protocol.rs          the wire contract (ts-rs-derived TypeScript bindings)
     src/room.rs               room/seat model and the apply-then-drive-agents game loop
@@ -141,7 +162,8 @@ crates/
     phased/                 1-ply agent over duels-eval
     alphabeta/              expectimax + alpha-beta, simulation leaves
     mcts-uct/               chance-node MCTS, playout leaves; the Elo anchor
-    mcts-eval/              MCTS with a playout/duels-eval blended leaf; the champion
+    mcts-eval/              MCTS with a playout/duels-eval blended leaf
+    mcts-value/             mcts-eval's search with duels-value's learned leaf; champion
 web/                        Vite + React 18 + TypeScript + Zustand + Tailwind client
   src/generated/            TypeScript bindings generated from duels-core/duels-server
   e2e/                      Playwright spec: full game through the rendered UI
@@ -149,10 +171,18 @@ data/                       cards.json, wonders.json, tokens.json, military.json
 docs/
   rules-spec.md             numbered rules (R-xxx) -> covering tests, perf, open questions
   agent-contract.md         Agent/Observation/Action contract + versioning
+  conventions.md            invariants, the measurement protocol, measured priors
+  milestones.md             milestone table and current work (the "where are we" file)
+  strategy-backlog.md       game-strategy ideas not yet implemented
+  eval-rounds/              duels-eval's round-by-round tuning history
   adr/                      architecture decision records
-.github/workflows/ci.yml    fmt + clippy + test + web + e2e, gated behind `gate`
+.github/workflows/
+  ci.yml                    fmt + clippy + test + web + e2e, gated behind `gate`
+  nightly-arena.yml         nightly ladder round robin; opens a leaderboard PR
+  ai-candidate.yml          informational candidate-vs-champion check on agent PRs
 docker-compose.yml          `docker compose up` runs the server and the web client
-CODEOWNERS                  mandatory review on docs/, .github/, data/, crates/duels-eval/
+CODEOWNERS                  mandatory review on docs/, .github/, data/,
+                              crates/duels-eval/, and CODEOWNERS itself
 ```
 
 ## Getting started
@@ -173,7 +203,7 @@ Measured on an Apple Silicon development machine: one `apply` is ~16 ns, a
 
 ```
 docker compose up --build
-# open http://localhost:5173
+# open http://localhost:4173
 ```
 
 or without Docker, in two terminals:

@@ -70,12 +70,12 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
 
 /// The [`Budget`] an agent seat gets per move in a live, human-facing room.
 ///
-/// `random` and `greedy` ignore whatever `Budget` they are handed (random
-/// picks uniformly, greedy is a fixed 1-ply heuristic), so `Nodes(1)` is a
-/// fine, instant default for both. `alphabeta`, `mcts-uct` and `mcts-eval`
-/// are real anytime searches that get meaningfully stronger with more time
-/// (see their crate-level docs: e.g. alphabeta measures 82%/96%/96% win rate
-/// against `random` at `Nodes(2_000)`/`Nodes(20_000)`/`TimeMs(200)`
+/// `phased` ignores whatever `Budget` it is handed — it is a fixed 1-ply
+/// evaluation — so `Nodes(1)` is a fine, instant default for it.
+/// `alphabeta`, `mcts-uct`, `mcts-eval` and `mcts-value` are real anytime
+/// searches that get meaningfully stronger with more time (see their
+/// crate-level docs: e.g. alphabeta measures 82%/96%/96% win rate against the
+/// uniform-random floor at `Nodes(2_000)`/`Nodes(20_000)`/`TimeMs(200)`
 /// respectively) - `TimeMs(1_000)` is chosen here as a "feels responsive but
 /// plays well" budget for an interactive game against a human, not the (often
 /// larger) budgets `duels-arena` uses to benchmark agents against each other.
