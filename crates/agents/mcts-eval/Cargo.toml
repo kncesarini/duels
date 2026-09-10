@@ -14,9 +14,9 @@ duels-strategy = { path = "../../duels-strategy" }
 # `duels_eval::Config::default()` and deliberately *not* pinned to a frozen
 # generation — see the crate docs' "Tracking duels-eval live" section. A
 # library below the agents, not another agent crate (see "the layering" in
-# CLAUDE.md); the search machinery below is a deliberate copy of `mcts-uct`'s
-# rather than a dependency on it, per the "agent crates are self-contained"
-# invariant.
+# docs/conventions.md); the search machinery below is a deliberate copy of
+# `mcts-uct`'s rather than a dependency on it, per the "agent crates are
+# self-contained" invariant.
 duels-eval = { path = "../../duels-eval" }
 # The *learned* position value, read only by the opt-in
 # `LeafValue::Learned` / `LeafValue::LearnedBlend` variants. Nothing on this

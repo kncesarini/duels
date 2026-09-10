@@ -15,7 +15,6 @@
 //! into one signed number, which the stance layer uses to decide how hard a
 //! trailing player should tilt into a race.
 
-use duels_core::data::CardType;
 use duels_core::scoring;
 use duels_core::{GameState, Player};
 
@@ -83,15 +82,6 @@ pub struct VpRead {
     /// `gap` plus the wonder and guild lean terms: who is ahead, and by how
     /// structurally durable a margin.
     pub structural_edge: f64,
-}
-
-impl VpRead {
-    /// Total civilian points still obtainable from the structure, visible or
-    /// expected, plus the undealt ages.
-    #[inline]
-    pub fn civilian_swing(&self) -> f64 {
-        f64::from(self.civilian_vp_face_up) + self.civilian_vp_hidden + self.civilian_vp_future_ages
-    }
 }
 
 /// Read the victory-point race for `player`.
@@ -173,15 +163,6 @@ pub fn guild_lean(state: &GameState, player: Player, board: &Board) -> f64 {
         lean += f64::from(per) * (mine - theirs);
     }
     lean
-}
-
-/// Printed victory points on the civilian cards of one player's city, for
-/// callers explaining a read.
-pub fn civilian_vp_built(state: &GameState, player: Player) -> u16 {
-    let s = duels_core::data::statics();
-    crate::masks::victory_points_in(
-        state.player(player).built_mask() & s.card_masks[CardType::Civilian.index()],
-    )
 }
 
 #[cfg(test)]

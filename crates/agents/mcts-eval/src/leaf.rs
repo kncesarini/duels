@@ -4,16 +4,16 @@
 //!
 //! # Why a mixture
 //!
-//! `CLAUDE.md` records a hard-won prior: *simulation beats hand-crafted
-//! judgement for position value in this game*. That prior is correct as far as
-//! it goes, and [`LeafValue::Static`] is the measurement that confirms it — a
-//! pure `duels-eval` leaf is about `-171` Elo against the playout it replaces
-//! at a fixed node count. What the same investigation found is that the two
-//! signals are *complementary* rather than competing: the evaluation supplies
-//! civilian-score judgement, where its terms live, and the playout supplies
-//! sight of military races, which are a tempo fact only a simulation walking
-//! the next few moves discovers. Half of each beats either alone by a wide
-//! margin. See the crate docs for the full measurement.
+//! `docs/conventions.md` records a hard-won prior: *simulation beats
+//! hand-crafted judgement for position value in this game*. That prior is
+//! correct as far as it goes, and [`LeafValue::Static`] is the measurement
+//! that confirms it — a pure `duels-eval` leaf is about `-171` Elo against the
+//! playout it replaces at a fixed node count. What the same investigation
+//! found is that the two signals are *complementary* rather than competing:
+//! the evaluation supplies civilian-score judgement, where its terms live, and
+//! the playout supplies sight of military races, which are a tempo fact only a
+//! simulation walking the next few moves discovers. Half of each beats either
+//! alone by a wide margin. See the crate docs for the full measurement.
 //!
 //! # The cost structure this design is built on
 //!
@@ -35,12 +35,12 @@
 //! `examples/eval_bench.rs` reports one `evaluate` at **15.1% of one
 //! [`duels_eval::Root::new`]** — so a `Root` costs about six and a half
 //! evaluations, which is affordable once per tree and ruinous once per node,
-//! precisely `CLAUDE.md`'s standing note that `duels-strategy`'s reads are
-//! cheap per node and unaffordable per simulation (`Root::new` is a slate of
-//! exactly those reads). [`crate::tree::Tree`] therefore builds **one**
-//! `Root`, in `Tree::new`, from the tree's own root position, and only when
-//! [`LeafValue`] actually needs one: the non-default [`LeafValue::Rollout`]
-//! allocates nothing and calls nothing here.
+//! precisely `docs/conventions.md`'s standing note that `duels-strategy`'s
+//! reads are cheap per node and unaffordable per simulation (`Root::new` is a
+//! slate of exactly those reads). [`crate::tree::Tree`] therefore builds
+//! **one** `Root`, in `Tree::new`, from the tree's own root position, and only
+//! when [`LeafValue`] actually needs one: the non-default
+//! [`LeafValue::Rollout`] allocates nothing and calls nothing here.
 //!
 //! # Victory points to win probability
 //!

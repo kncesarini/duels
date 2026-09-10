@@ -24,9 +24,12 @@ on:
     paths:
       - 'crates/agents/**'
       - 'crates/duels-agents-api/**'
-      # `duels-eval` is not an agent, but every agent built on it moves when it
-      # does - which is exactly the kind of change this check exists to notice.
+      # `duels-eval` and `duels-value` are not agents, but every agent built on
+      # one moves when it does - which is exactly the kind of change this
+      # check exists to notice. `duels-value` backs the champion (`mcts-value`)
+      # the same way `duels-eval` backs the rest of the ladder.
       - 'crates/duels-eval/**'
+      - 'crates/duels-value/**'
       - '.github/workflows/ai-candidate.yml'
 
 permissions:
@@ -39,13 +42,18 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Games per candidate-vs-champion match. Calibrated, not guessed: a measured
-  # `greedy` vs `mcts-uct` run on a GitHub-hosted 4-vCPU runner cost 1,493 ms
-  # of single-threaded work per game, so 400 games is about 2.5 minutes of
-  # match on top of a ~30 s cached build. See this workflow's header on why it
-  # is not 3,000: at this sample size the Elo interval is roughly +/-100 points
-  # wide, which resolves "this agent is much weaker/stronger" and nothing
-  # finer.
+  # Games per candidate-vs-champion match. The sample size is chosen for the
+  # Elo interval it buys, not for the wall clock: at 400 games the interval is
+  # roughly +/-100 points wide, which resolves "this agent is much
+  # weaker/stronger" and nothing finer. See this workflow's header on why it is
+  # not 3,000.
+  #
+  # The original cost calibration was a measured `greedy` vs `mcts-uct` run at
+  # 1,493 ms of single-threaded work per game on a GitHub-hosted 4-vCPU runner,
+  # so 400 games was about 2.5 minutes of match on top of a ~30 s cached build.
+  # `greedy` was retired in #60 and the cheapest pairing now involves `phased`
+  # plus a search, so treat that per-game figure as a floor rather than as the
+  # current cost. `timeout-minutes` below is the actual guard.
   GAMES: '400'
   BUDGET: 'nodes:2000'
 
@@ -113,7 +121,15 @@ jobs:
           # champion. Used when the champion itself is what changed, since
           # measuring it against a binary built from the same PR would be
           # self-play and tell nobody anything.
-          runner_up='alphabeta'
+          #
+          # The fallback below only applies when `arena/leaderboard.json` is
+          # missing or unreadable; it is `mcts-eval` because that is the
+          # runner-up on the ladder as `duels_arena::leaderboard::LADDER`
+          # orders it. Note that the committed leaderboard the `jq` below
+          # prefers is a *generated* artifact and can lag the ladder — it does
+          # today, still listing the agents retired in #60 — so this fallback
+          # is the more accurate of the two until a nightly run lands.
+          runner_up='mcts-eval'
           if [ -f arena/leaderboard.json ]; then
             found="$(jq -r --arg c "$champion" \
               'first(.rows[] | select(.agent != $c) | .agent) // empty' \

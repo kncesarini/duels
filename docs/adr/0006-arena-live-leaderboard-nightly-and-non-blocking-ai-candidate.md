@@ -1,5 +1,38 @@
 # 0006. Arena live: a jointly-fitted leaderboard, a nightly round robin, and a non-blocking `ai-candidate` check
 
+## Status
+
+Accepted at M6b (#35). **All five decisions still stand.** The roster figures
+the text below quotes do not: the ladder was seven agents when this was
+written and is five now, so the numbers in the body are a record of the
+decision's context, not the current state. What moved, and where the live
+answer is:
+
+- **The anchor is `mcts-uct` pinned at 1000, not `greedy`** (§1). `greedy` was
+  deleted with the whole 1-ply floor tier (`random`, `greedy`, `greedy-ev`) in
+  #60, which also moved the pin. The anchor has to be an agent nothing else
+  re-tunes — read `leaderboard::ANCHOR_AGENT`'s doc comment before moving it
+  again. **Elo numbers from before that change are not comparable to ones
+  after it**, and nothing rescales the old ones.
+- **There is one 1-ply agent, `phased`, not five** (§2). The `Nodes(2000)`
+  tier is `alphabeta`, `mcts-uct`, `mcts-eval` and `mcts-value`. The decision
+  — one budget for the whole round robin, proved rather than asserted by
+  `leaderboard::tests::one_ply_agents_ignore_their_budget` — is unaffected,
+  and that test now also asserts the `nodes:1` tier is non-empty so it cannot
+  quietly become vacuous.
+- **The champion is `mcts-value`, not `mcts-uct`** (§5). It moved to
+  `mcts-eval` in #51 and to `mcts-value` in #63, each a separate one-line
+  decision on its own evidence. `leaderboard::CHAMPION` is the live answer.
+- **The round robin is `C(5,2)` = 10 pairings, not 21** (Consequences); a
+  sixth agent would take it to 15. `duels_arena::leaderboard::pairings()` is
+  the live answer, and no workflow file hard-codes the count.
+- `ai-candidate` also runs on `crates/duels-eval/**` now (§4), because every
+  agent built on that library moves when it does.
+
+`duels_arena::leaderboard::LADDER` is the source of truth for the roster in
+all cases. This section is the drift record; the body is left as it was
+accepted.
+
 ## Context
 
 Milestone M6b of the original architecture pass was specified as "real agents,

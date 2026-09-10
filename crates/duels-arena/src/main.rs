@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn experiment_defaults_to_the_default_gate_and_takes_none_to_opt_out() {
         let plan_of = |extra: &[&str]| {
-            let mut args = experiment_args(&["--candidate", "random", "--control", "greedy"]);
+            let mut args = experiment_args(&["--candidate", "phased", "--control", "alphabeta"]);
             args.extend(extra.iter().map(|s| s.to_string()));
             experiment_plan(&Flags::parse_with_switches(&args, &["early-stop", "dry-run"]).unwrap())
         };
@@ -909,7 +909,7 @@ mod tests {
         for args in [
             vec!["experiment", "--help"],
             vec!["match", "--help"],
-            vec!["experiment", "--candidate", "random", "-h"],
+            vec!["experiment", "--candidate", "phased", "-h"],
             vec!["--help"],
             vec!["help"],
         ] {

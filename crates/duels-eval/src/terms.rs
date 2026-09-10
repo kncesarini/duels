@@ -1901,13 +1901,13 @@ pub fn yellow_equity(state: &GameState, p: Player, coin_marginal: f64, rate: f64
 /// # Why a value function needs this, and how it is also the extra-turn credit
 ///
 /// Two facts about this game make "whose turn is it" a real component of a
-/// position's value rather than bookkeeping. First, `CLAUDE.md`'s own learned
-/// priors record a first-player advantage of about 67/33 between equally
-/// strong `mcts-uct` configurations — the right to move is worth a great deal.
-/// Second, an extra turn is the one thing that re-assigns every remaining slot
-/// (`docs/strategy-backlog.md` §0.3), and round six measured about +47 Elo for
-/// a single constant that priced play-again wonders while they were still
-/// unbuilt.
+/// position's value rather than bookkeeping. First, the learned priors in
+/// `docs/conventions.md` record a first-player advantage of about 67/33
+/// between equally strong `mcts-uct` configurations — the right to move is
+/// worth a great deal. Second, an extra turn is the one thing that re-assigns
+/// every remaining slot (`docs/strategy-backlog.md` §0.3), and round six
+/// measured about +47 Elo for a single constant that priced play-again wonders
+/// while they were still unbuilt.
 ///
 /// Nothing in this evaluation priced either. The score of a position was
 /// symmetric in whose move it was, except for the menu term's sign and the

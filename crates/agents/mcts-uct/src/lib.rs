@@ -20,14 +20,14 @@
 //! leaf, and the other configuration became its own agent with its own
 //! ladder entry.
 //!
-//! `mcts-eval` therefore holds all the evaluation-as-leaf-value machinery,
-//! its measurement tables, and (deliberately, unlike anything here) a *live*
+//! `mcts-eval` therefore holds all the evaluation-as-leaf-value machinery, its
+//! measurement tables, and (deliberately, unlike anything here) a *live*
 //! rather than pinned `duels_eval::Config`. It also carries a verbatim copy of
 //! this crate's `expand`/`select_ucb1`/`simulate` as its ablation control, and
 //! asserts move-for-move equality against it, so "the blend beats a playout
 //! leaf" is a claim about these two agents and not about two similar searches.
-//! `mcts-uct` does not depend on `mcts-eval` or vice versa — see
-//! `CLAUDE.md`'s "agent crates are self-contained" invariant.
+//! `mcts-uct` does not depend on `mcts-eval` or vice versa — see the "agent
+//! crates are self-contained" invariant in `docs/conventions.md`.
 //!
 //! # Why chance nodes
 //!

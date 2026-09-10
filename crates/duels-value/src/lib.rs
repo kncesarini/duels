@@ -5,11 +5,12 @@
 //! # Where this sits, and what it is for
 //!
 //! A library **below the agents**, next to [`duels_core`] and alongside
-//! `duels-strategy` and `duels-eval`, for the reason `CLAUDE.md` gives: an
-//! agent crate may not depend on another agent crate, so anything more than
-//! one search wants to consume moves *down* into a library rather than
-//! sideways. It depends on `duels-core` and on nothing else — no `rand`, no
-//! clock, no ML runtime. [`features`] and [`Net::forward`] are pure functions.
+//! `duels-strategy` and `duels-eval`, for the reason `docs/conventions.md`
+//! gives: an agent crate may not depend on another agent crate, so anything
+//! more than one search wants to consume moves *down* into a library rather
+//! than sideways. It depends on `duels-core` and on nothing else — no `rand`,
+//! no clock, no ML runtime. [`features`] and [`Net::forward`] are pure
+//! functions.
 //!
 //! It exists because of a specific, measured shape in this project's results.
 //! `mcts-eval`'s budget-scaling curve flattens hard past `Nodes(2000)`
@@ -200,11 +201,11 @@
 //! Two things in there are worth more than the headline.
 //!
 //! **A pure learned leaf is `+57`, where a pure hand-crafted one is `-171`.**
-//! That is the sharpest single result here. `CLAUDE.md`'s standing prior —
-//! *simulation beats hand-crafted judgement for position value in this game* —
-//! was established by `LeafValue::Static` losing badly, and it is the low
-//! ceiling of a *hand-crafted* evaluation that the prior is really about. A
-//! learned value of the same shape, with no playout at all, beats the
+//! That is the sharpest single result here. `docs/conventions.md`'s standing
+//! prior — *simulation beats hand-crafted judgement for position value in this
+//! game* — was established by `LeafValue::Static` losing badly, and it is the
+//! low ceiling of a *hand-crafted* evaluation that the prior is really about.
+//! A learned value of the same shape, with no playout at all, beats the
 //! playout-plus-evaluation blend. The prior needs narrowing, not discarding.
 //!
 //! **The blend still wins, and by a lot, which is the prior surviving in its
@@ -237,8 +238,8 @@
 //!    simulation against the default's `1.08x`. At equal wall clock it would
 //!    run roughly `0.74x` the simulations, which against ~22 Elo per doubling
 //!    is worth about `-9` Elo. Expect roughly `+95` at `TimeMs(1000)`, and
-//!    treat that as an estimate, not a measurement. `CLAUDE.md` is emphatic
-//!    that this project has been burned by exactly this both ways.
+//!    treat that as an estimate, not a measurement. `docs/conventions.md` is
+//!    emphatic that this project has been burned by exactly this both ways.
 //! 2. **One budget, one opponent.** Everything above is `Nodes(32000)` against
 //!    one control. A leaf that steers this hard into science races (31.5% of
 //!    the pure variant's wins, against a ~2.3% base rate in self-play) could
@@ -303,9 +304,9 @@
 //! leaf there is no playout to shrink, the formula gives no guidance at all,
 //! and the `0.5` this spike inherited was leaving about **83 Elo** on the
 //! table — more than every other refinement in this crate combined.
-//! `CLAUDE.md`'s standing instruction that a change to what a leaf backs up
-//! must re-derive `c` was right, and the reason to state it this loudly is
-//! that the spike above read `0.5` as "close enough to leave alone".
+//! `docs/conventions.md`'s standing instruction that a change to what a leaf
+//! backs up must re-derive `c` was right, and the reason to state it this
+//! loudly is that the spike above read `0.5` as "close enough to leave alone".
 //!
 //! ## Caveat 1, first half: it is not a high-budget artefact
 //!
@@ -356,11 +357,11 @@
 //!
 //! # A note on reading a load average on the machine this was measured on
 //!
-//! `CLAUDE.md` is right that a `TimeMs` run needs a quiet machine, and the
-//! usual proxy — "load average in single digits" — is **not usable here**.
-//! `duels-arena` parallelises seeds within a match, so a single legitimate
-//! match shows a load average near 150 on this box and four concurrent
-//! matches showed ~600; the figure counts runnable threads in a
+//! `docs/conventions.md` is right that a `TimeMs` run needs a quiet machine,
+//! and the usual proxy — "load average in single digits" — is **not usable
+//! here**. `duels-arena` parallelises seeds within a match, so a single
+//! legitimate match shows a load average near 150 on this box and four
+//! concurrent matches showed ~600; the figure counts runnable threads in a
 //! thread-per-game pool, not CPU oversubscription. The numbers above were
 //! taken under the criterion the proxy stands for — no other arena, build or
 //! test process, and no *variable* competing load — verified with a

@@ -40,7 +40,7 @@
 //!
 //! The search machinery itself — `tree`, `chance`, `rollout`, and the
 //! [`Agent`] impl below — is a deliberate **copy** of `mcts-uct`'s, not a
-//! dependency on it. `CLAUDE.md`'s "agent crates are self-contained"
+//! dependency on it. `docs/conventions.md`'s "agent crates are self-contained"
 //! invariant forbids one agent crate depending on another, and this is the
 //! same accepted, intentional duplication `greedy-ev` carries against
 //! `greedy`. `duels-eval` is a different matter: it is a shared library
@@ -59,9 +59,9 @@
 //! ## This is the opposite of what `mcts-uct` did, deliberately
 //!
 //! `mcts-uct`'s leaf-value option pinned `duels_eval::Config::v6()` and held a
-//! golden-values test against ~50 fixed positions, precisely so that a
-//! seventh `phased`/`duels-eval` tuning round could not silently move a
-//! measured `mcts-uct` strength number. `CLAUDE.md` still records that as a
+//! golden-values test against ~50 fixed positions, precisely so that a seventh
+//! `phased`/`duels-eval` tuning round could not silently move a measured
+//! `mcts-uct` strength number. `docs/conventions.md` still records that as a
 //! standing prior — *"a search that consumes `duels-eval` must pin a
 //! generation"* — and for an agent whose *identity* is its search, that is the
 //! right call: the evaluation is an incidental input there, and an incidental
@@ -283,10 +283,10 @@
 //! military smoothing is fixed at the search root, so it cannot even move as
 //! the leaf gets deeper (see `leaf`'s note on stale calibration).
 //!
-//! This is the concrete form of `CLAUDE.md`'s prior that win-condition
-//! awareness belongs in the search policy rather than the evaluation, and it
-//! is why the blend works: keeping half a playout keeps the military sight
-//! that the evaluation has no way to supply.
+//! This is the concrete form of `docs/conventions.md`'s prior that
+//! win-condition awareness belongs in the search policy rather than the
+//! evaluation, and it is why the blend works: keeping half a playout keeps the
+//! military sight that the evaluation has no way to supply.
 //!
 //! Two candidates were carried forward: the sweep's nominal maximum
 //! (`blend:0.7,c=0.3`) and the middle of the plateau (`blend:0.5,c=0.5`).
@@ -458,11 +458,12 @@
 //!
 //! Note the controls: `-26.0` at `TimeMs(20)` and `-10.4` at `TimeMs(100)`,
 //! against `-6.9` at `Nodes(2000)`. A wall-clock noise floor is genuinely
-//! wider, and wider still at the shorter budget where a scheduling hiccup is
-//! a larger fraction of a decision — which is the reason `CLAUDE.md` insists
-//! on running these one at a time. Both are nowhere near the candidate's
-//! interval: the closest approach is the `TimeMs(20)` control's upper bound
-//! against that budget's lower bound, and they are 106 points apart.
+//! wider, and wider still at the shorter budget where a scheduling hiccup is a
+//! larger fraction of a decision — which is the reason `docs/conventions.md`
+//! insists on running these one at a time. Both are nowhere near the
+//! candidate's interval: the closest approach is the `TimeMs(20)` control's
+//! upper bound against that budget's lower bound, and they are 106 points
+//! apart.
 //!
 //! ## Reproducing
 //!

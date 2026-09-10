@@ -13,11 +13,11 @@
 //!
 //! The evaluation was extracted into its own crate so that more than one agent
 //! can use it. This repository's rule is that **no agent crate depends on
-//! another agent crate** (`CLAUDE.md`), so a shared evaluation has to sit
-//! below the agents next to `duels-strategy` rather than inside whichever
-//! agent built it first. The extraction was a pure refactor: `phased` plays
-//! move-for-move identically, under every configuration snapshot, to the agent
-//! that had the evaluation inlined.
+//! another agent crate** (`docs/conventions.md`), so a shared evaluation has
+//! to sit below the agents next to `duels-strategy` rather than inside
+//! whichever agent built it first. The extraction was a pure refactor:
+//! `phased` plays move-for-move identically, under every configuration
+//! snapshot, to the agent that had the evaluation inlined.
 //!
 //! Every public item of `duels-eval` is re-exported here under the name it had
 //! before, so `phased:base=v1,rails=off,...` spec strings, and every caller in

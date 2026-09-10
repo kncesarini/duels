@@ -96,19 +96,27 @@ jobs:
     name: ${{ matrix.pairing.id }}
     needs: plan
     runs-on: ubuntu-latest
-    # Calibrated, not guessed. The slowest pairing is alphabeta vs mcts-uct
-    # (the only one with two search agents), measured on a GitHub-hosted
-    # 4-vCPU runner at 2,705 ms of single-threaded work per game. At the
-    # default 3,000 games that is ~8,100 CPU-seconds, which `play_paired_match`
-    # spreads across the runner's four cores in roughly 37 minutes. Every other
-    # pairing is faster - a 1-ply pair finishes in seconds. 120 minutes is
-    # therefore a ~3x margin, chosen to still fail reasonably promptly if a
-    # match ever hangs.
+    # Calibrated, not guessed - but calibrated against a ladder that has since
+    # changed. When this was measured, alphabeta vs mcts-uct was the slowest
+    # pairing because it was the only one with two search agents: 2,705 ms of
+    # single-threaded work per game on a GitHub-hosted 4-vCPU runner, so ~8,100
+    # CPU-seconds at the default 3,000 games, which `play_paired_match` spreads
+    # across the runner's four cores in roughly 37 minutes. That made 120
+    # minutes a ~3x margin, chosen to still fail reasonably promptly if a match
+    # ever hangs.
+    #
+    # `phased` is now the only 1-ply agent, so four of the five ladder entries
+    # are searches and C(4,2) = 6 pairings have two of them. mcts-eval and
+    # mcts-value both evaluate a leaf per node, so the slowest pairing is
+    # probably no longer alphabeta vs mcts-uct and the 3x margin has not been
+    # re-measured. Nothing has timed out yet; re-measure before trusting the
+    # margin, and check the per-pairing durations if a job ever does hit the
+    # limit.
     timeout-minutes: 120
     strategy:
-      # One flaky or slow pairing should not throw away the other twenty; the
-      # aggregation job refuses to publish an incomplete round robin anyway, so
-      # a failure is reported rather than silently averaged over.
+      # One flaky or slow pairing should not throw away the rest of the round
+      # robin; the aggregation job refuses to publish an incomplete one anyway,
+      # so a failure is reported rather than silently averaged over.
       fail-fast: false
       matrix:
         pairing: ${{ fromJson(needs.plan.outputs.matrix) }}
@@ -119,7 +127,7 @@ jobs:
       - name: Make the runner executable
         run: chmod +x duels-arena
       - name: Play ${{ matrix.pairing.agent_a }} vs ${{ matrix.pairing.agent_b }}
-        # Every pairing runs at nodes:2000. The five 1-ply agents take
+        # Every pairing runs at nodes:2000. The 1-ply agents take
         # `_budget` in `Agent::choose` and never read it, so this is also
         # exactly their nodes:1 ladder budget - see
         # `duels_arena::leaderboard`, whose `one_ply_agents_ignore_their_budget`

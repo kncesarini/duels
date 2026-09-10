@@ -50,7 +50,7 @@
 //!   `examples/age_start_lab.rs`) instead of a change to any agent's own
 //!   evaluation code.
 //!
-//! Two examples go beyond what the CLI reports:
+//! Four examples go beyond what the CLI reports:
 //!
 //! - `examples/ab_lab.rs`, the `duels-agent-alphabeta` tuning harness, which
 //!   also gives the two sides *different* budgets (`--budget-a`/`--budget-b`);

@@ -54,7 +54,16 @@ jobs:
               - 'web/**'
               - 'crates/duels-core/**'
               - 'crates/duels-server/**'
+              # `duels-server` links every one of these directly (see its
+              # `Cargo.toml`), so a compile error in any of them fails
+              # `cargo test -p duels-server` below - which this job needs to
+              # succeed regardless of whether it changes any TS-exported type.
               - 'crates/agents/random/**'
+              - 'crates/agents/phased/**'
+              - 'crates/agents/alphabeta/**'
+              - 'crates/agents/mcts-uct/**'
+              - 'crates/agents/mcts-eval/**'
+              - 'crates/agents/mcts-value/**'
               - '.cargo/config.toml'
               - '.github/workflows/ci.yml'
       - uses: dtolnay/rust-toolchain@stable

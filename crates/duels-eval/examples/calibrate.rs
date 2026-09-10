@@ -216,8 +216,9 @@ fn reliability(samples: &[Sample], t: f64) {
 fn main() {
     // `calibrate <games> [first seed]`. The seed offset exists so a refit can
     // be reproduced on a **disjoint** range of games before it is believed,
-    // which is this project's standing rule for anything measured (`CLAUDE.md`)
-    // and applies to a fitted constant exactly as it applies to an Elo.
+    // which is this project's standing rule for anything measured
+    // (`docs/conventions.md`) and applies to a fitted constant exactly as it
+    // applies to an Elo.
     let games: u64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
@@ -234,7 +235,8 @@ fn main() {
 
     for seed in first..first + games {
         // Both seat orders, so a first-player advantage this large (see
-        // `CLAUDE.md`) cannot bias the fit towards whoever moves first.
+        // `docs/conventions.md`) cannot bias the fit towards whoever moves
+        // first.
         for swap in [false, true] {
             let seeds = if swap {
                 (seed * 1000 + 2, seed * 1000 + 1)

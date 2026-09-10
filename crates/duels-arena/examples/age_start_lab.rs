@@ -51,13 +51,13 @@
 //!     split phased 800 --seed 1 --budget nodes:1
 //! ```
 //!
-//! Arguments: the mode (`first-vs-second` / `agent-vs-first` / `split`),
-//! then the base agent's spec string (anything [`duels_arena::agent_spec`]
-//! accepts, so `phased:base=v1` works — default `phased`), then optionally
-//! the number of games (default 800, rounded down to an even number of
-//! paired seeds), `--seed <N>` (default 1) and `--budget <spec>` (default
-//! `nodes:2000`; use `nodes:1` for `phased`, which is a 1-ply agent, per this
-//! project's convention in `CLAUDE.md`).
+//! Arguments: the mode (`first-vs-second` / `agent-vs-first` / `split`), then
+//! the base agent's spec string (anything [`duels_arena::agent_spec`] accepts,
+//! so `phased:base=v1` works — default `phased`), then optionally the number
+//! of games (default 800, rounded down to an even number of paired seeds),
+//! `--seed <N>` (default 1) and `--budget <spec>` (default `nodes:2000`; use
+//! `nodes:1` for `phased`, which is a 1-ply agent, per the production budget
+//! `duels_arena::leaderboard::LADDER` records for it).
 //!
 //! `--seed` is not a convenience here: this project's standing requirement
 //! is that no single-seed-range result is trusted, so every experiment this

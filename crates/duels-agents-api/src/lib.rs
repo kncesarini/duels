@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 /// parameters that produced it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
-    /// Human-readable agent name, e.g. `"random"`, `"greedy-v1"`, `"mcts"`.
+    /// Human-readable agent name, e.g. `"phased"`, `"mcts-uct"`, `"mcts-value"`.
     pub name: String,
     /// Semver-ish version string for this agent's implementation.
     pub version: String,
@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn agent_spec_round_trips_through_json() {
         let spec = AgentSpec {
-            name: "greedy".into(),
+            name: "phased".into(),
             version: "1.0.0".into(),
             params: "{}".into(),
         };
