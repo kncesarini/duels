@@ -36,6 +36,26 @@
 //! default — see the module's git history / PR description for the full
 //! numbers and how they were obtained.
 //!
+//! **Re-measured properly, and the verdict above is half wrong.** At 1600
+//! games against [`crate::Config::default`] — two disjoint seed ranges,
+//! paired-seed and seat-swapped, `Nodes(32000)` — `SMART` scores `+10.9` Elo
+//! `[-6.2, +27.9]`, reproducing its sign on both ranges (`+6.1` / `+15.6`).
+//! So "statistically indistinguishable from a coin flip" was a statement
+//! about n=40, not about `SMART`: at that sample size nothing smaller than
+//! about 55 Elo was visible at all. What survives is the *conclusion* and not
+//! the reasoning — `+10.9` with an interval containing zero is not an accept,
+//! and a node budget does not charge `SMART` the 10-25% throughput it costs
+//! at a wall clock. It stays non-default, now on evidence rather than on
+//! noise.
+//!
+//! The finding n=40 could not have reached is the mechanism: `SMART`'s
+//! per-card multipliers **triple** the share of its wins that arrive as a
+//! scientific victory (6.2% against the default's 1.9%, z = 7.9) while
+//! leaving military alone, and pay for it in civilian wins (78.4% against
+//! 84.3%). The knob does exactly what it was designed to do and converts
+//! almost none of it into Elo. `duels-agent-mcts-eval`'s crate docs, under
+//! "Re-measured at the production budget", carry the full tables.
+//!
 //! Uniform-random play discards roughly a third of the cards it touches and
 //! is indifferent between a free chain-build and a bad trade, which is far
 //! worse than any human line; that noise floor is what makes pure-random
@@ -332,6 +352,19 @@ impl RaceWeights {
     /// [`RaceWeights::NEUTRAL`] over 1200 games, where
     /// [`RaceWeights::MEDIUM`] managed `+10.0`. The crate docs carry the full
     /// tables and why it is nonetheless not the default.
+    ///
+    /// **That `+26.1` is a `Nodes(2000)` figure and does not survive a bigger
+    /// budget.** At `Nodes(32000)`, 1600 games over two disjoint seed ranges,
+    /// it is `+6.3 [-10.7, +23.3]` — the sign holds on both ranges (`+3.9` /
+    /// `+8.7`) and the interval contains zero. The mechanism explains the
+    /// decay rather than contradicting the original result: Tier 1 *is* the
+    /// terminal rails, i.e. a rollout that never misses a win already on the
+    /// board, which is worth most when the tree is too shallow to see that
+    /// win by itself and progressively less as the tree deepens. Its military
+    /// share still rises (14.7% against 12.5%), so it keeps doing what it
+    /// says; it just stops being paid for it. See
+    /// `duels-agent-mcts-eval`'s crate docs, "Re-measured at the production
+    /// budget", before quoting `+26.1` at any budget near the server's.
     pub const TIER1_ONLY: RaceWeights = RaceWeights {
         rail: RAIL,
         sci_push: [1.0; 6],

@@ -316,6 +316,20 @@
 //! and the case for doing so is a judgement about how much a mechanism
 //! explanation is worth, not a gap in the measurement.
 //!
+//! **There is now a gap in the measurement, and it is the budget.** Every
+//! figure above is `Nodes(2000)`. Inside `mcts-eval` — whose `RaceWeights`
+//! are a copy of these — the same setting re-measured at `Nodes(32000)` over
+//! 1600 games is `+6.3 [-10.7, +23.3]`, positive on both disjoint ranges and
+//! no longer distinguishable from zero. That is not a contradiction: the
+//! terminal rails are worth most when the tree is too shallow to see a win
+//! that is already on the board, and less as the tree deepens. It has not
+//! been re-measured inside *this* crate, whose leaf value is a pure playout
+//! and therefore leans on the rollout policy harder than `mcts-eval`'s blend
+//! does — so the decay may well be smaller here. But "one line from being the
+//! default" should be read as a claim about `Nodes(2000)`, not about the
+//! budget a server hands out. See `duels-agent-mcts-eval`'s crate docs,
+//! "Re-measured at the production budget".
+//!
 //! ## Reproducing
 //!
 //! ```text
