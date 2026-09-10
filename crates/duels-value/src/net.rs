@@ -58,17 +58,83 @@ pub const NUM_OUTCOMES: usize = 4;
 /// rather than argued about: `tests/summation_equivalence.rs` bounds it
 /// numerically (`|Δ| < 1e-5` over 1,000 sampled positions) and the crate docs
 /// record the before/after arena run that bounds it in Elo.
+///
+/// # A third order: transpose the loop nest, not just the reduction
+///
+/// `examples/value_bench.rs` found that [`Summation::Unrolled4`] only
+/// recovered `1.41x` of the ten-fold gap the module docs above describe, and
+/// diagnosed why: `w1` is 108 KiB, which does not fit in L1, so the loop is
+/// substantially **memory**-bound rather than purely latency-bound, and a
+/// wider unroll of the same per-unit reduction would not address that.
+///
+/// [`Summation::TransposedAxpy`] addresses the other axis instead. Every
+/// existing order visits `w1` **row by row** (one hidden unit, all 211
+/// inputs) and reduces each row to a scalar with a dot product. This order
+/// visits it **column by column**: for each of the 211 inputs in turn, scale
+/// that input's whole row of `w1ᵀ` (128 contiguous weights, one per hidden
+/// unit) and accumulate it into a 128-wide running output — an axpy
+/// (`h += x_i · w1ᵀ[i]`) rather than 128 separate dot products. The 128 `h[j]`
+/// accumulators are mutually independent, so there is no horizontal reduction
+/// at all until every input has been folded in, and the compiler is free to
+/// vectorise straight across the hidden dimension with no cross-lane
+/// dependency to break.
+///
+/// This does not reduce how many bytes of `w1` are read — every element is
+/// still touched exactly once either way — so it does not sidestep the
+/// memory-bound diagnosis above by shrinking traffic. What it changes is the
+/// *shape* of the reduction: no per-unit horizontal sum, and a stream of
+/// elementwise fused multiply-adds that is about as friendly a target for
+/// auto-vectorisation as this loop can be handed.
+///
+/// It is also, perhaps surprisingly, **not a reassociation at all**. For a
+/// fixed hidden unit `j`, this order adds exactly the same terms in exactly
+/// the same sequence — `b1[j]`, then `x[0]·w1[j][0]`, then `x[1]·w1[j][1]`,
+/// … — as [`Summation::Serial`] does; only the *loop nesting* (which `j`s are
+/// visited between successive `i`s) changed, not the order of additions any
+/// one accumulator sees. `tests/summation_equivalence.rs` checks this
+/// directly (bit-for-bit, in both debug and release builds), alongside the
+/// numerical bound the other pair is held to.
+///
+/// **Measured, and promoted to the default.** `examples/value_bench.rs`
+/// records `4.2x`-`4.5x` on the forward pass alone against
+/// [`Summation::Serial`] on the machine it was benchmarked on (`2.6x`-`3.3x`
+/// against [`Summation::Unrolled4`], the default this replaced) — smaller
+/// than a since-superseded planning estimate of `5.8x` from a different,
+/// throwaway benchmark, but a large, real recovery of the memory-bound half
+/// of the cost the unroll did not reach. At production's
+/// `Budget::TimeMs(1_000)`, `arena/results/experiments/` holds three
+/// paired-seed, seat-swapped batches against the unrolled default (2,000
+/// games total): `+40.0 [+5.8, +74.3]` (400 games, shared machine),
+/// `+23.5 [-0.7, +47.6]` (800 games, shared machine) and, on a verified-quiet
+/// machine, `+32.2 [+8.0, +56.4]` (800 games) — consistently positive, and
+/// the mechanism gate (`civilian_share`, `science_share`, `military_share`)
+/// passes on every batch, so the gain is not a distorted victory-kind mix.
+/// `arena/results/experiments/axpy-vs-default-nodes32000` confirms no
+/// behaviour change at a **fixed** node count (`+1.2 [-26.6, +28.9]` over 600
+/// games), exactly as a change that only makes each simulation cheaper has
+/// to show. See `crates/agents/mcts-value/src/lib.rs`'s crate docs for the
+/// full write-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Summation {
     /// One serial `f32` accumulator per unit — the original order, and the
     /// one every Elo number predating the unroll was measured with.
     Serial,
-    /// Four independent partial sums, combined pairwise at the end. The
-    /// default, because it computes the same function to within `1e-5` and
-    /// breaks the latency chain that made the forward pass cost half a
-    /// playout.
-    #[default]
+    /// Four independent partial sums, combined pairwise at the end. Computes
+    /// the same function as [`Summation::Serial`] to within `1e-5` and breaks
+    /// the latency chain that made the forward pass cost half a playout. Was
+    /// the default; superseded by [`Summation::TransposedAxpy`], which goes
+    /// further at the same numerical honesty (in fact more: it is
+    /// bit-identical to `Serial`, not merely close), and stays reachable
+    /// rather than being deleted.
     Unrolled4,
+    /// The hidden layer as a sequence of 211 axpy updates into a 128-wide
+    /// accumulator, over a pre-transposed `w1`, rather than 128 dot products
+    /// over the row-major one. **The default**, because it is measurably
+    /// faster than [`Summation::Unrolled4`] *and* matches
+    /// [`Summation::Serial`] bit for bit rather than merely to within
+    /// tolerance — see this enum's docs for the measurements.
+    #[default]
+    TransposedAxpy,
 }
 
 impl Summation {
@@ -77,6 +143,7 @@ impl Summation {
         match self {
             Summation::Serial => "serial",
             Summation::Unrolled4 => "unrolled4",
+            Summation::TransposedAxpy => "axpy",
         }
     }
 }
@@ -90,6 +157,14 @@ pub struct Net {
     hidden: usize,
     /// `hidden × NUM_FEATURES`, row-major.
     w1: Vec<f32>,
+    /// `w1`, transposed to `NUM_FEATURES × hidden`, row-major — so row `i` is
+    /// the `hidden` weights input feature `i` feeds into, contiguous. Only
+    /// [`Net::forward_transposed_axpy`] reads this; it is derived once from
+    /// `w1` in [`Net::from_bytes`] (a few thousand `f32` moves, not on any hot
+    /// path) rather than recomputed per call, so a handle can be built once
+    /// per search tree and used at any [`Summation`] without a per-call cost
+    /// for the ones that do not need it.
+    w1_t: Vec<f32>,
     /// `hidden`.
     b1: Vec<f32>,
     /// `NUM_OUTCOMES × hidden`, row-major.
@@ -214,9 +289,11 @@ impl Net {
         let b1 = take(counts[1]);
         let w2 = take(counts[2]);
         let b2 = take(counts[3]);
+        let w1_t = transpose(&w1, hidden, n_in);
         Ok(Net {
             hidden,
             w1,
+            w1_t,
             b1,
             w2,
             b2,
@@ -258,13 +335,18 @@ impl Net {
     /// Deterministic, allocation-free, and reads no clock — the only thing a
     /// search leaf is allowed to be.
     ///
-    /// Dispatches on [`Net::summation`]. The two arms compute the same
-    /// function to within `1e-5`; see [`Summation`] for why they are not
-    /// bit-identical and why both are kept.
+    /// Dispatches on [`Net::summation`]. All three arms compute the same
+    /// function: [`Summation::Unrolled4`] agrees with [`Summation::Serial`]
+    /// to within `1e-5` (a genuine reassociation), while
+    /// [`Summation::TransposedAxpy`] is expected to agree with it bit for bit
+    /// (a reordered loop nest, not a reassociation) — see [`Summation`] for
+    /// why, and `tests/summation_equivalence.rs` for where both claims are
+    /// checked rather than assumed.
     pub fn forward(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
         match self.summation {
             Summation::Serial => self.forward_serial(x),
             Summation::Unrolled4 => self.forward_unrolled4(x),
+            Summation::TransposedAxpy => self.forward_transposed_axpy(x),
         }
     }
 
@@ -326,6 +408,65 @@ impl Net {
         }
         softmax(logits)
     }
+
+    /// The hidden layer as 211 axpy updates over a pre-transposed `w1`,
+    /// instead of 128 dot products over the row-major one.
+    ///
+    /// Identical to [`Net::forward_serial`] in every respect except *how* the
+    /// hidden layer's sums are accumulated — same rows of meaning, same bias,
+    /// same ReLU, same output layer verbatim. See [`Summation`] for why this
+    /// reorders the loop nest rather than the arithmetic, and is expected to
+    /// match [`Net::forward_serial`] bit for bit rather than merely to within
+    /// tolerance; `tests/summation_equivalence.rs` checks that directly.
+    pub fn forward_transposed_axpy(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
+        let hidden = self.hidden;
+
+        // `h[j] = b1[j] + sum_i x[i] * w1[j][i]`, but visited input-by-input:
+        // for each `i`, scale that input's whole (contiguous) row of `w1ᵀ` —
+        // the `hidden` weights it feeds into — and fold it into every `h[j]`
+        // at once. Each `h[j]` still sees its terms in exactly `i = 0, 1, ...`
+        // order, so this is the same sum as `forward_serial`'s, computed with
+        // a different loop nesting.
+        let mut h = [0.0f32; MAX_HIDDEN];
+        h[..hidden].copy_from_slice(&self.b1[..hidden]);
+        for (&xi, row) in x.iter().zip(self.w1_t.chunks_exact(hidden)) {
+            for (hj, w) in h[..hidden].iter_mut().zip(row) {
+                *hj += xi * w;
+            }
+        }
+        for hj in h[..hidden].iter_mut() {
+            // ReLU.
+            *hj = if *hj > 0.0 { *hj } else { 0.0 };
+        }
+
+        // Output layer, verbatim from `forward_serial` — this variant only
+        // changes how the hidden layer is computed.
+        let mut logits = [0.0f32; NUM_OUTCOMES];
+        for (k, lk) in logits.iter_mut().enumerate() {
+            let row = &self.w2[k * hidden..k * hidden + hidden];
+            let mut acc = self.b2[k];
+            for (w, hj) in row.iter().zip(h.iter().take(hidden)) {
+                acc += w * hj;
+            }
+            *lk = acc;
+        }
+        softmax(logits)
+    }
+}
+
+/// `w1` (`hidden × n_in`, row-major) transposed to `n_in × hidden`,
+/// row-major — row `i` becomes the `hidden` weights input feature `i` feeds
+/// into, contiguous. [`Net::forward_transposed_axpy`]'s whole point is
+/// reading `w1` in this order instead of the original one.
+fn transpose(w1: &[f32], hidden: usize, n_in: usize) -> Vec<f32> {
+    let mut t = vec![0.0f32; hidden * n_in];
+    for j in 0..hidden {
+        let row = &w1[j * n_in..(j + 1) * n_in];
+        for (i, &w) in row.iter().enumerate() {
+            t[i * hidden + j] = w;
+        }
+    }
+    t
 }
 
 /// `bias + a · b`, accumulated into four independent partial sums.

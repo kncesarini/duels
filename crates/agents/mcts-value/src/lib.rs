@@ -412,7 +412,12 @@
 //!   games (`p1-unroll-ab/`, `p1-unroll-ab-extended/`). It reassociates a
 //!   floating-point sum, so `Summation::Serial` stays reachable
 //!   (`mcts-value:value_sum=serial`) and the spec string records which order
-//!   ran.
+//!   ran. `Summation::TransposedAxpy` (`mcts-value:value_sum=axpy`) is a third,
+//!   opt-in option: it transposes the loop nest rather than the reduction,
+//!   which `duels_value`'s own crate docs and `examples/value_bench.rs`
+//!   measure at a further real speedup over the unroll — see those for the
+//!   number and the Elo validation at production's `TimeMs` budget, and for
+//!   why it is not (yet, at time of writing) the default.
 //! - [`Config::eval_override`] is inherited and is only read by the inherited
 //!   hand-crafted leaves. It does nothing on this crate's default path. Note
 //!   that [`Config::eval_base`] deliberately leaves it `None`, so the ablation

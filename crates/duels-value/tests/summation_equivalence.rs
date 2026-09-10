@@ -33,6 +33,15 @@
 //! vectors, because cancellation is data-dependent: a feature vector of mostly
 //! small non-negative numbers with a few large ones is the case that actually
 //! occurs, and a synthetic uniform vector would not exercise it.
+//!
+//! # A later addition: a pair that *is* bit-identical
+//!
+//! [`Summation::TransposedAxpy`] — added after the paragraphs above, and now
+//! the default — is a different kind of change from the unroll: a reordered
+//! loop nest rather than a reassociated sum. So unlike the `Serial`/`Unrolled4`
+//! pair this file was written for, its equivalence claim against `Serial` is
+//! bit-for-bit, and is checked as such below rather than folded into the
+//! numerical bound above. See [`Summation`]'s own docs for the argument.
 
 use duels_core::{engine, GameState, Player};
 use duels_value::{default_net, features, Summation, NUM_OUTCOMES};
@@ -147,13 +156,53 @@ fn the_two_orders_really_are_different_code_paths() {
     );
 }
 
-/// The default is the unrolled order, so an agent that says nothing gets the
-/// fast path. Pinned as a test because flipping it is a deliberate act with
-/// an arena run behind it, not a default that should drift.
+/// The default is the transposed-axpy order, so an agent that says nothing
+/// gets the fast path. Pinned as a test because flipping it is a deliberate
+/// act with an arena run behind it, not a default that should drift.
 #[test]
-fn the_default_summation_is_the_unrolled_one() {
-    assert_eq!(default_net().summation(), Summation::Unrolled4);
-    assert_eq!(Summation::default(), Summation::Unrolled4);
+fn the_default_summation_is_the_transposed_axpy_one() {
+    assert_eq!(default_net().summation(), Summation::TransposedAxpy);
+    assert_eq!(Summation::default(), Summation::TransposedAxpy);
     assert_eq!(Summation::Serial.name(), "serial");
     assert_eq!(Summation::Unrolled4.name(), "unrolled4");
+    assert_eq!(Summation::TransposedAxpy.name(), "axpy");
+}
+
+/// [`Summation::TransposedAxpy`] reorders the loop nest, not the arithmetic —
+/// see [`Summation`]'s docs for the argument that this makes it, unlike
+/// [`Summation::Unrolled4`], a claim of **bit-for-bit** equality with
+/// [`Summation::Serial`] rather than a numerical-tolerance one. Checked
+/// directly, on the same thousand real positions the tolerance-based pair is
+/// checked on, rather than assumed from the argument alone.
+#[test]
+fn the_transposed_axpy_order_matches_serial_bit_for_bit() {
+    let serial = default_net().with_summation(Summation::Serial);
+    let axpy = default_net().with_summation(Summation::TransposedAxpy);
+    let all = positions();
+    let mut checked = 0usize;
+    for state in &all {
+        for me in [Player::One, Player::Two] {
+            let x = features(state, me);
+            let a = serial.forward(&x);
+            let b = axpy.forward(&x);
+            assert_eq!(
+                a, b,
+                "seed-derived position: transposed-axpy disagrees with serial \
+                 bit for bit, which contradicts the claim in `Summation`'s docs"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2_000, "only checked {checked} pairs");
+}
+
+/// Anti-vacuity for the same pair: the two summation handles really do run
+/// different code, and `with_summation` really does select
+/// [`Summation::TransposedAxpy`]'s own arm.
+#[test]
+fn the_transposed_axpy_handle_really_is_a_distinct_code_path() {
+    let axpy = default_net().with_summation(Summation::TransposedAxpy);
+    assert_eq!(axpy.summation(), Summation::TransposedAxpy);
+    let x = features(&engine::new_game(1), Player::One);
+    assert_eq!(axpy.forward(&x), axpy.forward_transposed_axpy(&x));
 }

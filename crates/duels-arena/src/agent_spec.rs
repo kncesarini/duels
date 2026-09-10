@@ -63,7 +63,11 @@
 //!   the analogous exception for the learned leaves' arithmetic: it selects
 //!   `duels_value::Summation::Serial`, the accumulation order that predates
 //!   the four-way unroll, so the two can be matched directly in one binary.
-//!   It is read only by a learned leaf and so cannot move the default.
+//!   `value_sum=axpy` is the same idea for
+//!   `duels_value::Summation::TransposedAxpy`, the transposed-`w1` accumulator
+//!   — see that type's docs for why it targets the memory-bound half of the
+//!   cost the unroll did not reach. All three are read only by a learned leaf
+//!   and so cannot move the default.
 //! * `mcts-value` -- the same search again, keyed identically to `mcts-eval`
 //!   (including `leaf`, `value_sum`, `eval=vN` and the `duels-eval` scalar
 //!   fallthrough), with a different `base` set: `eval` selects
@@ -599,10 +603,11 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
                 cfg.value_summation = match v {
                     "serial" => duels_value::Summation::Serial,
                     "unrolled4" | "unrolled" => duels_value::Summation::Unrolled4,
+                    "axpy" | "transposed_axpy" => duels_value::Summation::TransposedAxpy,
                     other => {
                         return Err(format!(
                             "mcts-eval: unknown value summation \"{other}\" (expected \
-                             \"serial\" or \"unrolled4\")"
+                             \"serial\", \"unrolled4\" or \"axpy\")"
                         ))
                     }
                 };
@@ -874,10 +879,11 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                 cfg.value_summation = match v {
                     "serial" => duels_value::Summation::Serial,
                     "unrolled4" | "unrolled" => duels_value::Summation::Unrolled4,
+                    "axpy" | "transposed_axpy" => duels_value::Summation::TransposedAxpy,
                     other => {
                         return Err(format!(
                             "mcts-value: unknown value summation \"{other}\" (expected \
-                             \"serial\" or \"unrolled4\")"
+                             \"serial\", \"unrolled4\" or \"axpy\")"
                         ))
                     }
                 };
