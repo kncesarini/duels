@@ -18,6 +18,10 @@ duels-value = { path = "../duels-value" }
 duels-agent-alphabeta = { path = "../agents/alphabeta" }
 duels-agent-mcts-uct = { path = "../agents/mcts-uct" }
 duels-agent-mcts-eval = { path = "../agents/mcts-eval" }
+# Registered and constructible, deliberately NOT on `leaderboard::LADDER`:
+# measured strongly against `mcts-eval` and level with it through any third
+# party. See its crate docs and `leaderboard::REGISTERED_OFF_LADDER`.
+duels-agent-mcts-value = { path = "../agents/mcts-value" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }

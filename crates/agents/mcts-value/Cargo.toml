@@ -1,0 +1,29 @@
+[package]
+name = "duels-agent-mcts-value"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Monte Carlo Tree Search with explicit chance nodes whose leaf value is duels-value's learned outcome model, at the re-derived exploration constant c = 0.15. Measured strongly against mcts-eval and NOT against a third party; a targeted counter to that agent's known science-value miscalibration rather than a general strength improvement. See the crate docs before reading the Elo numbers."
+
+[dependencies]
+duels-core = { path = "../../duels-core" }
+duels-agents-api = { path = "../../duels-agents-api" }
+duels-strategy = { path = "../../duels-strategy" }
+# The *learned* position value: this agent's whole identity, and the one
+# dependency it has that `mcts-eval` treats as optional. Pinned by a
+# golden-values test (the `golden` module) rather than tracked live —
+# the opposite call from `mcts-eval`'s on `duels-eval`, and for the reason
+# `CLAUDE.md` gives: a retrain must fail a test rather than silently
+# re-defining the agent whose measurement is in the crate docs.
+duels-value = { path = "../../duels-value" }
+# The hand-crafted evaluation, read only by the inherited non-default
+# `LeafValue::Static` / `Truncated` / `Blend` variants — which exist here
+# because `Config::eval_base` (the `mcts-eval` ablation control every strength
+# claim in the crate docs is measured against) is one of them. Nothing on this
+# crate's default path touches it.
+duels-eval = { path = "../../duels-eval" }
+rand = { workspace = true }
+
+[dev-dependencies]
+duels-agent-random = { path = "../random" }

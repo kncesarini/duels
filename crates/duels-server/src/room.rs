@@ -38,7 +38,16 @@ fn next_id() -> u64 {
 /// `docs/milestones.md`), which is why the easy end of the picker now starts
 /// at `phased`. `duels-agent-random` still exists as a test fixture but is
 /// deliberately not linked by this crate at all.
-pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval"];
+///
+/// **`mcts-value` is last on purpose, and being here is not a ranking claim.**
+/// This list is ordered for the picker, and that agent is unrated: it is not
+/// on `duels_arena::leaderboard::LADDER` (see
+/// `duels_arena::leaderboard::REGISTERED_OFF_LADDER`) because its large,
+/// reproducible margin over `mcts-eval` does not survive being measured
+/// through a third party. It is offered because it is a real, playable agent
+/// and a human may want to play it, not because it is the strongest thing
+/// here. `mcts-eval` remains the champion.
+pub const KNOWN_AGENTS: &[&str] = &["phased", "alphabeta", "mcts-uct", "mcts-eval", "mcts-value"];
 
 /// Construct the `Agent` for an agent seat. Unknown names are rejected when
 /// the room is created rather than silently falling back to something.
@@ -51,6 +60,7 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
         "alphabeta" => Ok(Box::new(duels_agent_alphabeta::AlphaBetaAgent::new(seed))),
         "mcts-uct" => Ok(Box::new(duels_agent_mcts_uct::MctsAgent::new(seed))),
         "mcts-eval" => Ok(Box::new(duels_agent_mcts_eval::MctsEvalAgent::new(seed))),
+        "mcts-value" => Ok(Box::new(duels_agent_mcts_value::MctsValueAgent::new(seed))),
         other => Err(format!(
             "unknown agent \"{other}\" (known agents: {})",
             KNOWN_AGENTS.join(", ")
@@ -75,9 +85,14 @@ pub fn make_agent(name: &str, seed: u64) -> Result<Box<dyn Agent + Send>, String
 /// advantage over a plain playout is *larger* at `TimeMs(20)` and
 /// `TimeMs(100)` than at `Nodes(2000)`, because a better leaf value is worth
 /// more when there are fewer leaves to average over.
+/// `mcts-value` gets the same wall-clock budget for the same reason and then
+/// some: its leaf value replaces the playout rather than adding to it, which
+/// costs about a third of a playout per simulation, so a fixed clock buys it
+/// roughly three times the simulations. That is also the budget kind its
+/// largest measured margin over `mcts-eval` was taken at.
 fn interactive_budget(name: &str) -> Budget {
     match name {
-        "alphabeta" | "mcts-uct" | "mcts-eval" => Budget::TimeMs(1_000),
+        "alphabeta" | "mcts-uct" | "mcts-eval" | "mcts-value" => Budget::TimeMs(1_000),
         _ => Budget::Nodes(1),
     }
 }

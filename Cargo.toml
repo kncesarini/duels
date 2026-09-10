@@ -19,6 +19,11 @@ members = [
     "crates/agents/phased",
     "crates/agents/mcts-uct",
     "crates/agents/mcts-eval",
+    # `mcts-eval`'s search with `duels-value`'s learned leaf at the re-derived
+    # `c = 0.15`. Registered and playable, deliberately NOT on
+    # `duels_arena::leaderboard::LADDER`: it is measured strongly against
+    # `mcts-eval` and not against any third party. See its crate docs.
+    "crates/agents/mcts-value",
     "crates/agents/alphabeta",
 ]
 

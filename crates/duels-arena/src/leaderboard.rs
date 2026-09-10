@@ -41,6 +41,18 @@
 //! that mixed defaults and variants would invite reading a within-agent
 //! ablation as a between-agent ranking.
 //!
+//! # Registered is not the same as rated
+//!
+//! Being constructible through `agent_registry` no longer implies being on
+//! [`LADDER`]. [`REGISTERED_OFF_LADDER`] is the explicit list of agents that
+//! are runnable, playable and spec-string addressable while carrying no
+//! rating, and `tests::the_ladder_is_exactly_the_registered_agents` still pins
+//! the two lists to each other up to it — so nothing falls off the board
+//! silently, and every exception has to justify itself in that constant's
+//! docs. `mcts-value` is the current entry, and the reason is worth reading
+//! there: a large, reproducible margin over one specific opponent is not a
+//! position in a transitive ranking.
+//!
 //! # The champion
 //!
 //! [`CHAMPION`] designates the agent an `ai-candidate` CI run measures a
@@ -91,6 +103,46 @@ pub const LADDER: &[LadderEntry] = &[
         budget: "nodes:2000",
     },
 ];
+
+/// Agents that `agent_registry` can construct but that are deliberately
+/// **not** on [`LADDER`]: constructible, playable, spec-string addressable,
+/// and unrated.
+///
+/// # Why this list exists at all
+///
+/// Registration and rating used to be the same act — `KNOWN_AGENTS` and
+/// [`LADDER`] were pinned equal to each other, and a retired agent was deleted
+/// from both. That equality was a good default and it is kept: this list is
+/// the *explicit, documented* exception, and
+/// `tests::the_ladder_is_exactly_the_registered_agents` still holds up to it,
+/// so an agent cannot drift off the board by accident.
+///
+/// An entry belongs here when an agent should be **runnable but not
+/// ranked** — typically because a measurement is real but does not support a
+/// ranking claim. Putting an agent on [`LADDER`] asserts that its rating is a
+/// meaningful position in a transitive ordering; an agent whose strength is
+/// established against exactly one opponent has not earned that.
+///
+/// # The current entry
+///
+/// `mcts-value` measures `+91.4` Elo `[+66.5, +116.3]` over 800 games against
+/// [`CHAMPION`] at [`ROUND_ROBIN_BUDGET`], and larger at higher budgets. It is
+/// off the ladder anyway, because a mini round robin found that margin does
+/// not survive a third party: 28% of it through `mcts-uct` and 12% through
+/// `alphabeta`, both intervals containing zero, with a joint Bradley-Terry fit
+/// over all five records putting the pair 74 points apart where the direct
+/// match says 91.5. The mechanism is route substitution against one opponent's
+/// documented science-value miscalibration rather than added strength — that
+/// agent's crate docs have the whole measurement, including the victory-kind
+/// table that says so.
+///
+/// Rating it would put a number on the board that means "beats `mcts-eval`"
+/// while reading as "is the strongest agent", and the nightly refit would keep
+/// republishing it. Whether to promote it is the project owner's decision on
+/// its own evidence, exactly as moving [`CHAMPION`] is; this constant is where
+/// that decision is *deferred*, visibly, rather than made by a side effect of
+/// registering a crate.
+pub const REGISTERED_OFF_LADDER: &[&str] = &["mcts-value"];
 
 /// The budget every round-robin pairing is actually played at. Equivalent to
 /// each agent's own [`LadderEntry::budget`] because the 1-ply agents ignore
@@ -653,13 +705,44 @@ mod tests {
     }
 
     #[test]
+    /// Registration and rating stay pinned to each other — **up to
+    /// [`REGISTERED_OFF_LADDER`]**, the documented list of agents that are
+    /// deliberately runnable and unrated.
+    ///
+    /// So an agent still cannot fall off the board by accident: the only way
+    /// to be registered and unrated is to be named in that constant, whose
+    /// docs have to say why. And the reverse direction is unconditional — a
+    /// ladder entry that nothing can construct is always a bug.
     fn the_ladder_is_exactly_the_registered_agents() {
         use crate::agent_registry::KNOWN_AGENTS;
         let ladder: BTreeSet<&str> = LADDER.iter().map(|e| e.agent).collect();
         let known: BTreeSet<&str> = KNOWN_AGENTS.iter().copied().collect();
+        let off: BTreeSet<&str> = REGISTERED_OFF_LADDER.iter().copied().collect();
+
+        // Nothing is both rated and declared unrated.
+        assert!(
+            ladder.is_disjoint(&off),
+            "an agent is on the ladder and in REGISTERED_OFF_LADDER: {:?}",
+            &ladder & &off
+        );
+        // Every deliberately-unrated agent is really registered, so the
+        // exception list cannot accumulate dead names.
+        assert!(
+            off.is_subset(&known),
+            "REGISTERED_OFF_LADDER names an unregistered agent: {:?}",
+            &off - &known
+        );
+        // ...and the exception list is exactly the difference.
         assert_eq!(
-            ladder, known,
-            "every registered agent should be on the leaderboard, and vice versa"
+            &known - &ladder,
+            off,
+            "a registered agent is neither on the leaderboard nor documented in \
+             REGISTERED_OFF_LADDER — read that constant's docs before adding it there"
+        );
+        assert!(
+            ladder.is_subset(&known),
+            "a ladder agent is not registered: {:?}",
+            &ladder - &known
         );
     }
 
