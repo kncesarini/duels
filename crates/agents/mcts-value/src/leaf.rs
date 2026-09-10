@@ -170,20 +170,65 @@ pub(crate) fn static_value(state: &GameState, root: &duels_eval::Root) -> f64 {
 /// The **learned** static value of `state` on this tree's `[0, 1]` scale, also
 /// always from [`Player::One`]'s perspective.
 ///
-/// The scalar is `duels_value`'s four-way head collapsed to
-/// `P(military) + P(science) + P(civilian)` — see
-/// [`duels_value::Dist::win_probability`]. No sigmoid calibration is applied
-/// on the way out, and none is needed: unlike [`static_value`], whose input is
-/// a victory-point-scale number that has to be squashed by a fitted
-/// temperature, this model was trained as a classifier on real outcomes and so
-/// emits a probability directly.
+/// At [`crate::tree::Objective::WinProbability`] (the default), the scalar is
+/// `duels_value`'s four-way head collapsed to `P(military) + P(science) +
+/// P(civilian)` — see [`duels_value::Dist::win_probability`]. No sigmoid
+/// calibration is applied on the way out, and none is needed: unlike
+/// [`static_value`], whose input is a victory-point-scale number that has to
+/// be squashed by a fitted temperature, this model was trained as a
+/// classifier on real outcomes and so emits a probability directly.
+///
+/// At [`crate::tree::Objective::TargetKind`], the scalar is instead
+/// [`duels_value::Dist::p`] of just the one matching
+/// [`duels_value::Outcome`] — the same four-way head, read for a single class
+/// rather than summed over the three win classes — **evaluated for `me`, the
+/// seat this tree is actually searching for, not always [`Player::One`]**.
+/// This is what lets a specialist search reuse the exact same trained weights
+/// as the generalist: nothing here is retrained, only which component of the
+/// model's own four-way softmax the search consumes, and from which player's
+/// point of view. Reading it from a game-fixed `Player::One` regardless of
+/// `me` would be wrong the same way [`crate::tree::objective_value_of`]'s
+/// equivalent bug was: `P(One wins by kind K)` is not a stand-in for
+/// `P(Two wins by kind K)`, so the model must be asked about the player who
+/// actually needs the answer.
 ///
 /// Consumes no randomness, exactly like [`static_value`], which is what keeps
 /// [`LeafValue::Learned`]'s RNG stream a property of the tree's chance nodes
 /// alone.
 #[inline]
-pub(crate) fn learned_value(state: &GameState, net: &duels_value::Net) -> f64 {
-    f64::from(net.win_probability(state, Player::One))
+pub(crate) fn learned_value(
+    state: &GameState,
+    net: &duels_value::Net,
+    objective: crate::tree::Objective,
+    me: Player,
+) -> f64 {
+    match objective {
+        crate::tree::Objective::WinProbability => {
+            f64::from(net.win_probability(state, Player::One))
+        }
+        crate::tree::Objective::TargetKind(kind) => {
+            f64::from(net.evaluate(state, me).p(target_outcome(kind)))
+        }
+    }
+}
+
+/// Which [`duels_value::Outcome`] class a [`crate::tree::Objective::TargetKind`]
+/// reads off the model's four-way head — the learned-leaf mirror of
+/// [`crate::tree::kind_matches_target`], which makes the identical call for
+/// the *terminal* reward: [`VictoryKind::CivilianVictory`] and
+/// [`VictoryKind::CivilianTiebreak`] both read
+/// [`duels_value::Outcome::CivilianWin`], the same class
+/// [`duels_value::Outcome::of`] labels either of them with.
+#[inline]
+fn target_outcome(kind: duels_core::scoring::VictoryKind) -> duels_value::Outcome {
+    use duels_core::scoring::VictoryKind;
+    match kind {
+        VictoryKind::MilitarySupremacy => duels_value::Outcome::MilitaryWin,
+        VictoryKind::ScientificSupremacy => duels_value::Outcome::ScienceWin,
+        VictoryKind::CivilianVictory | VictoryKind::CivilianTiebreak => {
+            duels_value::Outcome::CivilianWin
+        }
+    }
 }
 
 /// What the search backs up from a leaf it has just added to the tree.
@@ -350,6 +395,7 @@ impl LeafValue {
 mod tests {
     use super::*;
     use duels_core::engine;
+    use duels_core::scoring::VictoryKind;
     use duels_core::testing::StateBuilder;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
@@ -436,6 +482,62 @@ mod tests {
                 "position {i} (age {}): static leaf value {p}",
                 state.age()
             );
+        }
+    }
+
+    /// [`crate::tree::Objective::WinProbability`] must reproduce the
+    /// pre-`Objective` call bit-for-bit: same expression, no arithmetic
+    /// inserted in between, **regardless of `me`** (this arm ignores it).
+    /// This is the `docs/conventions.md` proof that the new option changes
+    /// nothing at its default.
+    #[test]
+    fn learned_value_at_win_probability_is_bit_identical_to_win_probability() {
+        use crate::tree::Objective;
+        let net = duels_value::default_net();
+        for state in fixed_positions() {
+            for me in [Player::One, Player::Two] {
+                assert_eq!(
+                    learned_value(&state, &net, Objective::WinProbability, me),
+                    f64::from(net.win_probability(&state, Player::One)),
+                    "me={me:?} must not change the WinProbability arm"
+                );
+            }
+        }
+    }
+
+    /// [`crate::tree::Objective::TargetKind`] must read exactly the matching
+    /// [`duels_value::Outcome`] component of the model's own four-way head —
+    /// not a rescaled or renormalized version of it — for all three win
+    /// kinds, the civilian variant must read the same component whichever
+    /// civilian [`VictoryKind`] names the target, and — the part a prior
+    /// version of this function got wrong — it must read that component
+    /// **for `me`**, not always for [`Player::One`]: `P(One wins by kind K)`
+    /// is not a stand-in for `P(Two wins by kind K)`, so a tree searching for
+    /// `Player::Two` must have this function actually consult `Two`'s own
+    /// distribution.
+    #[test]
+    fn learned_value_at_target_kind_reads_the_matching_outcome_probability_for_me() {
+        use crate::tree::Objective;
+        use duels_value::Outcome;
+        let net = duels_value::default_net();
+        let cases = [
+            (VictoryKind::MilitarySupremacy, Outcome::MilitaryWin),
+            (VictoryKind::ScientificSupremacy, Outcome::ScienceWin),
+            (VictoryKind::CivilianVictory, Outcome::CivilianWin),
+            (VictoryKind::CivilianTiebreak, Outcome::CivilianWin),
+        ];
+        for state in fixed_positions() {
+            for me in [Player::One, Player::Two] {
+                let dist = net.evaluate(&state, me);
+                for (kind, outcome) in cases {
+                    assert_eq!(
+                        learned_value(&state, &net, Objective::TargetKind(kind), me),
+                        f64::from(dist.p(outcome)),
+                        "me={me:?}: objective TargetKind({kind:?}) did not read \
+                         Outcome::{outcome:?} from me's own distribution"
+                    );
+                }
+            }
         }
     }
 

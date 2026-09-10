@@ -622,6 +622,12 @@
 //! "add more games of the same kind," and a natural next thing to put in
 //! front of a planning pass.
 //!
+//! **Acted on.** `duels_agent_mcts_value::Objective` builds exactly this —
+//! three specialists, each reading `v2.bin`'s existing per-outcome head under
+//! a different reward, no retrain — and measures how *purely* each one
+//! pursues its target victory kind rather than how strong it is overall. See
+//! that crate's own docs for the design and the purity numbers it measured.
+//!
 //! # Usage
 //!
 //! ```

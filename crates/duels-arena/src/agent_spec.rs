@@ -75,7 +75,11 @@
 //!   `mcts-value` vs `mcts-value:base=eval` vs `mcts-value:base=rollout`.
 //!   Note the reversal against `mcts-eval`: here `value_sum` is on the
 //!   default path and the `duels-eval` keys are not, because the default leaf
-//!   reads no hand-crafted evaluation at all.
+//!   reads no hand-crafted evaluation at all. Also unique to this agent:
+//!   `objective`/`obj` (`win`/`science`/`military`/`civilian`), which selects
+//!   [`duels_agent_mcts_value::Objective`] -- `win` (the default) rewards any
+//!   victory, and the other three build a specialist that is only rewarded
+//!   for one victory kind, reusing the same trained weights with no retrain.
 //! * `phased` -- `base` (`v1`..`v8`/`default`), the
 //!   science ladder's individual rungs (`ladder1`..`ladder5`) and the leaf
 //!   temperature (`temp1`/`temp2`/`temp3`), guild pricing
@@ -140,7 +144,7 @@ use duels_agent_mcts_uct::{
 };
 use duels_agent_mcts_value::{
     Config as MctsValueConfig, LeafValue as ValueLeafValue, MctsValueAgent,
-    PriorMode as ValuePriorMode, RaceWeights as ValueRaceWeights,
+    Objective as ValueObjective, PriorMode as ValuePriorMode, RaceWeights as ValueRaceWeights,
     RolloutWeights as ValueRolloutWeights,
 };
 use duels_agent_phased::{
@@ -152,6 +156,7 @@ use duels_agents_api::Agent;
 // `ReachModel` is round nine's addition and `duels-agent-phased` does not
 // re-export it; taken straight from the library below the agents, exactly as
 // `CountPricing` already is.
+use duels_core::scoring::VictoryKind;
 use duels_eval::{CountPricing, ReachModel, ScienceProgress};
 
 use crate::agent_registry::{make_agent, KNOWN_AGENTS};
@@ -871,6 +876,31 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                         return Err(format!(
                             "mcts-value: unknown value summation \"{other}\" (expected \
                              \"serial\" or \"unrolled4\")"
+                        ))
+                    }
+                };
+            }
+            // What the search is rewarded for winning: any victory (the
+            // default) or one specific `VictoryKind`, for the "how purely
+            // does a specialist pursue one strategy" research direction --
+            // see `duels_agent_mcts_value::Objective`'s docs. This changes
+            // both the terminal reward the tree backs up and, for the
+            // default learned leaf, which component of `duels_value`'s
+            // four-way head a leaf reads; no weights are retrained for it.
+            "objective" | "obj" => {
+                cfg.objective = match v {
+                    "win" | "win_probability" | "default" => ValueObjective::WinProbability,
+                    "science" | "sci" => {
+                        ValueObjective::TargetKind(VictoryKind::ScientificSupremacy)
+                    }
+                    "military" | "mil" => {
+                        ValueObjective::TargetKind(VictoryKind::MilitarySupremacy)
+                    }
+                    "civilian" | "civ" => ValueObjective::TargetKind(VictoryKind::CivilianVictory),
+                    other => {
+                        return Err(format!(
+                            "mcts-value: unknown objective \"{other}\" (expected \"win\", \
+                             \"science\", \"military\", or \"civilian\")"
                         ))
                     }
                 };
@@ -1712,6 +1742,65 @@ mod tests {
         assert!(parse_mcts_value_config("leaf=lblend:-0.5").is_err());
         assert!(parse_mcts_value_config("leaf=learned:3").is_err());
         assert!(parse_mcts_value_config("leaf=sideways").is_err());
+    }
+
+    /// `objective` is the key the specialist research direction hangs off
+    /// of: `win` (the default) reproduces every existing search, and
+    /// `science`/`military`/`civilian` build a specialist that reuses the
+    /// same trained weights under a different reward. Parsed here the same
+    /// way `leaf` is above: every accepted value round-trips to the right
+    /// [`ValueObjective`], and it shows up in the recorded spec string so a
+    /// results file says which objective a game was played under.
+    #[test]
+    fn the_objective_key_reaches_every_specialist_and_shows_up_in_the_spec() {
+        // The default parses explicitly to the same thing an empty parameter
+        // list already gives you, and leaves no trace in the spec string --
+        // this is the "changes nothing at its default" property, at the
+        // spec-string layer rather than the `Config` layer.
+        for value in ["win", "win_probability", "default"] {
+            let cfg = parse_mcts_value_config(&format!("objective={value}")).unwrap();
+            assert_eq!(
+                cfg.objective,
+                ValueObjective::WinProbability,
+                "objective={value}"
+            );
+        }
+        assert_eq!(
+            parse_mcts_value_config("").unwrap().objective,
+            ValueObjective::WinProbability
+        );
+        let default_params = make_agent_from_spec("mcts-value", 1).unwrap().spec().params;
+        assert!(
+            !default_params.contains("objective="),
+            "the default objective must not appear in the spec string: {default_params}"
+        );
+
+        for (value, kind, name) in [
+            ("science", VictoryKind::ScientificSupremacy, "science"),
+            ("sci", VictoryKind::ScientificSupremacy, "science"),
+            ("military", VictoryKind::MilitarySupremacy, "military"),
+            ("mil", VictoryKind::MilitarySupremacy, "military"),
+            ("civilian", VictoryKind::CivilianVictory, "civilian"),
+            ("civ", VictoryKind::CivilianVictory, "civilian"),
+        ] {
+            let cfg = parse_mcts_value_config(&format!("objective={value}")).unwrap();
+            assert_eq!(
+                cfg.objective,
+                ValueObjective::TargetKind(kind),
+                "objective={value}"
+            );
+            let params = make_agent_from_spec(&format!("mcts-value:objective={value}"), 1)
+                .unwrap()
+                .spec()
+                .params;
+            assert!(
+                params.contains(&format!("objective=target({name})")),
+                "objective={value} did not show up in the spec: {params}"
+            );
+        }
+
+        assert!(parse_mcts_value_config("objective=sideways").is_err());
+        assert!(parse_mcts_value_config("obj=science").is_ok());
     }
 
     /// **`mcts-eval` tracks `duels-eval` live by default, on purpose**, so
