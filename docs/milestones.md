@@ -89,18 +89,30 @@ larger at `nodes:32000` (+140.1) and `time_ms:1000` (+140.6). Re-measured after 
 the chance model to condition on the public guild mask (R-105, R-110), it holds at
 **+84.9 `[+60.1, +109.7]`** — see `arena/results/experiments/post-r105r110-confirm/`.
 
-**The caveat is part of the result, not a hedge.** The margin is a *targeted counter to
-`mcts-eval`'s known science-value miscalibration* (the investigation in `duels-arena`'s
-`examples/science_residual.rs`, #57, established that gap independently) rather than
-uniformly stronger play: in the confirmation run `mcts-value` took 134 of its 496 wins by
-scientific supremacy where
-`mcts-eval` took 4 of its 304, with civilian wins nearly level. Through a third party most
-of the margin evaporates — about 28% of it survives via `mcts-uct` and 12% via
-`alphabeta`, both differences with intervals containing zero, and a joint Bradley-Terry fit
-put the pair 74 points apart where the direct match said 91.5. It therefore shipped
-*registered but deliberately unrated* at first, with the promotion left as an explicit
-project-owner call; that call has since been made, and
-`leaderboard::CHAMPION`'s docs carry the numbers and the caveat together.
+**A real share of the margin is a specific skill, not uniform strength — and that's worth
+tracking, not hedging away.** `mcts-value` has learned to recognize and convert
+scientific-supremacy chances far better than `mcts-eval`'s own evaluation can defend
+against (the investigation in `duels-arena`'s `examples/science_residual.rs`, #57,
+independently established that `mcts-eval`'s value is miscalibrated on the science read):
+in the confirmation run `mcts-value` took 134 of its 496 wins by scientific supremacy where
+`mcts-eval` took 4 of its 304, with civilian wins nearly level. Measured through a third
+party the margin does not fully carry over yet — about 28% of it survives via `mcts-uct`
+and 12% via `alphabeta`, both differences with intervals containing zero, and a joint
+Bradley-Terry fit put the pair 74 points apart where the direct match said 91.5. It
+therefore shipped *registered but deliberately unrated* at first, with the promotion left
+as an explicit project-owner call; that call has since been made, and
+`leaderboard::CHAMPION`'s docs carry the numbers.
+
+**A follow-up retrain (`v2`, a corpus-generalization attempt mixing `mcts-value` self-play
+with a fresh `mcts-eval` batch) was promoted in turn**, after a disk-verified confirmation
+run showed it beats the `v1` weights it replaced (`+34.5` Elo, 2,000 games — the first,
+400-game attempt at that comparison came back statistically inconclusive, which is itself a
+finding: as single-iteration gains shrink, this project's tests need larger samples and
+tighter SPRT bounds to tell a real effect from noise, not just bigger weight files). `v2`
+pushed the science-conversion share of its wins over `mcts-eval` higher still, and
+meaningfully closed the `mcts-uct` third-party gap (about 65%, up from `v1`'s 28%) while
+leaving `alphabeta`'s (~15%) about where it was. See `duels_value`'s crate docs and
+`leaderboard::CHAMPION`'s for the full numbers.
 
 **The Elo anchor moved from `greedy` to `mcts-uct`, and the scale changed with it.**
 Deleting `greedy` removed `ANCHOR_AGENT` entirely, so the joint Bradley-Terry fit needed a

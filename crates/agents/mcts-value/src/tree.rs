@@ -230,7 +230,7 @@ pub struct Config {
     /// [`Config::eval_override`] one field up: it lets a `duels-value` retrain
     /// be measured against its predecessor in one binary, one process, one
     /// `duels-arena match`, rather than requiring two separately-built
-    /// binaries. `crate::WEIGHTS_V2` is the frozen copy this exists for.
+    /// binaries. `crate::WEIGHTS_V1` is the frozen copy this exists for.
     pub value_weights_override: Option<&'static [u8]>,
 }
 
