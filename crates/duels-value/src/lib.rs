@@ -451,6 +451,131 @@
 //!    remains the measurement that would turn a targeted counter into a
 //!    general improvement.
 //!
+//! # Follow-up round two: the mixed-corpus retrain (`v2.bin`), and why it is not adopted
+//!
+//! Item 2 above, acted on: a retrain on a bigger, differently-sourced
+//! corpus, to test whether corpus size/diversity — not architecture — really
+//! is the binding resource, and whether a bigger corpus incidentally closes
+//! item 3's third-party gap. **The honest answer is mixed-to-negative: it
+//! does not clearly beat the weights it would replace, and the mechanism
+//! that drives its bigger margin over `mcts-eval` looks like a deeper version
+//! of the same narrow exploit, not a broader one.** `v1.bin` remains
+//! [`DEFAULT_WEIGHTS`]; `v2.bin` is kept in the repository and reachable via
+//! `mcts-value:weights=v2` as a documented, reproducible negative result.
+//!
+//! ## The corpus
+//!
+//! 40,000 games of **`mcts-value` self-play** at `nodes:2000`
+//! (`arena/corpus/mcts-value-nodes2000.jsonl`, via the new
+//! `duels-arena/examples/value_corpus_mv.rs` — `value_corpus.rs`'s twin,
+//! same schema, `mcts-value` playing both seats instead of `mcts-eval`)
+//! mixed with a **fresh 15,000-game `mcts-eval` insurance batch** at the same
+//! budget (`arena/corpus/mcts-eval-insurance-nodes2000.jsonl`, disjoint
+//! seeds), merged with `tools/merge_feature_matrices.py` into **7,383,714
+//! rows / 55,000 games** — about 55% of the original 100,000-game corpus's
+//! game count (more rows per game, since this run used `--stride 1` against
+//! the original's `--stride 2`).
+//!
+//! The insurance batch was not a formality. `mcts-value` self-play alone
+//! produces a starkly different victory-kind mix than `mcts-eval` self-play
+//! does: **10.07%** of games end in scientific supremacy (vs the original
+//! corpus's 2.31%) and correspondingly fewer end civilian (71.86% vs
+//! 80.64%). Left unmixed, the corpus would have been generated almost
+//! entirely by, and about, the one agent whose blind spots this experiment
+//! was trying to get past — the self-referential-bootstrap risk
+//! `value_corpus_mv.rs`'s own module docs flag. The fresh `mcts-eval` batch
+//! measures 2.44% scientific / 81.09% civilian, consistent with the
+//! original corpus, and was mixed in specifically to keep the merged corpus
+//! from narrowing around `mcts-value`'s own preferences.
+//!
+//! ## The fit, and the overfitting question item 2 asked
+//!
+//! Trained with the *exact* hyperparameters the `v1.bin` fit used (`--hidden
+//! 128 --epochs 60 --lr 2e-3 --weight-decay 1e-5 --patience 8
+//! --also-scalar`), so the only thing that moved is the data. **The peak
+//! validation epoch did not move later: it peaked at epoch 2** (of 60,
+//! early-stopped at 10) — earlier than `v1`'s epoch 5 on the full
+//! 70,000-game training split, and identical to `v1`'s epoch 2 on a
+//! 21,000-game subset, despite this retrain's 38,500-game training split
+//! sitting between those two sizes. That is a real finding either way, and
+//! the way it came out argues against "just add more games, same
+//! architecture" as a sufficient fix: a differently-composed corpus, even a
+//! smaller one, changed the overfitting behaviour more than raw game count
+//! did here.
+//!
+//! Held-out **test** rows (this corpus's own split, not directly comparable
+//! row-for-row to `v1`'s test set since the corpora differ):
+//!
+//! | predictor | Brier | log loss | accuracy | ROC AUC |
+//! | --- | --- | --- | --- | --- |
+//! | learned value (`v2`) | 0.18333 | 0.53817 | 0.7120 | 0.7967 |
+//! | search's own recorded root value (mixed source) | **0.17552** | **0.51658** | **0.7278** | **0.8139** |
+//! | single-scalar control | 0.18354 | 0.53854 | 0.7109 | 0.7962 |
+//!
+//! For comparison, `v1` on its own test set was at *parity* with the search
+//! (0.17223 vs 0.17429 Brier — the learned value narrowly ahead). Here the
+//! learned value trails the search baseline on every column. Zero-sum
+//! coherence (`tests/probability_coherence.rs`) is close to a wash — mean
+//! `|P(One)+P(Two)-1|` 0.0557 against `v1`'s 0.0559 — with the opening's
+//! probability mass notably closer to the required 1.0 (0.9947 vs `v1`'s
+//! 0.9396). None of the existing loose bounds in that test file needed
+//! updating for `v2`.
+//!
+//! ## The arena validation (the part that actually matters)
+//!
+//! Full battery, `duels-arena experiment`, 400 paired-seed seat-swapped
+//! games per cell, `nodes:2000`:
+//!
+//! | Match | Elo | 95% CI | SPRT |
+//! | --- | --- | --- | --- |
+//! | `v2` vs `v1` (`mcts-value:weights=v2` vs `mcts-value:weights=v1`) | +33.9 | `[-0.3, +68.1]` | Inconclusive |
+//! | `v2` vs `mcts-eval` | +109.2 | `[+73.5, +144.9]` | AcceptH1 |
+//! | `v2` vs `mcts-uct` | +204.4 | `[+164.3, +244.5]` | AcceptH1 |
+//! | `v2` vs `alphabeta` | +326.9 | `[+276.7, +377.1]` | AcceptH1 |
+//! | `mcts-eval` vs `mcts-uct` (fresh baseline, same run) | +133.6 | `[+97.0, +170.1]` | AcceptH1 |
+//! | `mcts-eval` vs `alphabeta` (fresh baseline, same run) | +310.5 | `[+262.0, +359.0]` | AcceptH1 |
+//!
+//! `v2`'s margin over `mcts-eval` is bigger than `v1`'s documented `+84.9`
+//! to `+91.4` — but two things weigh against reading that as a win:
+//!
+//! * **It does not clearly beat `v1`, the thing it would replace.** `+33.9`
+//!   Elo at 400 games with an SPRT-inconclusive interval whose lower bound
+//!   sits at `-0.3` is not evidence of improvement over its own predecessor.
+//! * **The victory-kind breakdown says the bigger margin over `mcts-eval` is
+//!   a deeper version of the same exploit, not a different one.** `v2` took
+//!   116 of its 261 wins over `mcts-eval` by scientific supremacy (44%);
+//!   `v1`'s confirmation run took 134 of 496 that way (27%). The mechanism
+//!   this crate has always won through got sharper, not broader.
+//!
+//! **The third-party ratio — the number this whole follow-up exists to
+//! report — is genuinely mixed.** Using the fresh same-run baselines above
+//! to estimate "`v2`'s margin over `mcts-eval`, as seen through a third
+//! party" (third-party margin over that party minus `mcts-eval`'s own
+//! margin over it, divided by the direct margin):
+//!
+//! * Through `mcts-uct`: `(204.4 − 133.6) / 109.2` ≈ **65%** — a large
+//!   improvement over `v1`'s documented ~28%.
+//! * Through `alphabeta`: `(326.9 − 310.5) / 109.2` ≈ **15%** — essentially
+//!   unchanged from `v1`'s ~12%.
+//!
+//! So one third party says this generalizes much better than `v1` did;
+//! the other says it does not generalize meaningfully better at all. Both
+//! numbers are real and both are reported; averaging them into one verdict
+//! would hide exactly the disagreement that makes this inconclusive rather
+//! than a clean win.
+//!
+//! ## The verdict
+//!
+//! Not promoted. `v1.bin` stays [`DEFAULT_WEIGHTS`] and
+//! `duels_arena::leaderboard::CHAMPION` is unchanged. This is a corpus and
+//! training experiment with a genuinely mixed result, not a validated
+//! improvement withheld for some other reason — read it as evidence that
+//! corpus *composition*, not just size, is a live variable, and that a
+//! future attempt should probably hold the science-victory share of its
+//! generator corpus closer to the original's 2.3% (or explicitly study what
+//! happens when it is not) rather than let self-play with the crate's own
+//! agent set it.
+//!
 //! # Usage
 //!
 //! ```
