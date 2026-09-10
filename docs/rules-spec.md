@@ -149,8 +149,8 @@ the rulebook; see "Open questions" at the bottom and the M1 PR description.
 | R-102 | The candidate pool for the face-down slots is always strictly larger than the number of face-down slots, because three cards of the age went back in the box unseen. A hidden card can therefore never be pinned down by elimination. | `invariants_hold_throughout_a_game` |
 | R-103 | The five set-aside progress tokens are *public* information: they are the complement of the five on the board. The only randomness they carry is which three The Great Library draws. | `observation::tests::a_pending_choice_is_visible_but_the_pool_behind_it_is_not` |
 | R-104 | `Observation::sample_state` produces a valid, playable `GameState` whose observation is exactly the one it came from. | `observation::tests::sampled_states_reproduce_the_observation`, `observation::tests::sampled_states_are_playable`, `invariants_hold_throughout_a_game` |
-| R-105 | `chance_outcomes` enumerates every possible reveal with probabilities computed from public knowledge only; they sum to 1 and none is zero. It conditions on the *number* of hidden guilds (R-021) but **not** on R-110's per-slot mask, so it still offers an ordinary card for a purple-backed slot at nonzero probability — a modelling coarseness, not a leak, and deliberately left alone here because sharpening it moves every chance-node agent's measured strength (see Open questions). | `engine::tests::chance_outcome_probabilities_sum_to_one`, `invariants_hold_throughout_a_game` |
-| R-106 | `apply_with_outcome` forces the reveal and keeps the hidden layout valid, including the public constraint that exactly three guilds sit in the Age III structure. | `engine::tests::apply_with_outcome_forces_the_reveal`, `invariants_hold_throughout_a_game` |
+| R-105 | `chance_outcomes` enumerates every possible reveal with probabilities computed from public knowledge only; they sum to 1 and none is zero. It conditions on R-110's per-slot guild mask, exactly as `sample_state` does (R-111): a purple-backed slot can only reveal a guild, a plain-backed slot can only reveal an ordinary card, and the identity within that class is uniform over the matching unseen pool. Conditioning on the mask sharpens the model without leaking, because the mask is public — two determinizations of one `Observation` enumerate the same distribution bit-for-bit. | `engine::tests::chance_outcome_probabilities_sum_to_one`, `engine::tests::chance_outcomes_respect_the_public_guild_mask`, `engine::tests::chance_outcomes_are_invariant_across_determinizations`, `invariants_hold_throughout_a_game` |
+| R-106 | `apply_with_outcome` forces the reveal and keeps the hidden layout valid, including the public constraint that exactly three guilds sit in the Age III structure, and — since R-110's mask is public — without moving a guild between two slots that both stay face down. A hand-built outcome whose forced card contradicts the mask cannot satisfy both constraints and falls back to honouring the guild count alone; nothing `chance_outcomes` produces can reach that path. | `engine::tests::apply_with_outcome_forces_the_reveal`, `engine::tests::forcing_an_outcome_preserves_the_public_guild_mask`, `invariants_hold_throughout_a_game` |
 | R-107 | Card conservation: every card is dealt into exactly one age slot or boxed, and once taken lives in exactly one of the two cities, the discard pile, or under a wonder. | `GameState::check_invariants`, `many_full_games_terminate_and_conserve_cards`, `engine::tests::a_played_out_game_conserves_every_card` |
 | R-108 | The engine is deterministic given `(seed, actions)`: no clock, no ambient RNG, no iteration-order dependence. | `games_are_reproducible`, `tests::the_clippy_config_still_bans_nondeterminism` |
 | R-109 | All three endings are reachable. | `results_are_distributed_across_all_three_victory_kinds` |
@@ -220,14 +220,11 @@ for AI training.
    reading that "building" means a card. An independent implementation we
    cross-checked applies it to wonder shields too; we believe that is a bug
    in that implementation, but the printed card text should settle it.
-8. **R-105 vs. R-110, sharpening the chance model.** R-110 made the per-slot
-   guild back public, and `sample_state` now honours it (R-111), but
-   `chance_outcomes` and `force_outcome` still reason only from the guild
-   *count*. So a chance node uncovering a purple-backed slot still enumerates
-   ordinary cards for it, and `force_outcome` may move a guild between
-   still-hidden slots when it re-derives a layout. Neither is a leak and
-   neither can produce an illegal state; both are avoidable inaccuracies.
-   Fixing them is a behaviour change to every chance-node agent
-   (`alphabeta`, `mcts-uct`, `mcts-eval`, and `phased` through
-   `duels-eval`) and so belongs in its
-   own arena-measured PR, not in the one that added the field.
+8. ~~**R-105 vs. R-110, sharpening the chance model.**~~ **Resolved.**
+   `chance_outcomes` and `force_outcome` now condition on the per-slot guild
+   mask, not just the guild count, so a chance node uncovering a purple back
+   enumerates only guilds and a re-derived layout leaves the mask alone on
+   every slot that stays face down. This was the arena-measured behaviour
+   change the entry asked for; what it measured is recorded with the round
+   that made it (see "Measured strength effect" below the entry's own PR, and
+   the `mcts-eval` crate docs).
