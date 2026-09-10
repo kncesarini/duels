@@ -2,7 +2,11 @@ name: ai-candidate
 
 # Milestone M6b's PR-side half: when a pull request changes an agent, measure
 # that agent against the designated champion and say plainly how far apart
-# they are.
+# they are. Also measures against a non-learned-leaf third party (THIRD_PARTY
+# below), so a learned-value change cannot be promoted purely on a
+# champion-only margin the way `mcts-value` originally was — see that agent's
+# crate docs and `duels_arena::leaderboard::CHAMPION`'s doc comment for why
+# that distinction matters.
 #
 # **This check is informational and does not gate merge.** It lives in its own
 # workflow file, so it is not - and structurally cannot become - part of
@@ -56,6 +60,18 @@ env:
   # current cost. `timeout-minutes` below is the actual guard.
   GAMES: '400'
   BUDGET: 'nodes:2000'
+  # A second, cheaper opponent that is never a learned-leaf agent. The
+  # champion-only check above is exactly how the ladder promoted `mcts-value`
+  # on a margin that was mostly route-substitution through `mcts-eval`'s own
+  # science-value miscalibration (see `mcts-value`'s crate docs and
+  # `duels_arena::leaderboard::CHAMPION`'s doc comment) — measured through a
+  # non-learned third party, most of that margin was gone. This row exists so
+  # a *future* learned-value change cannot repeat that mistake and sail
+  # through this check on a champion-only exploit. Informational only, same
+  # as everything else here; kept at a smaller game count purely to hold the
+  # total workflow time down, not because the check matters less.
+  THIRD_PARTY: 'mcts-uct'
+  THIRD_PARTY_GAMES: '200'
 
 jobs:
   ai-candidate:
@@ -204,6 +220,64 @@ jobs:
               echo ''
               echo '```'
               cat "match-$agent.log"
+              echo '```'
+              echo ''
+              echo '</details>'
+              echo ''
+            } >> report.md
+
+            # The third-party check (see THIRD_PARTY's comment above): a
+            # non-learned-leaf opponent, so a candidate's margin against the
+            # champion can be read next to its margin against something that
+            # was never `mcts-eval`'s specific miscalibration. Skipped only
+            # when the changed agent *is* the third party itself, which would
+            # be self-play; there is no useful stand-in substitution here the
+            # way `champion`/`runner_up` have one, since the whole point is
+            # this specific opponent.
+            if [ "$agent" = "$THIRD_PARTY" ]; then
+              {
+                echo "### \`$agent\` vs third party"
+                echo ''
+                echo "\`$agent\` **is** this workflow's third-party opponent (\`$THIRD_PARTY\`), so this check is skipped - comparing it against itself would be self-play."
+                echo ''
+              } >> report.md
+              continue
+            fi
+            if ! grep -qx "$THIRD_PARTY" known-agents.txt; then
+              continue
+            fi
+
+            echo "Running $agent vs $THIRD_PARTY (third-party check)..."
+            "$arena" match \
+              --agent-a "$agent" \
+              --agent-b "$THIRD_PARTY" \
+              --games "$THIRD_PARTY_GAMES" \
+              --budget "$BUDGET" \
+              --seed 1 \
+              --out "arena/results/ai-candidate-$agent-vs-third-party.json" \
+              | tee "match-$agent-vs-third-party.log"
+
+            tp_elo_line="$(grep '^elo:' "match-$agent-vs-third-party.log" || echo 'elo: (not reported)')"
+            tp_result_line="$(grep '^results:' "match-$agent-vs-third-party.log" || echo '')"
+
+            {
+              echo "### \`$agent\` vs \`$THIRD_PARTY\` (third-party check, ${THIRD_PARTY_GAMES} games)"
+              echo ''
+              echo "Never a learned-leaf agent, so this margin is not read through \`mcts-eval\`'s"
+              echo "specific science-value miscalibration the way the champion match above can be."
+              echo "Compare the two Elo figures for this agent: a genuine strength gain should show"
+              echo "up here at a healthier fraction of the champion-match margin than this project"
+              echo "has previously measured (as little as ~12-28%, see \`mcts-value\`'s crate docs)."
+              echo ''
+              echo '```'
+              echo "$tp_result_line"
+              echo "$tp_elo_line"
+              echo '```'
+              echo ''
+              echo '<details><summary>Full match output</summary>'
+              echo ''
+              echo '```'
+              cat "match-$agent-vs-third-party.log"
               echo '```'
               echo ''
               echo '</details>'
