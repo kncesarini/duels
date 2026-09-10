@@ -19,7 +19,7 @@ milestone table is too coarse to show.
 | **M2a** UI shell | React client, all screens | ✅ Done (rebuilt to the table design, PR #28) |
 | **M2b** Server + playable | axum rooms, WebSocket, `random` agent, e2e | ✅ Done — `random` has since been retired from the roster (see Current work); the e2e plays against `phased` |
 | **M3** Classical AIs | `greedy`, `alphabeta` | ✅ Done — plus `greedy-ev`, `strategist`, `phased` beyond original scope; `greedy`, `greedy-ev` and `strategist` have since been retired (see Current work) |
-| **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — `mcts-eval` (below) has since surpassed it as the strongest agent measured |
+| **M4** MCTS | `mcts-uct` with chance nodes | ✅ Done — first `mcts-eval` and then `mcts-value` (below) have since surpassed it; `mcts-uct` is now the Elo anchor |
 | **M6a** Arena skeleton | runner, paired seeds, Elo/SPRT | ✅ Done |
 | **M6b** Arena live | real agents, leaderboard, nightly workflow, `ai-candidate` gate | ✅ Done (PR #35) — nightly opens a PR that needs a manual close/reopen to trigger `gate` (deliberate: avoids adding a PAT secret, keeping ADR 0004's CI-stays-secret-free stance) |
 | **M5** RL pipeline | PyO3 bindings, self-play, ONNX, training loop, `mcts-valuenet`/`mcts-nn` | ❌ Not started — deferred; see Current work below for the bridge step happening first |
@@ -35,12 +35,17 @@ milestone table is too coarse to show.
 
 ## Current work (the granular thread under M3/M4)
 
-**`phased` evaluation strength** — the dominant thread since M4. Rounds shipped: continuous
-commitment blend (#25), two eval fixes + three forward terms (#27), terminal rails + honest
-military model (#29), wonder pending-effect fix + 7-wonder cap bug (#31), guild pricing +
-yellow-card density (#32), extra-turn wonder premium (#33). `docs/strategy-backlog.md`
-tracks the remaining unimplemented items (token-specific valuations, draft-phase menu
-coherence, and others still open).
+**`phased` evaluation strength** — the dominant thread since M4, now eleven numbered
+rounds. Rounds shipped: continuous commitment blend (#25), two eval fixes + three forward
+terms (#27), terminal rails + honest military model (#29), wonder pending-effect fix +
+7-wonder cap bug (#31), guild pricing + yellow-card density (#32), extra-turn wonder
+premium (#33), the forward-looking terms re-priced (#44), a refitted calibration and a
+re-shaped ladder (#48), the wonder term's over-payment (#49), the fitted opponent-menu
+weight (#56), and the science weight unfrozen at the root, which was worth nothing (#59).
+`docs/eval-rounds/` holds each round's full record — what was tried, what was measured,
+what was kept and what was reverted. `docs/strategy-backlog.md` tracks the remaining
+unimplemented items (token-specific valuations, draft-phase menu coherence, and others
+still open).
 
 **Reusing `phased`'s evaluation inside search** — per the original stated plan ("strong
 hand-crafted eval, then reuse it as a leaf/value function in MCTS, then take a stab on
@@ -51,9 +56,10 @@ ML"). Done, then promoted further than originally scoped:
   single Elo gain measured in this project (+89 Elo pooled, 3,600 games), but shipped
   experimental because the winning config also rescales the search's exploration constant.
 - Promoted to its own standing agent, **`mcts-eval`** (#40), rather than left as an opt-in
-  flag on `mcts-uct` — it's now the strongest agent on the leaderboard. Unlike `mcts-uct`'s
-  old pin, it tracks `duels-eval`'s live default, so it gets stronger automatically as future
-  `phased` rounds land, with no manual version bump. `mcts-uct` itself is back to exactly its
+  flag on `mcts-uct` — it was the strongest agent on the leaderboard until `mcts-value`
+  (below) passed it in #63. Unlike `mcts-uct`'s old pin, it tracks `duels-eval`'s live
+  default, so it gets stronger automatically as future `phased` rounds land, with no
+  manual version bump. `mcts-uct` itself is back to exactly its
   pre-leaf-value behavior (bit-identical, proven).
 - PR 2 (optional) — a `duels-eval`-priced rollout policy for `mcts-eval`, only if there's
   appetite; not started.
@@ -84,9 +90,10 @@ the chance model to condition on the public guild mask (R-105, R-110), it holds 
 **+84.9 `[+60.1, +109.7]`** — see `arena/results/experiments/post-r105r110-confirm/`.
 
 **The caveat is part of the result, not a hedge.** The margin is a *targeted counter to
-`mcts-eval`'s known science-value miscalibration* (the `science_calibration` investigation,
-#57, established that gap independently) rather than uniformly stronger play: in the
-confirmation run `mcts-value` took 134 of its 496 wins by scientific supremacy where
+`mcts-eval`'s known science-value miscalibration* (the investigation in `duels-arena`'s
+`examples/science_residual.rs`, #57, established that gap independently) rather than
+uniformly stronger play: in the confirmation run `mcts-value` took 134 of its 496 wins by
+scientific supremacy where
 `mcts-eval` took 4 of its 304, with civilian wins nearly level. Through a third party most
 of the margin evaporates — about 28% of it survives via `mcts-uct` and 12% via
 `alphabeta`, both differences with intervals containing zero, and a joint Bradley-Terry fit
@@ -102,7 +109,7 @@ anchor must be a *never-changing* baseline, because every other agent's rating t
 only when that agent's strength moves. The positionally obvious replacement is `phased`
 (weakest survivor, 1-ply, budget-invariant), and it is the wrong one — `phased`'s `Config`
 *is* `duels_eval::Config`, read live from `Config::default()`, and `duels-eval` is re-tuned
-in numbered rounds (ten so far, the tenth landing in #56). Anchoring there would shift every
+in numbered rounds (eleven so far, the eleventh landing in #59). Anchoring there would shift every
 rating on the board on every tuning round. `mcts-uct` does not depend on `duels-eval` at
 all, its default `PriorMode::None` does not consult `duels-strategy` either, its
 `Config::default()` is frozen and guarded by `mcts-eval`'s move-for-move ablation control,
@@ -113,15 +120,18 @@ not comparable to anything measured after it.** The next nightly round robin ref
 scratch against the new anchor; nothing rescales the old numbers, and with the anchor now
 mid-ladder (third of five) rather than second-from-bottom of seven, ratings below 1000 are
 expected.
-Those two files were left as the nightly last generated them (they are generated artifacts,
-and #55 set the same precedent) — they will be stale, listing retired agents, until that
-run lands.
+Those two files were left as the nightly last generated them (they are generated
+artifacts, and #55 set the same precedent) — so they are stale in four ways until that run
+lands: `greedy` named as the anchor, `mcts-uct` as the champion, 21 pairings, and rows for
+four retired agents with none at all for `mcts-eval` or `mcts-value`. They say "do not
+edit by hand" and mean it; a `workflow_dispatch` of the nightly is the fix.
 
 **The one crate that stayed, and why.** `crates/agents/random` is retired from the roster
-but not deleted: a uniform-random opponent is the yardstick four surviving crates measure a
-correctness floor against ("a search agent that does not comfortably beat a random player
-has a bug, not bad luck") — `alphabeta`'s `tests/vs_random.rs`, `mcts-uct` and `mcts-eval`'s
-in-crate `beats_a_random_opponent` tests and `vs_random` example, `phased`'s
+but not deleted: a uniform-random opponent is the yardstick every surviving agent crate
+measures a correctness floor against ("a search agent that does not comfortably beat a
+random player has a bug, not bad luck") — `alphabeta`'s `tests/vs_random.rs`, `mcts-uct`,
+`mcts-eval` and `mcts-value`'s in-crate `beats_a_random_opponent` tests and `mcts-uct`'s
+`vs_random` example, `phased`'s
 `phased_convincingly_beats_random`, `duels-arena`'s `age_start_policy` wrapper tests (which
 need a cheap *stateful, RNG-consuming* inner agent and scan up to 200 whole games), and
 `duels-strategy`'s `watch_reads` example, which sits below `duels-eval` in the layering and
