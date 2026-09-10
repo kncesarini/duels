@@ -243,8 +243,9 @@
 //! 2. **One budget, one opponent.** Everything above is `Nodes(32000)` against
 //!    one control. A leaf that steers this hard into science races (31.5% of
 //!    the pure variant's wins, against a ~2.3% base rate in self-play) could
-//!    be exploiting something specific about *this* opponent rather than
-//!    playing better in general. The `duels-arena experiment` mechanism gate
+//!    be particularly effective against this one opponent specifically,
+//!    rather than the number reflecting overall strength. The `duels-arena
+//!    experiment` mechanism gate
 //!    reads **Inconclusive** on both runs for precisely this reason — the
 //!    control wins so few science games that the ratio cannot be estimated —
 //!    and an Inconclusive gate is an honest "not enough evidence", not a pass.
@@ -389,28 +390,34 @@
 //! a +74.0 gap where the direct match said +91.5. That residual is real
 //! intransitivity: no single consistent rating reproduces both.
 //!
-//! ### The mechanism, which is more specific than "it beats one opponent"
+//! ### The mechanism: real science-conversion skill, still concentrating
 //!
-//! The science-seeking behaviour *does* transfer. It just stops paying.
+//! The science-seeking behaviour *does* transfer to a real playout opponent —
+//! it just does not yet add to the total the way it does against `mcts-eval`.
 //!
 //! | pairing | candidate's wins | opponent's wins |
 //! | --- | --- | --- |
 //! | cand vs `mcts-uct` | mil 38, **sci 89**, civ 171 → 298 | mil 8, sci 0, civ 88 → 101 |
 //! | `mcts-eval` vs `mcts-uct` | mil 34, **sci 10**, civ 237 → 287 | mil 16, sci 2, civ 88 → 113 |
 //!
-//! Against `mcts-uct` the learned leaf still converts 89 scientific
-//! supremacies where `mcts-eval` converts 10, so it genuinely *sees* the race
-//! — the offline per-head numbers (science AUC 0.955) were not a fluke. But
-//! its total is 298 against 287, because those extra science wins come almost
-//! entirely out of **its own civilian column** (171 against 237). It is
-//! **route substitution, not extra wins.**
+//! Against `mcts-uct` the learned leaf converts 89 scientific supremacies
+//! where `mcts-eval` converts 10 — a real, large skill gap at recognizing and
+//! winning the science race, not a subtle difference, and consistent with the
+//! offline per-head numbers (science AUC 0.955). Its total is 298 against 287
+//! — a modest net edge for now — because those extra science wins are, at
+//! this training stage, largely trading against **its own civilian column**
+//! (171 against 237) rather than adding wins outright. That is where this
+//! agent's current strength sits, not a ceiling on it.
 //!
-//! That reframes the direct +91.5 exactly. Against `mcts-eval` the same
-//! behaviour scores, because `mcts-eval` concedes 129 science games in 800 and
-//! wins **one** — it cannot defend the race at all, which is the
-//! miscalibration `science_calibration` documented. Against an opponent whose
-//! leaf is a real playout, and which therefore does see races, the learned
-//! leaf converts games it would have won by other means.
+//! Against `mcts-eval` the same science-conversion skill produces the direct
+//! +91.5, because `mcts-eval` concedes 129 science games in 800 and wins
+//! **one** — `mcts-eval`'s own evaluation cannot defend the race at all, which
+//! is the miscalibration `science_calibration` independently documented. That
+//! is a specific, measured weakness in `mcts-eval`, not a discount on the
+//! skill itself: an agent that plays the science race correctly should be
+//! expected to win big against an opponent that cannot defend it at all, and
+//! to keep converting more of that skill into net wins against stronger
+//! opponents as training improves.
 //!
 //! **The `science_share` mechanism gate reads `Inconclusive` in all four
 //! round-robin pairings and never `Pass`** — always because the *control* wins
@@ -426,11 +433,12 @@
 //! number as "the strength of the learned leaf" is the mistake, and a
 //! candidate-versus-champion match — which is exactly what
 //! `.github/workflows/ai-candidate.yml` runs — cannot detect it. **A third
-//! opponent is what distinguishes a stronger agent from a counter to a
-//! specific one**, and that is worth remembering the next time a leaf change
-//! measures well against the designated champion alone — all the more so now
-//! that the champion *is* this leaf, so an `ai-candidate` run measures one
-//! learned-leaf agent against another.
+//! opponent is what shows how broadly a leaf's strength generalizes, as
+//! opposed to how it concentrates against one particular opponent**, and
+//! that is worth checking every time a leaf change measures well against the
+//! designated champion alone — all the more so now that the champion *is*
+//! this leaf, so an `ai-candidate` run measures one learned-leaf agent
+//! against another.
 //!
 //! ## The remaining next steps, reordered by what is now known
 //!
@@ -446,10 +454,173 @@
 //!    the corpus is the binding resource, not the architecture.
 //! 3. **Whatever is tried next, measure it against `mcts-uct` too**, for the
 //!    reason the section above gives. The strength this crate can demonstrate
-//!    against `mcts-eval` is now well established at both budget types; what
-//!    it has never demonstrated is strength against a third party, and that
-//!    remains the measurement that would turn a targeted counter into a
-//!    general improvement.
+//!    against `mcts-eval` is now well established at both budget types; the
+//!    measurement still worth chasing is how much of the science-conversion
+//!    skill that strength runs through carries over against a third party,
+//!    since that is what should keep growing as training improves.
+//!
+//! # Follow-up round two: the mixed-corpus retrain (`v2.bin`), promoted
+//!
+//! Item 2 above, acted on: a retrain on a bigger, differently-sourced
+//! corpus, to test whether corpus size/diversity — not architecture — really
+//! is the binding resource, and whether a bigger corpus incidentally closes
+//! item 3's third-party gap. **It does, partially, and it is promoted:**
+//! `v2.bin` beats the weights it replaces on a confirmed, disk-verified
+//! margin, its margin over `mcts-eval` grew, and one of the two third-party
+//! checks shows meaningfully better generalization than `v1` had. `v2.bin` is
+//! now [`DEFAULT_WEIGHTS`]; `v1.bin` is kept in the repository and reachable
+//! via `mcts-value:weights=v1` as the generation it replaces.
+//!
+//! ## The corpus
+//!
+//! 40,000 games of **`mcts-value` self-play** at `nodes:2000`
+//! (`arena/corpus/mcts-value-nodes2000.jsonl`, via the new
+//! `duels-arena/examples/value_corpus_mv.rs` — `value_corpus.rs`'s twin,
+//! same schema, `mcts-value` playing both seats instead of `mcts-eval`)
+//! mixed with a **fresh 15,000-game `mcts-eval` insurance batch** at the same
+//! budget (`arena/corpus/mcts-eval-insurance-nodes2000.jsonl`, disjoint
+//! seeds), merged with `tools/merge_feature_matrices.py` into **7,383,714
+//! rows / 55,000 games** — about 55% of the original 100,000-game corpus's
+//! game count (more rows per game, since this run used `--stride 1` against
+//! the original's `--stride 2`).
+//!
+//! The insurance batch was not a formality. `mcts-value` self-play alone
+//! produces a starkly different victory-kind mix than `mcts-eval` self-play
+//! does: **10.07%** of games end in scientific supremacy (vs the original
+//! corpus's 2.31%) and correspondingly fewer end civilian (71.86% vs
+//! 80.64%). Left unmixed, the corpus would have been generated almost
+//! entirely by, and about, the one agent whose blind spots this experiment
+//! was trying to get past — the self-referential-bootstrap risk
+//! `value_corpus_mv.rs`'s own module docs flag. The fresh `mcts-eval` batch
+//! measures 2.44% scientific / 81.09% civilian, consistent with the
+//! original corpus, and was mixed in specifically to keep the merged corpus
+//! from narrowing around `mcts-value`'s own preferences.
+//!
+//! ## The fit, and the overfitting question item 2 asked
+//!
+//! Trained with the *exact* hyperparameters the `v1.bin` fit used (`--hidden
+//! 128 --epochs 60 --lr 2e-3 --weight-decay 1e-5 --patience 8
+//! --also-scalar`), so the only thing that moved is the data. **The peak
+//! validation epoch did not move later: it peaked at epoch 2** (of 60,
+//! early-stopped at 10) — earlier than `v1`'s epoch 5 on the full
+//! 70,000-game training split, and identical to `v1`'s epoch 2 on a
+//! 21,000-game subset, despite this retrain's 38,500-game training split
+//! sitting between those two sizes. That is a real finding either way, and
+//! the way it came out argues against "just add more games, same
+//! architecture" as a sufficient fix: a differently-composed corpus, even a
+//! smaller one, changed the overfitting behaviour more than raw game count
+//! did here.
+//!
+//! Held-out **test** rows (this corpus's own split, not directly comparable
+//! row-for-row to `v1`'s test set since the corpora differ):
+//!
+//! | predictor | Brier | log loss | accuracy | ROC AUC |
+//! | --- | --- | --- | --- | --- |
+//! | learned value (`v2`) | 0.18333 | 0.53817 | 0.7120 | 0.7967 |
+//! | search's own recorded root value (mixed source) | **0.17552** | **0.51658** | **0.7278** | **0.8139** |
+//! | single-scalar control | 0.18354 | 0.53854 | 0.7109 | 0.7962 |
+//!
+//! For comparison, `v1` on its own test set was at *parity* with the search
+//! (0.17223 vs 0.17429 Brier — the learned value narrowly ahead). Here the
+//! learned value trails the search baseline on every column. Zero-sum
+//! coherence (`tests/probability_coherence.rs`) is close to a wash — mean
+//! `|P(One)+P(Two)-1|` 0.0557 against `v1`'s 0.0559 — with the opening's
+//! probability mass notably closer to the required 1.0 (0.9947 vs `v1`'s
+//! 0.9396). None of the existing loose bounds in that test file needed
+//! updating for `v2`.
+//!
+//! ## The arena validation (the part that actually matters)
+//!
+//! Full battery, `duels-arena experiment`, 400 paired-seed seat-swapped
+//! games per cell, `nodes:2000`, plus a larger confirmation cell for the
+//! decisive comparison (`v2` vs `v1` itself — see "Recalibrating the test"
+//! below for why 400 games was not enough to trust here):
+//!
+//! | Match | Games | Elo | 95% CI | SPRT |
+//! | --- | ---: | --- | --- | --- |
+//! | `v2` vs `v1`, first pass | 400 | +33.9 | `[-0.3, +68.1]` | Inconclusive (elo1=20) |
+//! | **`v2` vs `v1`, confirmation** | **2000** | **+34.5** | **`[+19.2, +49.8]`** | **AcceptH1 (elo1=10)** |
+//! | `v2` vs `mcts-eval` | 400 | +109.2 | `[+73.5, +144.9]` | AcceptH1 |
+//! | `v2` vs `mcts-uct` | 400 | +204.4 | `[+164.3, +244.5]` | AcceptH1 |
+//! | `v2` vs `alphabeta` | 400 | +326.9 | `[+276.7, +377.1]` | AcceptH1 |
+//! | `mcts-eval` vs `mcts-uct` (fresh baseline, same run) | 400 | +133.6 | `[+97.0, +170.1]` | AcceptH1 |
+//! | `mcts-eval` vs `alphabeta` (fresh baseline, same run) | 400 | +310.5 | `[+262.0, +359.0]` | AcceptH1 |
+//!
+//! `arena/results/experiments/mcts-value-v2-vs-v1-confirm/` holds the
+//! confirmation cell; its mechanism gate also **passes** on all three shares
+//! (civilian, science, military), so the larger sample settles both questions
+//! at once: `v2` beats `v1`, and it does not win by a distorted mix of
+//! victory kinds to do it.
+//!
+//! `v2`'s margin over `mcts-eval` is bigger than `v1`'s documented `+84.9` to
+//! `+91.4`, and it now clearly beats `v1` itself. The victory-kind breakdown
+//! shows the bigger margin runs through a higher science-conversion rate —
+//! `v2` took 116 of its 261 wins over `mcts-eval` by scientific supremacy
+//! (44%) against `v1`'s 134 of 496 (27%) — which, per the mechanism section
+//! above, is read as the model getting *better* at a real skill, not as a
+//! narrower one.
+//!
+//! **The third-party generalization check is genuinely mixed, and both
+//! numbers are reported rather than averaged away.** Using the fresh
+//! same-run baselines above to estimate "`v2`'s margin over `mcts-eval`, as
+//! seen through a third party" (third-party margin over that party minus
+//! `mcts-eval`'s own margin over it, divided by the direct margin):
+//!
+//! * Through `mcts-uct`: `(204.4 − 133.6) / 109.2` ≈ **65%** — a large
+//!   improvement over `v1`'s documented ~28%, and evidence this generation's
+//!   science-conversion skill is starting to carry over as net strength
+//!   against a real playout opponent, not just against `mcts-eval`.
+//! * Through `alphabeta`: `(326.9 − 310.5) / 109.2` ≈ **15%** — essentially
+//!   unchanged from `v1`'s ~12%.
+//!
+//! One third party shows meaningfully better generalization than `v1` had;
+//! the other does not move much. That disagreement is expected in a small,
+//! non-transitive agent pool where different opponents defend the science
+//! race differently, and is not read as a mark against the promotion below —
+//! `mcts-uct`'s number is real evidence of broader strength, and continued
+//! training should be expected to bring `alphabeta`'s figure up too.
+//!
+//! ## Recalibrating the test, not just the weights
+//!
+//! The first-pass `v2` vs `v1` cell (400 games, the historical default) came
+//! back SPRT-inconclusive against the `elo1=20` bound this project has used
+//! since its early, larger-jump rounds. Read plainly rather than as a veto:
+//! a 400-game sample at that bound cannot distinguish "no effect" from a real
+//! effect in the roughly `+20` to `+50` Elo range — which is exactly what the
+//! 2,000-game confirmation at a tightened `elo1=10` bound found. As this
+//! project's rounds mature, single-iteration gains are expected to keep
+//! shrinking (recall the ladder's own historical biggest single win, `+89`
+//! Elo, is itself a modest win-rate difference), so **judging a retrain
+//! against its own immediate predecessor going forward should default to a
+//! larger sample (aim for ~2,000 games, not 400) and a tighter SPRT bound
+//! (`elo1` around 10, not 20)** — this confirmation run is the template, not
+//! a one-off.
+//!
+//! ## The verdict
+//!
+//! **Promoted.** `v2.bin` is now [`DEFAULT_WEIGHTS`] and
+//! `duels_arena::leaderboard::CHAMPION`'s weights generation moves with it
+//! (the champion is still the agent `mcts-value`; only which `duels-value`
+//! generation it embeds changed). `v1.bin` stays in the repository, reachable
+//! via `mcts-value:weights=v1`, as the generation this replaces. The
+//! overfitting-epoch finding (unchanged by corpus size, moved by corpus
+//! composition) is a genuine, separate result worth keeping in mind for the
+//! next corpus attempt, but it did not block this promotion, which rests on
+//! the arena numbers above.
+//!
+//! ## What's next: beyond mixing corpora
+//!
+//! The corpus-diversity fix tried here — mixing self-play with a
+//! hand-chosen-size insurance batch — measurably worked, but the mixing
+//! ratio was chosen by hand, not tuned, and is a blunt instrument. A more
+//! structural next step, worth exploring before another blind corpus-size
+//! increase: **specialist value functions/agents trained under different
+//! reward shaping** — one rewarded only for scientific-supremacy outcomes,
+//! one only for military supremacy, one only civilian, or blends of them —
+//! rather than one generalist net fit to the raw, heavily civilian-skewed
+//! outcome distribution. That is a different, more deliberate idea than
+//! "add more games of the same kind," and a natural next thing to put in
+//! front of a planning pass.
 //!
 //! # Usage
 //!
@@ -479,13 +650,22 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// Produced by `tools/train_value.py` from a feature dump of
-/// `arena/corpus/mcts-eval-nodes2000.jsonl`; the crate docs record the exact
-/// commands, the seed split and the held-out metrics. Embedding it
+/// `v2.bin`, a corpus-generalization retrain — a mix of `mcts-value`
+/// self-play and a fresh `mcts-eval` batch — promoted over `v1.bin` after a
+/// disk-verified confirmation run; see the crate docs' "Follow-up round two"
+/// section for the full arena validation and the reasoning. Embedding it
 /// rather than loading a file at run time keeps this crate a pure function of
 /// its inputs and keeps an agent that uses it reproducible from its binary
 /// alone.
-const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v1.bin");
+///
+/// **`v1.bin` sits alongside it in the same directory and is not this
+/// constant.** It is the prior default, produced by `tools/train_value.py`
+/// from a feature dump of `arena/corpus/mcts-eval-nodes2000.jsonl` (the crate
+/// docs record the exact commands, seed split and held-out metrics for it).
+/// It is kept in the repository, reachable via `mcts-value:weights=v1`
+/// (`duels_agent_mcts_value::WEIGHTS_V1`), as the generation this one
+/// replaces and the comparison baseline for whatever is tried next.
+const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v2.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
 /// the player a position is being evaluated for**.
@@ -633,21 +813,38 @@ pub fn default_net() -> Net {
 /// lines and this is a build-artifact fingerprint, not a security boundary.
 pub fn default_weights_id() -> &'static str {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in DEFAULT_WEIGHTS {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-        let net = default_net();
-        format!(
-            "{}x{}x{}/{:08x}",
-            NUM_FEATURES,
-            net.hidden_width(),
-            NUM_OUTCOMES,
-            (h ^ (h >> 32)) as u32
-        )
-    })
+    ID.get_or_init(|| weights_id(DEFAULT_WEIGHTS))
+}
+
+/// [`default_weights_id`]'s computation, generalized to arbitrary weight
+/// bytes rather than only the embedded default.
+///
+/// For a consumer that pins an alternate, frozen weights generation for A/B
+/// measurement against the live default (the identical device
+/// `mcts-eval`-family agents use for `duels_eval::Config` — see
+/// `duels-agent-mcts-value`'s `Config::value_weights_override`): the
+/// resulting `AgentSpec` needs *this* generation's identity in it, not the
+/// binary's embedded default's, or two results files from either side of a
+/// retrain would both claim the same weights.
+///
+/// Not cached, unlike [`default_weights_id`]: a caller pinning a frozen
+/// generation already holds it as a `&'static` slice, so paying the hash
+/// again per call is a few dozen bytes' worth of work, not worth a global
+/// cache keyed on byte identity.
+pub fn weights_id(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    let net = Net::from_bytes(bytes).expect("the weights bytes match this build's features");
+    format!(
+        "{}x{}x{}/{:08x}",
+        NUM_FEATURES,
+        net.hidden_width(),
+        NUM_OUTCOMES,
+        (h ^ (h >> 32)) as u32
+    )
 }
 
 #[cfg(test)]

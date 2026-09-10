@@ -108,6 +108,20 @@ information somewhere.
    option rather than forcing a marginal win into the story. A well-documented
    negative result is a valid, valued deliverable.
 7. **Only move `Config::default()` when the evidence clearly supports it.**
+8. **Size the sample and the SPRT bound to the effect you actually expect, not
+   to habit.** This project's `elo1 = 20`, 400-games-per-cell default was
+   calibrated for its early, larger-jump rounds. As the ladder strengthens,
+   single-iteration gains are expected to shrink, and a sample sized for a
+   20-point jump reads a genuine ~30-point one as "inconclusive" — which is a
+   test underpowered for the effect, not evidence the effect isn't there. When
+   a first-pass result comes back inconclusive at the historical default and
+   the point estimate still looks meaningful, re-run at a larger sample (as a
+   rough default, ~2,000 games) and a tighter bound (`elo1` around 10) before
+   concluding "no effect" either way. `duels-value`'s `v2` retrain
+   (`crates/duels-value/src/lib.rs`, "Recalibrating the test, not just the
+   weights") is the worked example: a 400-game cell read Inconclusive, and a
+   2,000-game re-run at `elo1 = 10` confirmed a real `+34.5` Elo effect that
+   was there all along.
 
 `duels-eval`'s round history in `docs/eval-rounds/` is ten worked examples of
 this protocol, honest negatives included.

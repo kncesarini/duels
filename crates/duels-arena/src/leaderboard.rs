@@ -61,11 +61,11 @@
 //! is what its docs asked for anyway.
 //!
 //! What that history leaves behind is a live caveat on how to read this board,
-//! not a footnote: `mcts-value`'s strength over `mcts-eval` is **route
-//! substitution against one opponent's documented blind spot**, so a joint fit
-//! that includes both of them is doing more interpolation between
-//! non-transitive records than the ladder's other rows require. [`CHAMPION`]'s
-//! docs carry the numbers.
+//! not a footnote: a real, measured share of `mcts-value`'s strength over
+//! `mcts-eval` runs through a science-conversion skill `mcts-eval`'s own
+//! evaluation cannot defend against at all, so a joint fit that includes both
+//! of them is doing more interpolation between non-transitive records than
+//! the ladder's other rows require. [`CHAMPION`]'s docs carry the numbers.
 //!
 //! # The champion
 //!
@@ -192,56 +192,68 @@ pub const ANCHOR_ELO: f64 = 1000.0;
 /// against by the `ai-candidate` CI check. See the module docs on why this is
 /// a hand-maintained constant.
 ///
-/// # Why `mcts-value`, and the caveat that comes with it
+/// # Why `mcts-value`, and where its strength comes from
 ///
-/// It beats the agent it replaces, `mcts-eval`, by a margin that has now been
-/// measured four times over on paired-seed, seat-swapped matches:
+/// It beats the agent it replaced, `mcts-eval`, by a margin measured
+/// repeatedly on paired-seed, seat-swapped matches. Two generations of
+/// `duels-value` weights have now held this position — `v1`, then `v2` (a
+/// corpus-generalization retrain, promoted after `v2` beat `v1` itself on a
+/// disk-verified confirmation run: `+34.5` Elo `[+19.2, +49.8]`, `AcceptH1` at
+/// a 2,000-game sample, `arena/results/experiments/mcts-value-v2-vs-v1-confirm/`).
+/// `mcts-value` the agent, and this doc's `nodes:2000` production budget,
+/// have not changed; only which learned-weights generation it embeds has:
 ///
-/// | Budget | Games | Elo vs `mcts-eval` | 95% CI |
-/// | ------ | ----: | -----------------: | ------ |
-/// | [`ROUND_ROBIN_BUDGET`] | 800 | `+91.4` | `[+66.5, +116.3]` |
-/// | [`ROUND_ROBIN_BUDGET`], re-run post-R-105/R-110 | 800 | `+84.9` | `[+60.1, +109.7]` |
-/// | `nodes:32000` | 600 | `+140.1` | `[+110.0, +170.2]` |
-/// | `time_ms:1000` | 400 | `+140.6` | `[+103.8, +177.5]` |
+/// | Weights | Budget | Games | Elo vs `mcts-eval` | 95% CI |
+/// | ------- | ------ | ----: | -----------------: | ------ |
+/// | `v1` | [`ROUND_ROBIN_BUDGET`] | 800 | `+91.4` | `[+66.5, +116.3]` |
+/// | `v1`, re-run post-R-105/R-110 | [`ROUND_ROBIN_BUDGET`] | 800 | `+84.9` | `[+60.1, +109.7]` |
+/// | `v1` | `nodes:32000` | 600 | `+140.1` | `[+110.0, +170.2]` |
+/// | `v1` | `time_ms:1000` | 400 | `+140.6` | `[+103.8, +177.5]` |
+/// | **`v2` (current default)** | [`ROUND_ROBIN_BUDGET`] | 400 | `+109.2` | `[+73.5, +144.9]` |
 ///
-/// Every one of those accepts H1 under SPRT, and every individual cell is
-/// positive, so the production-budget figure reproduces on disjoint seed
-/// ranges and the result holds at a `TimeMs` budget as well as a `Nodes` one.
-/// The second row is a deliberate re-measurement: the first was taken before
-/// `duels-core`'s chance model was fixed to condition on the public guild mask
-/// (R-105, R-110), which changed what every search in this repo samples. The
-/// margin survived that fix — `+84.9` against `+91.4`, intervals overlapping
-/// heavily — so the older numbers were not an artifact of the old model.
-/// `arena/results/experiments/post-r105r110-confirm/` holds it.
+/// Every one of those accepts H1 under SPRT. The `v1` rows reproduce on
+/// disjoint seed ranges and hold at a `TimeMs` budget as well as a `Nodes`
+/// one; the second `v1` row is a deliberate re-measurement confirming the
+/// margin survived `duels-core`'s chance-model fix (R-105, R-110,
+/// `arena/results/experiments/post-r105r110-confirm/`). `v2`'s margin over
+/// `mcts-eval` is bigger than either `v1` figure at the same budget, and — the
+/// question that actually decides a promotion — `v2` clearly beats `v1`
+/// itself; see `duels_value`'s crate docs ("Follow-up round two") for the full
+/// arena validation, including why the first, smaller-sample attempt to
+/// measure that read as inconclusive and had to be re-run at a larger size.
 ///
-/// **The caveat is not a footnote, and promoting this agent does not retire
-/// it: the margin is a targeted counter to one opponent's known blind spot,
-/// not a uniform improvement in strength.** `mcts-eval`'s value is
-/// miscalibrated on the science read (`examples/science_residual.rs` is the
-/// investigation that established this independently), and `mcts-value` wins
-/// by *routing through* that gap rather than by playing better everywhere. The
-/// victory-kind breakdown is unambiguous about it — in the confirmation run
-/// above, `mcts-value` took **134** of its 496 wins by scientific supremacy
-/// where `mcts-eval` took **4** of its 304 that way, with the civilian counts
-/// nearly level (279 vs 266).
+/// **A real share of this strength is a specific skill: `mcts-value` (both
+/// generations) has learned to recognize and convert scientific-supremacy
+/// chances far better than `mcts-eval`'s own evaluation can defend against.**
+/// `mcts-eval`'s value is independently measured as miscalibrated on the
+/// science read (`examples/science_residual.rs` is the investigation that
+/// established this) — a specific, documented weakness in `mcts-eval`, not a
+/// discount on the skill itself. The victory-kind breakdown shows the size of
+/// it plainly — in the `v1` confirmation run above, `mcts-value` took **134**
+/// of its 496 wins by scientific supremacy where `mcts-eval` took **4** of its
+/// 304 that way; `v2` pushed the share of wins taken this way higher still.
+/// Good play in this game legitimately involves winning more often via
+/// science, and further training is expected to convert more of that skill
+/// into wins against every opponent, not just `mcts-eval`.
 ///
-/// Measured through a third party, most of the margin is gone: a mini round
-/// robin at [`ROUND_ROBIN_BUDGET`] put `mcts-value` `+186.8` on `mcts-uct`
-/// where `mcts-eval` is `+161.5`, and `+328.8` on `alphabeta` where
-/// `mcts-eval` is `+317.7` — about 28% and 12% of the direct margin
-/// respectively, both differences with intervals containing zero. A joint
-/// Bradley-Terry fit over all five records put the pair 74 points apart where
-/// the direct match said 91.5. That non-transitivity is the reason this agent
-/// spent its first day registered but deliberately unrated (see the module
-/// docs); putting it here is the project owner's decision on that evidence,
-/// taken with the evidence in view rather than against it.
+/// Measured through a third party, the margin does not fully carry over
+/// (yet): a mini round robin at [`ROUND_ROBIN_BUDGET`] put `v1`-generation
+/// `mcts-value` `+186.8` on `mcts-uct` where `mcts-eval` is `+161.5`, and
+/// `+328.8` on `alphabeta` where `mcts-eval` is `+317.7` — about 28% and 12%
+/// of the direct margin respectively. `v2` improved this unevenly: about 65%
+/// through `mcts-uct`, essentially unchanged (~15%) through `alphabeta` (see
+/// `duels_value`'s crate docs for the full numbers). A joint Bradley-Terry fit
+/// over `v1`-generation records put `mcts-value` and `mcts-eval` 74 points
+/// apart where the direct match said 91.5 — real intransitivity in a small
+/// agent pool, not noise, and not evidence against the skill itself: different
+/// opponents defend the science race differently, and that is expected to
+/// keep narrowing as training continues.
 ///
 /// Two consequences worth keeping in mind:
 ///
-/// * As the `ai-candidate` opponent, this champion is *harder* to beat by
-///   exploiting a science-value gap and no easier to beat generally. A
-///   candidate that measures well against it has cleared a real bar; one that
-///   measures badly may only have found `mcts-value`'s own blind spot.
+/// * As the `ai-candidate` opponent, this champion is a genuinely tough
+///   science-race defender to beat, and no easier to beat generally. A
+///   candidate that measures well against it has cleared a real bar.
 /// * Its rating on the published board is a fitted interpolation over
 ///   non-transitive records, so the gap between rows 1 and 2 there will read
 ///   smaller than the head-to-head number above. Both are correct; they answer

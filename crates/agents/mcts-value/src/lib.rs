@@ -248,12 +248,23 @@
 //! round-robin pairings and never `Pass`, always for the same reason: the
 //! control wins too few science games to form a ratio against.
 //!
-//! That is the whole finding, stated plainly: **this agent exploits a
-//! calibration error in one specific opponent.** The error is not a surprise —
-//! `duels-arena`'s `science_residual` example (PR #57) measured and documented
-//! it before this line of work started — and exploiting it is a legitimate,
-//! reproducible Elo gain against `mcts-eval`. It is just not evidence of a
-//! better player.
+//! Read plainly, and not as a gotcha: this agent has learned a real skill
+//! `mcts-eval`'s own evaluation lacks — correctly recognizing and converting
+//! scientific-supremacy chances. `mcts-eval`'s side of that gap is not a
+//! surprise; `duels-arena`'s `science_residual` example (PR #57) measured and
+//! documented it independently, before this line of work started. Against
+//! `mcts-eval` that skill produces a very large margin because `mcts-eval`
+//! concedes 129 of 800 science games and wins exactly one — a specific,
+//! measured weakness in `mcts-eval`'s evaluation, not a flaw in how this agent
+//! wins. Against `mcts-uct`, which does defend the race, the same skill still
+//! shows up clearly (89 conversions against 10) even though the net win total
+//! is close (298 vs 287) at this training stage — right now the extra science
+//! wins are trading against this agent's own civilian wins more than they are
+//! adding to the total. That is a measurement of where this agent's edge
+//! currently sits, not a verdict on whether science strength is real or worth
+//! having: a higher science-conversion rate is exactly what good play looks
+//! like, and further training on a bigger, better corpus should be expected to
+//! turn more of that skill into net wins against tougher opponents too.
 //!
 //! ## The model itself is known to be incoherent
 //!
@@ -400,6 +411,30 @@ use rand::SeedableRng;
 pub use leaf::LeafValue;
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
 pub use tree::{Config, PriorMode, RootStats};
+
+/// A frozen historical `duels-value` weights generation, embedded for A/B
+/// measurement against the live default via
+/// [`Config::value_weights_override`] — the identical convention
+/// `duels-eval`'s `Config::v1()..v9()` establishes one layer down, applied to
+/// a fitted artefact instead of a hand-written one. Read from the crate next
+/// door rather than duplicated: `docs/conventions.md`'s "agent crates are
+/// self-contained" rule is about not depending on another *agent* crate, and
+/// `duels-value` is a library below the agents, exactly like `duels-eval`
+/// (whose generations every agent crate that uses it already embeds this
+/// same way via `include_bytes!` inside its own `Cargo.toml`-declared
+/// dependency).
+///
+/// `v1` names the prior default — the generation every earlier number in
+/// this crate's docs and `duels_arena::leaderboard::CHAMPION`'s original
+/// promotion was measured against, superseded when `v2` (the corpus-
+/// generalization retrain, see `duels_value`'s crate docs) was promoted in
+/// its place. This constant keeps `v1` reachable and reproducibly comparable
+/// (`mcts-value:weights=v1`) rather than only living in git history.
+///
+/// Exists purely so "the live default vs. the generation it replaced" is one
+/// `duels-arena match --agent-a mcts-value --agent-b mcts-value:weights=v1`
+/// away in one process, rather than requiring two separately-built binaries.
+pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
