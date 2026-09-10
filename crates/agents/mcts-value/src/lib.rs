@@ -71,6 +71,35 @@
 //! are shared libraries *below* the agents, which is exactly what the layering
 //! is for.
 //!
+//! ## The copies drift, and nothing mechanical stops them
+//!
+//! Worth stating plainly, because this crate ran into it inside a day. `chance`
+//! and `rollout` are **byte-identical** to `mcts-eval`'s and are meant to stay
+//! that way; `tree` and `lib` diverge only in [`Config`] and documentation. But
+//! there is no test, and no lint, that says so — a test in an agent crate
+//! cannot read another agent crate, which is the same rule that forced the copy
+//! in the first place.
+//!
+//! It is not a hypothetical. `duels-core` PR #61 changed the chance model to
+//! condition on the public guild mask and had to hand-edit **three** copies of
+//! `chance.rs` (`mcts-uct`'s, `mcts-eval`'s, and this crate's) to keep them the
+//! same file. A missed one would not have failed anything here: the ablation
+//! tests below compare the live search against a *frozen copy inside this
+//! crate*, so they would have gone on passing while the crate's claim to be
+//! `mcts-eval`'s search quietly stopped being true.
+//!
+//! So when changing anything in the shared search, `diff` the copies:
+//!
+//! ```text
+//! for f in chance.rs rollout.rs; do
+//!     diff crates/agents/mcts-eval/src/$f crates/agents/mcts-value/src/$f
+//! done
+//! ```
+//!
+//! And note what the frozen `eval_legacy` copy in `tree` *does* protect, since
+//! it is a narrower thing than it first looks: it catches a change to the live
+//! search made **inside this crate**, not a change made next door.
+//!
 //! # The weights are pinned, and that is the opposite of `mcts-eval`'s call
 //!
 //! `mcts-eval` reads `duels_eval::Config::default()` **live** and holds no
