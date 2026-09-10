@@ -305,7 +305,7 @@
 //! must re-derive `c` was right, and the reason to state it this loudly is
 //! that the spike above read `0.5` as "close enough to leave alone".
 //!
-//! ## Caveat 1 partly resolved: it is not a high-budget artefact
+//! ## Caveat 1, first half: it is not a high-budget artefact
 //!
 //! At the ladder's **production** budget, `Nodes(2000)`, two disjoint
 //! 400-game ranges (`p0-learned-nodes2000`): **+91.4 Elo [+66.5, +116.3]**,
@@ -314,6 +314,56 @@
 //! reads `Pass` on `civilian_share` (58.8% against a required 43.4%) and on
 //! `military_share` (14.9% against a permitted 19.5%), which is a better
 //! mechanism read than either spike run above obtained.
+//!
+//! ## Caveat 1 fully resolved, and the wall clock is the good news
+//!
+//! `TimeMs(1000)`, two disjoint 200-game ranges per candidate, run strictly
+//! one candidate after the other on a machine verified quiet (the arena held
+//! 1291-1321% CPU of 14 cores at 0.3% idle, with no other heavy process):
+//!
+//! | candidate | pooled Elo | 95% CI | ranges | W-L |
+//! | --- | --: | --- | --- | --- |
+//! | `leaf=learned, c=0.15` | **+140.6** | [+103.8, +177.5] | +118.5 / +163.1 | 277-123 |
+//! | `learned_blend:0.5, c=0.5` | +68.5 | [+33.8, +103.1] | +66.5 / +70.1 | 239-161 |
+//!
+//! Both `AcceptH1`; `p1-timems-learned-c0.15` and
+//! `p1-timems-learnedblend-c0.5`. The blend's +68.5 sits inside the interval
+//! of the spike's own `TimeMs` figure (+80.9, `spike-learned-blend-time`),
+//! which is a useful check that the quiet-machine protocol below did not
+//! change what was being measured.
+//!
+//! **Which of the two leaves is better depends on the budget, and the spike's
+//! ordering does not survive either correction.** With the inherited `c=0.5`
+//! the blend led at a fixed node count, +106.1 against +57.2, and that is the
+//! comparison the spike drew its "the blend still wins, and by a lot"
+//! conclusion from. Re-deriving `c` reverses it at a fixed node count
+//! (+140.1 against +106.1), and a fixed *time* budget widens the reversal to
+//! better than two to one (+140.6 against +68.5). **The spike's headline
+//! finding was an artefact of an untuned constant plus a budget type.**
+//!
+//! The pure leaf's +140.6 is *higher* than the same configuration's `Nodes(2000)`
+//! figure, and the direction is the point. `examples/value_bench.rs` warned
+//! that `LearnedBlend` costs `1.45x` per simulation and should therefore
+//! *lose* about 9 Elo at a fixed time budget. The **pure** learned leaf is the
+//! opposite case and the reasoning has to be redone rather than reused: it
+//! runs no playout at all, so with the four-way unroll it costs about `0.35x`
+//! a playout against the default blend's `1.08x`, and at equal wall clock it
+//! buys roughly `3x` the simulations. A leaf that *replaces* the playout and a
+//! leaf that is *added to* it have opposite wall-clock economics, and this
+//! crate now has a measurement of each.
+//!
+//! # A note on reading a load average on the machine this was measured on
+//!
+//! `CLAUDE.md` is right that a `TimeMs` run needs a quiet machine, and the
+//! usual proxy — "load average in single digits" — is **not usable here**.
+//! `duels-arena` parallelises seeds within a match, so a single legitimate
+//! match shows a load average near 150 on this box and four concurrent
+//! matches showed ~600; the figure counts runnable threads in a
+//! thread-per-game pool, not CPU oversubscription. The numbers above were
+//! taken under the criterion the proxy stands for — no other arena, build or
+//! test process, and no *variable* competing load — verified with a
+//! process-level CPU snapshot before and after every cell rather than with a
+//! load average.
 //!
 //! ## Caveat 2 resolved *against* it: the gain is `mcts-eval`-specific
 //!
@@ -386,17 +436,14 @@
 //!    deals where it must be 1. An antisymmetric head would make the property
 //!    exact for free. This is the one known defect that is architectural
 //!    rather than data-limited, and it is cheap.
-//! 2. **A `TimeMs(1000)` confirmation**, still outstanding for the pure leaf.
-//!    Note the cost profile now *favours* it: with the four-way unroll
-//!    (`Summation::Unrolled4`, worth 1.41x) the learned leaf costs about
-//!    `0.35x` a playout, against the default blend's `1.08x` — so at equal
-//!    wall clock the pure learned leaf should run on the order of `3x` the
-//!    simulations, the opposite sign from `LearnedBlend`'s `0.74x`.
-//! 3. **More corpus games**, unchanged: the fit peaks at epoch 5 on 70,000
+//! 2. **More corpus games**, unchanged: the fit peaks at epoch 5 on 70,000
 //!    training games and at epoch 2 on 21,000, so this is variance-limited and
 //!    the corpus is the binding resource, not the architecture.
-//! 4. **Whatever is tried next, measure it against `mcts-uct` too**, for the
-//!    reason the section above gives.
+//! 3. **Whatever is tried next, measure it against `mcts-uct` too**, for the
+//!    reason the section above gives. The strength this crate can demonstrate
+//!    against the champion is now well established at both budget types; what
+//!    it has never demonstrated is strength against a third party, and that is
+//!    the only measurement that would justify adopting any of it.
 //!
 //! # Usage
 //!
