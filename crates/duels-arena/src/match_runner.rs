@@ -441,6 +441,149 @@ pub fn play_paired_match(
     Ok(records)
 }
 
+/// Like [`play_one_game`], but the two seats are given *independent*
+/// budgets (`budget_one` for [`Player::One`], `budget_two` for
+/// [`Player::Two`]) rather than sharing one. Exists for asymmetric-budget
+/// measurements — e.g. the same agent spec on both sides at two different
+/// budgets, to price a budget doubling directly in Elo (see
+/// `examples/budget_lab.rs`) — the same shape as the `half-budget side`
+/// comparisons documented in `duels-agent-mcts-uct`'s and
+/// `duels-agent-mcts-eval`'s crate docs, which were run this way rather than
+/// through [`play_paired_match`].
+#[allow(clippy::too_many_arguments)]
+fn play_one_game_at_budgets(
+    seat_one_name: &str,
+    seat_two_name: &str,
+    seat_one_seed: u64,
+    seat_two_seed: u64,
+    setup_seed: u64,
+    budget_one: Budget,
+    budget_two: Budget,
+) -> Result<OneGameOutcome, String> {
+    let mut agent_one = make_agent_from_spec(seat_one_name, seat_one_seed)?;
+    let mut agent_two = make_agent_from_spec(seat_two_name, seat_two_seed)?;
+    let spec_one = agent_one.spec();
+    let spec_two = agent_two.spec();
+
+    let mut state = engine::new_game(setup_seed);
+    let mut rng = StdRng::seed_from_u64(setup_seed ^ ENGINE_RNG_SALT);
+
+    #[allow(clippy::disallowed_methods)]
+    let start = Instant::now();
+
+    let mut moves = 0u32;
+    let mut military_race_exposed = false;
+    let mut science_race_exposed = false;
+    loop {
+        if state.is_over() {
+            break;
+        }
+        let legal = engine::legal_actions(&state);
+        if legal.is_empty() {
+            break;
+        }
+        let obs = state.observation();
+        let action = match state.current_player() {
+            Player::One => agent_one.choose(&obs, &legal, budget_one),
+            Player::Two => agent_two.choose(&obs, &legal, budget_two),
+        };
+        if !legal.contains(&action) {
+            return Err(format!(
+                "agent returned an illegal action outside `legal`: {action:?}"
+            ));
+        }
+        engine::apply(&mut state, action, &mut rng).map_err(|e| e.to_string())?;
+        moves += 1;
+        let (military, science) = race_exposure_at(&state);
+        military_race_exposed |= military;
+        science_race_exposed |= science;
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let wall_time_ms = start.elapsed().as_millis() as u64;
+
+    let result = state
+        .result()
+        .ok_or_else(|| "game loop ended without a legal action but no result".to_string())?;
+    Ok(OneGameOutcome {
+        spec_one,
+        spec_two,
+        result,
+        moves,
+        wall_time_ms,
+        military_race_exposed,
+        science_race_exposed,
+    })
+}
+
+/// Like [`play_pair`], but `agent_a` always plays at `budget_a` and `agent_b`
+/// always plays at `budget_b`, regardless of which seat either occupies in
+/// either half of the pair. See [`play_one_game_at_budgets`].
+fn play_pair_at_budgets(
+    agent_a: &str,
+    agent_b: &str,
+    seed: u64,
+    budget_a: Budget,
+    budget_b: Budget,
+) -> Result<[GameRecord; 2], String> {
+    let a_seed = seed ^ AGENT_A_SALT;
+    let b_seed = seed ^ AGENT_B_SALT;
+
+    let outcome =
+        play_one_game_at_budgets(agent_a, agent_b, a_seed, b_seed, seed, budget_a, budget_b)?;
+    let first = GameRecord {
+        seed,
+        agent_a_seat: Player::One,
+        seat_one: outcome.spec_one,
+        seat_two: outcome.spec_two,
+        result: outcome.result,
+        moves: outcome.moves,
+        wall_time_ms: outcome.wall_time_ms,
+        military_race_exposed: outcome.military_race_exposed,
+        science_race_exposed: outcome.science_race_exposed,
+    };
+
+    let outcome =
+        play_one_game_at_budgets(agent_b, agent_a, b_seed, a_seed, seed, budget_b, budget_a)?;
+    let second = GameRecord {
+        seed,
+        agent_a_seat: Player::Two,
+        seat_one: outcome.spec_one,
+        seat_two: outcome.spec_two,
+        result: outcome.result,
+        moves: outcome.moves,
+        wall_time_ms: outcome.wall_time_ms,
+        military_race_exposed: outcome.military_race_exposed,
+        science_race_exposed: outcome.science_race_exposed,
+    };
+
+    Ok([first, second])
+}
+
+/// Like [`play_paired_match`], but `agent_a`/`agent_b` play at independent
+/// budgets `budget_a`/`budget_b` instead of a single shared one. The
+/// intended use is **self-play across budgets**: the same agent spec passed
+/// as both `agent_a` and `agent_b`, at two different budgets, to measure
+/// Elo-per-doubling directly rather than only against a fixed opponent.
+pub fn play_paired_match_at_budgets(
+    agent_a: &str,
+    agent_b: &str,
+    seeds: &[u64],
+    budget_a: Budget,
+    budget_b: Budget,
+) -> Result<Vec<GameRecord>, String> {
+    let mut records: Vec<GameRecord> = seeds
+        .par_iter()
+        .map(|&seed| play_pair_at_budgets(agent_a, agent_b, seed, budget_a, budget_b))
+        .collect::<Result<Vec<[GameRecord; 2]>, String>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+
+    records.sort_by_key(|r| (r.seed, r.agent_a_seat));
+    Ok(records)
+}
+
 /// Parse a `--budget` CLI value such as `"nodes:2000"` or `"time_ms:100"`.
 pub fn parse_budget(s: &str) -> Result<Budget, String> {
     let (kind, value) = s.split_once(':').ok_or_else(|| {
@@ -486,6 +629,44 @@ mod tests {
             // real assertion is that `play_paired_match` returned `Ok` at
             // all, i.e. the game ran to completion without an engine or
             // agent-contract error.
+            let _ = r.result;
+        }
+    }
+
+    #[test]
+    fn asymmetric_budgets_reach_a_game_result_regardless_of_seat() {
+        // Same self-play setup as `self_play_reaches_a_game_result`, but the
+        // two "identities" get different budgets -- this is the primitive a
+        // budget-scaling self-play sweep is built on (see
+        // `examples/budget_lab.rs`).
+        let records =
+            play_paired_match_at_budgets("phased", "phased", &[1], Budget::Nodes(1), Budget::Nodes(2))
+                .unwrap();
+        assert_eq!(records.len(), 2);
+        for r in &records {
+            let _ = r.result;
+        }
+    }
+
+    #[test]
+    fn asymmetric_budgets_follow_agent_identity_not_seat() {
+        // `agent_a` must play at `budget_a` whether it sits in seat One (the
+        // pair's first half) or seat Two (the seat-swapped half) -- i.e. the
+        // budget tracks the *named* agent, the same way `AGENT_A_SALT` keeps
+        // each identity's RNG stream stable across the seat swap. A node
+        // budget is deterministic and cheap, so `Nodes(0)` (an agent that
+        // expands nothing beyond a legal fallback move) on one side and a real
+        // budget on the other still reaches a result either way seats fall.
+        let records = play_paired_match_at_budgets(
+            "mcts-uct",
+            "mcts-uct",
+            &[7],
+            Budget::Nodes(0),
+            Budget::Nodes(50),
+        )
+        .unwrap();
+        assert_eq!(records.len(), 2);
+        for r in &records {
             let _ = r.result;
         }
     }
