@@ -223,13 +223,6 @@ pub struct Stance {
 }
 
 impl Stance {
-    /// Whether the opponent is one move from winning either race.
-    #[inline]
-    pub fn under_imminent_threat(&self) -> bool {
-        self.opponent_military.status == MilitaryStatus::Imminent
-            || self.opponent_science.status == ScienceStatus::Imminent
-    }
-
     /// A one-line summary, for logs and the `watch_reads` example.
     pub fn headline(&self) -> String {
         let race = match self.race {

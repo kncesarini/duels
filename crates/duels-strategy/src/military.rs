@@ -37,6 +37,9 @@ use crate::board::{iter_slots, Board};
 use crate::context::Context;
 use crate::masks::masks;
 use crate::prices::Prices;
+// The one definition of this rule in this crate; `military.rs` used to carry a
+// private copy of the same `6`.
+use crate::science::SYMBOLS_TO_WIN;
 use crate::tempo::{grants_extra_turn, holds_theology, ThreatWeights};
 
 /// How reachable military supremacy is for one player.
@@ -466,12 +469,6 @@ impl MilitaryRead {
         self.sources.iter().flatten().copied()
     }
 
-    /// Total shields still obtainable this age, visible or expected.
-    #[inline]
-    pub fn age_supply(&self) -> f64 {
-        f64::from(self.visible) + self.expected_hidden
-    }
-
     /// The shields of the accessible red card in `slot`, if that card is one
     /// of this player's reachable sources.
     pub fn card_source_shields(&self, slot: u8) -> Option<u8> {
@@ -487,9 +484,6 @@ impl MilitaryRead {
 // ---------------------------------------------------------------------------
 // Closing sources: the actions that end the game outright, right now
 // ---------------------------------------------------------------------------
-
-/// Distinct scientific symbols that win the game outright.
-const SYMBOLS_TO_WIN: u8 = 6;
 
 /// The largest number of shields any *one* action in the base game can add:
 /// the biggest printed red card plus the Strategy token's bonus, or the

@@ -274,37 +274,6 @@ impl Board {
             + scaled(self.unknown_plain, self.hidden_plain_count())
     }
 
-    /// [`Board::expected_hidden`] for three figures at once, in one pass over
-    /// the pool.
-    ///
-    /// Every caller of `expected_hidden` wants two or three of these at the
-    /// same time — shields, shield-bearing cards, civilian points — and the
-    /// pool walk plus the per-card `def()` lookup dominate the cost, not the
-    /// arithmetic.
-    pub fn expected_hidden_3(&self, per_card: impl Fn(CardId) -> [f64; 3]) -> [f64; 3] {
-        let mut out = [0.0f64; 3];
-        let scaled = |pool: u128, slots: u8, out: &mut [f64; 3]| {
-            let n = pool.count_ones();
-            if n == 0 || slots == 0 {
-                return;
-            }
-            let mut total = [0.0f64; 3];
-            for card in iter_cards(pool) {
-                let v = per_card(card);
-                for i in 0..3 {
-                    total[i] += v[i];
-                }
-            }
-            let factor = f64::from(slots) / f64::from(n);
-            for i in 0..3 {
-                out[i] += total[i] * factor;
-            }
-        };
-        scaled(self.unknown_guilds, self.hidden_guild_count, &mut out);
-        scaled(self.unknown_plain, self.hidden_plain_count(), &mut out);
-        out
-    }
-
     /// What taking the card in `slot` would open up: the cards that become
     /// accessible and are already face up (so their identity is public), and a
     /// count of the face-down slots that would be turned over.

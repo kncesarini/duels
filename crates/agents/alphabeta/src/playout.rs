@@ -123,13 +123,6 @@ pub struct PolicyWeights {
 }
 
 impl PolicyWeights {
-    /// These weights, but following [`crate::order::score`] a `greedy`
-    /// fraction of the time. Measured worse than `0.0`; see the module docs.
-    pub const fn with_greedy(mut self, greedy: f64) -> Self {
-        self.greedy = greedy;
-        self
-    }
-
     /// Every kind equally likely: the plain uniform-random playout policy.
     pub const UNIFORM: PolicyWeights = PolicyWeights {
         build: 1.0,

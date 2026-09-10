@@ -61,7 +61,7 @@
 //! [`ScienceStatus`] is then just a label read off the magnitude, not a
 //! separate judgement.
 
-use duels_core::data::{self, CardId, Science, TokenId, NUM_SCIENCE};
+use duels_core::data::{self, Science, TokenId, NUM_SCIENCE};
 use duels_core::state::Pending;
 use duels_core::{GameState, Player};
 
@@ -1185,20 +1185,6 @@ pub fn token_value_with(
     }
     v += f64::from(def.chain_build_coins) * w.chain_build_coin;
     v
-}
-
-/// Whether `player` holds a progress token satisfying `f`.
-pub fn holds_token_with(
-    state: &GameState,
-    player: Player,
-    f: impl Fn(&data::ProgressToken) -> bool,
-) -> bool {
-    state.player(player).tokens().any(|t| f(t.def()))
-}
-
-/// Every card carrying `symbol`, for callers that want to explain a read.
-pub fn symbol_cards(symbol: Science) -> impl Iterator<Item = CardId> {
-    iter_cards(masks().symbol_mask(symbol))
 }
 
 #[cfg(test)]

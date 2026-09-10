@@ -91,7 +91,9 @@
 //! Paired seat-swapped matches, 200 games each (100 seeds, both seats), run
 //! through `duels-arena` and its `ab_lab` example. `v1` is [`Config::v1`], the
 //! static-evaluation agent this replaced. The `+/-` figures are one binomial
-//! standard error.
+//! standard error. `random` and `greedy` were retired from the roster in #60
+//! and the rows against them are kept as the measurements they were;
+//! `crates/agents/random` still exists as the test fixture behind the first.
 //!
 //! | opponent | budget | v1 | this version |
 //! |---|---|---|---|
@@ -314,6 +316,11 @@ use tt::Table;
 ///
 /// [`Config::v1`] is the whole pre-rework configuration in one call, which is
 /// what the before/after numbers are taken against.
+///
+/// `examples/search_stats.rs` is the instrument behind the per-optimisation
+/// claims below: it reports node counts, reached depth and transposition-table
+/// hit rate for each combination of these fields over positions from a real
+/// game.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Hard ceiling on iterative deepening, in decision plies. The budget
@@ -508,15 +515,6 @@ impl Stats {
             0.0
         } else {
             self.depth_sum as f64 / self.decisions as f64
-        }
-    }
-
-    /// Mean nodes searched per decision.
-    pub fn mean_nodes(&self) -> f64 {
-        if self.decisions == 0 {
-            0.0
-        } else {
-            self.nodes as f64 / self.decisions as f64
         }
     }
 }
