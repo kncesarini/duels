@@ -79,13 +79,12 @@ mod tests {
     const TOLERANCE: f64 = 1e-6;
 
     /// The shape and content hash of the weights every number in this file was
-    /// taken against — `duels-value`'s `weights/v2.bin` (the mixed-corpus
-    /// retrain; see that crate's docs for provenance).
+    /// taken against — `duels-value`'s `weights/v1.bin`.
     ///
     /// Checked on its own as well as through the values, so that a retrain
     /// fails with "the weights changed" rather than with twenty confusing
     /// numeric mismatches.
-    const WEIGHTS_ID: &str = "211x128x4/17fee9ab";
+    const WEIGHTS_ID: &str = "211x128x4/036d2b5e";
 
     /// The summation order the table was generated at. Recorded because the
     /// unroll reassociates the hidden layer's sum, so the table is only
@@ -121,26 +120,26 @@ mod tests {
     /// below (it is `#[ignore]`d) and paste. Do not edit an entry by hand to
     /// make a failing test pass; see the module docs.
     const GOLDEN: &[(u64, u32, f64)] = &[
-        (0, 6, 0.249034613),
-        (1, 12, 0.147285119),
-        (2, 18, 0.254448652),
-        (3, 24, 0.377593189),
-        (4, 30, 0.274122626),
-        (5, 36, 0.340896249),
-        (6, 42, 0.131832182),
-        (7, 48, 0.626218438),
-        (8, 52, 0.028342869),
-        (9, 56, 0.734272659),
-        (10, 8, 0.702561021),
-        (11, 14, 0.543785334),
-        (12, 20, 0.705659032),
-        (13, 26, 0.276564270),
-        (14, 32, 0.896245122),
-        (15, 38, 0.458042026),
-        (16, 44, 0.028793165),
-        (17, 50, 0.006973101),
-        (18, 54, 0.881050408),
-        (19, 58, 0.948036909),
+        (0, 6, 0.135064855),
+        (1, 12, 0.174614504),
+        (2, 18, 0.416064143),
+        (3, 24, 0.382506907),
+        (4, 30, 0.356502146),
+        (5, 36, 0.476743102),
+        (6, 42, 0.031701431),
+        (7, 48, 0.629115582),
+        (8, 52, 0.035073910),
+        (9, 56, 0.555710077),
+        (10, 8, 0.814638734),
+        (11, 14, 0.490635514),
+        (12, 20, 0.667772532),
+        (13, 26, 0.248082414),
+        (14, 32, 0.903984547),
+        (15, 38, 0.710261941),
+        (16, 44, 0.021844439),
+        (17, 50, 0.058662083),
+        (18, 54, 0.982169211),
+        (19, 58, 0.885027230),
     ];
 
     /// `(seed, plies, [P(military), P(science), P(civilian), P(loss)])` for the
@@ -154,11 +153,11 @@ mod tests {
     /// Pins the *decomposition*, not just its sum — see the module docs for
     /// why a scalar-only table would miss the change that matters most here.
     const GOLDEN_DIST: &[(u64, u32, [f64; 4])] = &[
-        (0, 6, [0.045614015, 0.107367657, 0.096052952, 0.750965416]),
-        (1, 12, [0.057360068, 0.007702519, 0.082222529, 0.852714837]),
-        (2, 18, [0.012840232, 0.004448325, 0.237160087, 0.745551348]),
-        (3, 24, [0.037631761, 0.013930339, 0.326031089, 0.622406840]),
-        (4, 30, [0.032998152, 0.000616496, 0.240507990, 0.725877345]),
+        (0, 6, [0.052184802, 0.012486588, 0.070393465, 0.864935160]),
+        (1, 12, [0.100505546, 0.003684318, 0.070424639, 0.825385451]),
+        (2, 18, [0.011445994, 0.001028174, 0.403589964, 0.583935857]),
+        (3, 24, [0.050199054, 0.015772361, 0.316535473, 0.617493093]),
+        (4, 30, [0.020185232, 0.002339083, 0.333977818, 0.643497825]),
     ];
 
     /// The weights identity is pinned on its own, so a retrain says so in one

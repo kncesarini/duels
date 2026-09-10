@@ -479,18 +479,26 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// `v2.bin`, produced by `tools/train_value.py` from a feature dump of a
-/// **mixed** corpus: 40,000 games of `mcts-value` self-play
-/// (`arena/corpus/mcts-value-nodes2000.jsonl`, via `value_corpus_mv.rs`) plus
-/// a fresh 15,000-game `mcts-eval` insurance batch
-/// (`arena/corpus/mcts-eval-insurance-nodes2000.jsonl`), merged with
-/// `tools/merge_feature_matrices.py`. `v1.bin` (the original, trained
-/// entirely on 100,000 games of `mcts-eval` self-play) is kept in the same
-/// directory for reference; the crate docs record both fits' commands, seed
-/// splits and held-out metrics side by side. Embedding it rather than loading
-/// a file at run time keeps this crate a pure function of its inputs and
-/// keeps an agent that uses it reproducible from its binary alone.
-const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v2.bin");
+/// `v1.bin`, produced by `tools/train_value.py` from a feature dump of
+/// `arena/corpus/mcts-eval-nodes2000.jsonl`; the crate docs record the exact
+/// commands, the seed split and the held-out metrics. Embedding it
+/// rather than loading a file at run time keeps this crate a pure function of
+/// its inputs and keeps an agent that uses it reproducible from its binary
+/// alone.
+///
+/// **`v2.bin` sits alongside it in the same directory and is not this
+/// constant.** It is a corpus-generalization retrain — a mix of `mcts-value`
+/// self-play and a fresh `mcts-eval` batch, see the crate docs' "The
+/// mixed-corpus retrain (`v2.bin`)" section — measured and found *not* to
+/// justify replacing this default: it does not clearly beat `v1` head-to-head
+/// (`+33.9` Elo, SPRT inconclusive at 400 games), its held-out predictive
+/// metrics are worse than `v1`'s, and while its Elo margin over `mcts-eval`
+/// grew, victory-kind counts show it leaning *harder* into the science-win
+/// route rather than less. It is kept in the repository, reachable via
+/// `mcts-value:weights=v2` (`duels_agent_mcts_value::WEIGHTS_V2`), as a
+/// negative result and as a base for a future attempt — not as a pending
+/// promotion.
+const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v1.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
 /// the player a position is being evaluated for**.

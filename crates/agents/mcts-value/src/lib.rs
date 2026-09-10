@@ -413,10 +413,17 @@ pub use tree::{Config, PriorMode, RootStats};
 /// same way via `include_bytes!` inside its own `Cargo.toml`-declared
 /// dependency).
 ///
-/// Exists purely so "retrained weights vs the weights they replace" is one
-/// `duels-arena match --agent-a mcts-value --agent-b mcts-value:weights=v1`
+/// `v2` names the corpus-generalization retrain measured and *not* adopted —
+/// see `duels_value`'s crate docs and this crate's own on why. It is `v2`
+/// rather than `v1` here because the live default is still `v1.bin`; this
+/// constant exists so that unadopted retrain stays reachable and reproducibly
+/// comparable (`mcts-value:weights=v2`) rather than only living in a PR's
+/// description.
+///
+/// Exists purely so "a retrain vs the default it did not replace" is one
+/// `duels-arena match --agent-a mcts-value --agent-b mcts-value:weights=v2`
 /// away in one process, rather than requiring two separately-built binaries.
-pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
+pub const WEIGHTS_V2: &[u8] = include_bytes!("../../../duels-value/weights/v2.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
