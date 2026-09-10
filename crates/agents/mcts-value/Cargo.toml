@@ -24,6 +24,10 @@ duels-value = { path = "../../duels-value" }
 # crate's default path touches it.
 duels-eval = { path = "../../duels-eval" }
 rand = { workspace = true }
+# Portable `ln`/`pow` for UCB1 and progressive widening, so a seed produces
+# the same search on every architecture; see the root `Cargo.toml`'s comment
+# on this dependency.
+libm = { workspace = true }
 
 [dev-dependencies]
 duels-agent-random = { path = "../random" }

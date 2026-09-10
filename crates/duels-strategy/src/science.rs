@@ -434,7 +434,14 @@ impl SciModel {
             if s.obtainable() {
                 let k = s.kill_cost(self.defender_has_half_pair);
                 kills[kill_n] = if k.is_finite() {
-                    self.share_defender.powf(k)
+                    // `libm::pow` rather than `f64::powf`: this feeds
+                    // `duels-eval`'s science-race read, which is consulted
+                    // from inside a search (e.g. `mcts-eval`'s default
+                    // `LeafValue::Blend`), so it is subject to the same
+                    // cross-platform-libm-disagreement risk as `mcts-*`'s
+                    // UCB1/progressive-widening math — see `docs/roadmap.md`'s
+                    // Tier 0-C.
+                    libm::pow(self.share_defender, k)
                 } else {
                     0.0
                 };

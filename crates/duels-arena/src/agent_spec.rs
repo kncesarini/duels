@@ -831,11 +831,13 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                         "blend" => ValueLeafValue::Blend { weight: 0.5 },
                         "learned" => ValueLeafValue::Learned,
                         "learned_blend" | "lblend" => ValueLeafValue::LearnedBlend { weight: 0.5 },
+                        "learned_symmetric" | "lsym" => ValueLeafValue::LearnedSymmetric,
                         other => {
                             return Err(format!(
                                 "mcts-value: unknown leaf \"{other}\" (expected \"learned\", \
-                                 \"learned_blend[:<weight>]\", \"rollout\", \"static\", \
-                                 \"truncated[:<plies>]\", or \"blend[:<weight>]\")"
+                                 \"learned_blend[:<weight>]\", \"learned_symmetric\", \
+                                 \"rollout\", \"static\", \"truncated[:<plies>]\", or \
+                                 \"blend[:<weight>]\")"
                             ))
                         }
                     },
@@ -1689,6 +1691,25 @@ mod tests {
                 assert!(!params.contains(reject), "{spec} has {reject}: {params}");
             }
         }
+    }
+
+    /// `leaf=learned_symmetric` (and its `lsym` alias) reach
+    /// [`ValueLeafValue::LearnedSymmetric`] — the exploratory, opt-in
+    /// averaged-perspective leaf `docs/roadmap.md`'s Tier 0-B added. Opt-in
+    /// means nothing here changes what `leaf=learned` (the default) parses
+    /// to; that is `the_mcts_value_ablation_chain_is_addressable`'s job.
+    #[test]
+    fn the_learned_symmetric_leaf_is_addressable_by_spec_string() {
+        for value in ["learned_symmetric", "lsym"] {
+            let cfg = parse_mcts_value_config(&format!("leaf={value}")).unwrap();
+            assert_eq!(cfg.leaf, ValueLeafValue::LearnedSymmetric, "leaf={value}");
+        }
+        let agent = make_agent_from_spec("mcts-value:leaf=learned_symmetric", 1).unwrap();
+        assert!(
+            agent.spec().params.contains("leaf=learned_symmetric"),
+            "{}",
+            agent.spec().params
+        );
     }
 
     /// `mcts-value` keeps `mcts-eval`'s keys, and the two agents' defaults
