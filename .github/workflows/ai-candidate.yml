@@ -24,9 +24,12 @@ on:
     paths:
       - 'crates/agents/**'
       - 'crates/duels-agents-api/**'
-      # `duels-eval` is not an agent, but every agent built on it moves when it
-      # does - which is exactly the kind of change this check exists to notice.
+      # `duels-eval` and `duels-value` are not agents, but every agent built on
+      # one moves when it does - which is exactly the kind of change this
+      # check exists to notice. `duels-value` backs the champion (`mcts-value`)
+      # the same way `duels-eval` backs the rest of the ladder.
       - 'crates/duels-eval/**'
+      - 'crates/duels-value/**'
       - '.github/workflows/ai-candidate.yml'
 
 permissions:

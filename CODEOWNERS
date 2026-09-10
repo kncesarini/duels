@@ -2,18 +2,21 @@
 #
 # CODEOWNERS applies to the *last* matching pattern, so more specific rules
 # should stay below more general ones if that behavior is ever relied upon.
-# For now these five are independent (non-overlapping) path prefixes.
+# For now these six are independent (non-overlapping) path prefixes.
 #
-# `crates/duels-eval/**` is here for a different reason from the other four.
-# It is not documentation or configuration: it is a shared asset that more than
-# one agent's *measured strength* depends on, and a change to it moves every
-# one of them at once. Everything else in this repository can be reviewed by
-# reading the diff; this crate has to be reviewed by asking "was this
-# measured?". The rule exists to stop its behaviour being changed in passing
+# `crates/duels-eval/**` and `crates/duels-value/**` are here for a different
+# reason from the other three. Neither is documentation or configuration: each
+# is a shared asset that at least one agent's *measured strength* depends on
+# directly - `duels-eval` for the rest of the ladder, `duels-value` for the
+# champion (`mcts-value`) specifically - and a change to either moves that
+# agent's strength at once. Everything else in this repository can be reviewed
+# by reading the diff; these crates have to be reviewed by asking "was this
+# measured?". The rule exists to stop their behaviour being changed in passing
 # inside a PR that is nominally about something else.
 
-docs/**              @kncesarini
-.github/**           @kncesarini
-data/**              @kncesarini
-crates/duels-eval/** @kncesarini
-CODEOWNERS           @kncesarini
+docs/**                @kncesarini
+.github/**             @kncesarini
+data/**                @kncesarini
+crates/duels-eval/**   @kncesarini
+crates/duels-value/**  @kncesarini
+CODEOWNERS             @kncesarini
