@@ -399,9 +399,15 @@ impl RaceWeights {
     /// scaled: a rail states a fact about the position ("this move ends the
     /// game") rather than a tuning opinion, so diluting it in the mild variant
     /// would be measuring something else.
+    ///
+    /// `libm::pow` rather than `f64::powf`: these weights feed the playout
+    /// policy's action scores during self-play, so they are as much a search
+    /// decision as `tree.rs`'s UCB1/progressive-widening math, and the same
+    /// cross-platform-libm-disagreement risk applies. See this crate's
+    /// `Cargo.toml` for why `libm` is a dependency at all.
     fn powf(self, p: f64) -> RaceWeights {
-        let map6 = |a: [f64; 6]| a.map(|x| x.powf(p));
-        let map9 = |a: [f64; 9]| a.map(|x| x.powf(p));
+        let map6 = |a: [f64; 6]| a.map(|x| libm::pow(x, p));
+        let map9 = |a: [f64; 9]| a.map(|x| libm::pow(x, p));
         RaceWeights {
             rail: self.rail,
             sci_push: map6(self.sci_push),

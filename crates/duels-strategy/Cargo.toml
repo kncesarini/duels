@@ -8,6 +8,10 @@ description = "Pure win-condition read functions over a 7 Wonders Duel position:
 
 [dependencies]
 duels-core = { path = "../duels-core" }
+# Portable `pow`, so `science.rs`'s kill-probability model gives the same
+# bits on every architecture; see the root `Cargo.toml`'s comment on this
+# dependency.
+libm = { workspace = true }
 
 [dev-dependencies]
 duels-agents-api = { path = "../duels-agents-api" }

@@ -357,6 +357,12 @@ impl MilModel {
 
     /// `M_mil`: how likely this player is to reach the capital, discounted for
     /// how long it takes.
+    ///
+    /// `powi` (an integer exponent), not `powf`: Rust computes it by repeated
+    /// squaring rather than through the platform's own libm, so unlike
+    /// `science.rs`'s `powf` next door it is already bit-for-bit portable
+    /// across architectures and does not need `libm` (`docs/roadmap.md`'s
+    /// Tier 0-C).
     pub fn magnitude(&self) -> f64 {
         match self.turns_to_close() {
             None => 0.0,

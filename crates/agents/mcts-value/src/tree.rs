@@ -628,12 +628,20 @@ pub(crate) fn kind_matches_target(actual: VictoryKind, target: VictoryKind) -> b
 
 /// UCB1 for one child: exploitation from the mover's perspective plus the
 /// exploration bonus.
+///
+/// `libm::log` rather than `f64::ln`: this is a search decision that feeds
+/// straight into which move gets played, and the platform's own libm can
+/// disagree with another architecture's in the last bit for a transcendental
+/// function like this one. `libm` is a portable, software implementation, so
+/// the same seed produces the same search on an ARM Raspberry Pi as on an
+/// Apple Silicon workstation. `sqrt` is untouched: IEEE 754 requires it to be
+/// correctly rounded, so unlike `ln`/`pow` it does not vary by platform.
 #[inline]
 pub(crate) fn ucb1(exploit: f64, child_visits: u32, parent_visits: u32, c: f64) -> f64 {
     if child_visits == 0 {
         return f64::INFINITY;
     }
-    exploit + c * (f64::from(parent_visits).ln() / f64::from(child_visits)).sqrt()
+    exploit + c * (libm::log(f64::from(parent_visits)) / f64::from(child_visits)).sqrt()
 }
 
 /// The arena and the search over it.
@@ -1045,8 +1053,11 @@ impl Tree {
             Kind::Chance { children, .. } => children.len(),
             _ => unreachable!(),
         };
+        // `libm::pow`, not `f64::powf`, for the same cross-platform-
+        // determinism reason `ucb1` uses `libm::log`: this decides how many
+        // chance outcomes get expanded, which is itself a search decision.
         let allowance =
-            self.cfg.chance_widen_c * f64::from(visits + 1).powf(self.cfg.chance_widen_alpha);
+            self.cfg.chance_widen_c * libm::pow(f64::from(visits + 1), self.cfg.chance_widen_alpha);
 
         if width == 0 || (width as f64) < allowance {
             let (outcome, prob) = chance::sample(&state, action, rng);
@@ -1177,6 +1188,12 @@ impl Tree {
                     None => played,
                 }
             }
+            // Mirrors `Learned` exactly, reading `learned_symmetric_from`
+            // (one extra forward pass, both perspectives) instead of
+            // `learned_from`.
+            LeafValue::LearnedSymmetric => self
+                .learned_symmetric_from(node)
+                .unwrap_or_else(|| self.rollout_from(node, rng)),
         }
     }
 
@@ -1208,6 +1225,20 @@ impl Tree {
     fn learned_from(&self, node: NodeId) -> Option<f64> {
         let net = self.learned_net.as_ref()?;
         Some(leaf::learned_value(
+            &self.nodes[node as usize].state,
+            net,
+            self.cfg.objective,
+            self.me,
+        ))
+    }
+
+    /// [`leaf::learned_symmetric_value`] of `node`, or `None` if this tree has
+    /// no value network. [`learned_from`](Tree::learned_from)'s twin: same
+    /// fallback shape, one extra forward pass (both perspectives instead of
+    /// one).
+    fn learned_symmetric_from(&self, node: NodeId) -> Option<f64> {
+        let net = self.learned_net.as_ref()?;
+        Some(leaf::learned_symmetric_value(
             &self.nodes[node as usize].state,
             net,
             self.cfg.objective,
@@ -1470,13 +1501,18 @@ pub(crate) fn best_of(trees: &[Tree]) -> Option<Action> {
 /// `tests::the_copied_search_is_the_mcts_eval_search_node_for_node`.
 ///
 /// Do not "simplify" any of these to call the live code, since that is the
-/// thing they exist to check. Three edits only, all forced: the `priors` field
+/// thing they exist to check. Four edits only, all forced: the `priors` field
 /// the type system requires is named in the patterns that need it, the shared
 /// `resolve_chance`/`child_after`/`rank_by_prior` helpers are called rather
 /// than re-copied (they are reached identically from both arms, and copying
-/// them would test nothing extra), and `eval_legacy_leaf_value` takes its
+/// them would test nothing extra), `eval_legacy_leaf_value` takes its
 /// `duels_eval::Root` and [`duels_value::Net`] from the live fields, since
-/// `Tree::new` is what builds them in both arms.
+/// `Tree::new` is what builds them in both arms, and `eval_legacy_leaf_value`'s
+/// match is `unreachable!()` on [`LeafValue::LearnedSymmetric`] — that variant
+/// is an `mcts-value`-only addition with nothing to copy from `mcts-eval`'s
+/// tree.rs, so the arm exists only because [`LeafValue`] is one enum shared by
+/// both the live and the frozen match, not because this frozen copy has ever
+/// been asked to run it.
 #[cfg(test)]
 impl Tree {
     fn eval_legacy_expand(&mut self, id: NodeId, rng: &mut StdRng) -> Option<NodeId> {
@@ -1638,6 +1674,12 @@ impl Tree {
                     Some(s) => weight * s + (1.0 - weight) * played,
                     None => played,
                 }
+            }
+            // `mcts-eval` has no analogue of this variant — see this impl
+            // block's doc comment's "four edits" note. No test constructs an
+            // `eval_legacy` tree with this leaf.
+            LeafValue::LearnedSymmetric => {
+                unreachable!("LeafValue::LearnedSymmetric has no mcts-eval original to copy")
             }
         }
     }
@@ -2634,6 +2676,7 @@ mod tests {
             (LeafValue::Blend { weight: 0.5 }, true, false),
             (LeafValue::Learned, false, true),
             (LeafValue::LearnedBlend { weight: 0.5 }, false, true),
+            (LeafValue::LearnedSymmetric, false, true),
         ] {
             let mut rng = StdRng::seed_from_u64(9);
             let tree = Tree::new(
@@ -2703,6 +2746,7 @@ mod tests {
         for other in [
             LeafValue::Blend { weight: 0.5 },
             LeafValue::LearnedBlend { weight: 0.5 },
+            LeafValue::LearnedSymmetric,
             LeafValue::Static,
             LeafValue::Rollout,
             LeafValue::Truncated { plies: 8 },
@@ -2720,30 +2764,37 @@ mod tests {
     /// values the same tree backs up, and it is the shape invariant that
     /// stands in for freezing the numbers (the same choice `mcts-eval` made
     /// for its `duels-eval` leaf).
+    ///
+    /// Covers both single-perspective and symmetrized leaves:
+    /// [`LeafValue::LearnedSymmetric`] averages a `[0, 1]` value with a
+    /// `1 -` complement of another, so this is the check that the averaging
+    /// itself cannot produce something outside `[0, 1]`.
     #[test]
     fn every_learned_leaf_value_is_a_probability() {
-        for seed in 0..12u64 {
-            let (state, actions) = mid_game(seed);
-            let mut rng = StdRng::seed_from_u64(seed ^ 0x1A5E);
-            let mut tree = Tree::new(
-                state,
-                actions,
-                Config {
-                    leaf: LeafValue::Learned,
-                    ..Config::default()
-                },
-                &mut rng,
-            );
-            for _ in 0..200 {
-                tree.simulate(&mut rng);
-            }
-            for (i, node) in tree.nodes.iter().enumerate() {
-                if node.visits > 0 {
-                    let mean = node.mean();
-                    assert!(
-                        mean.is_finite() && (0.0..=1.0).contains(&mean),
-                        "seed {seed} node {i}: backed-up mean {mean}"
-                    );
+        for leaf in [LeafValue::Learned, LeafValue::LearnedSymmetric] {
+            for seed in 0..12u64 {
+                let (state, actions) = mid_game(seed);
+                let mut rng = StdRng::seed_from_u64(seed ^ 0x1A5E);
+                let mut tree = Tree::new(
+                    state,
+                    actions,
+                    Config {
+                        leaf,
+                        ..Config::default()
+                    },
+                    &mut rng,
+                );
+                for _ in 0..200 {
+                    tree.simulate(&mut rng);
+                }
+                for (i, node) in tree.nodes.iter().enumerate() {
+                    if node.visits > 0 {
+                        let mean = node.mean();
+                        assert!(
+                            mean.is_finite() && (0.0..=1.0).contains(&mean),
+                            "{leaf:?} seed {seed} node {i}: backed-up mean {mean}"
+                        );
+                    }
                 }
             }
         }

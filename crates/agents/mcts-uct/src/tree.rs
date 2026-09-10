@@ -289,12 +289,20 @@ pub(crate) fn value_of(result: GameResult) -> f64 {
 
 /// UCB1 for one child: exploitation from the mover's perspective plus the
 /// exploration bonus.
+///
+/// `libm::log` rather than `f64::ln`: this is a search decision that feeds
+/// straight into which move gets played, and the platform's own libm can
+/// disagree with another architecture's in the last bit for a transcendental
+/// function like this one. `libm` is a portable, software implementation, so
+/// the same seed produces the same search on an ARM Raspberry Pi as on an
+/// Apple Silicon workstation. `sqrt` is untouched: IEEE 754 requires it to be
+/// correctly rounded, so unlike `ln`/`pow` it does not vary by platform.
 #[inline]
 pub(crate) fn ucb1(exploit: f64, child_visits: u32, parent_visits: u32, c: f64) -> f64 {
     if child_visits == 0 {
         return f64::INFINITY;
     }
-    exploit + c * (f64::from(parent_visits).ln() / f64::from(child_visits)).sqrt()
+    exploit + c * (libm::log(f64::from(parent_visits)) / f64::from(child_visits)).sqrt()
 }
 
 /// The arena and the search over it.
@@ -592,8 +600,11 @@ impl Tree {
             Kind::Chance { children, .. } => children.len(),
             _ => unreachable!(),
         };
+        // `libm::pow`, not `f64::powf`, for the same cross-platform-
+        // determinism reason `ucb1` uses `libm::log`: this decides how many
+        // chance outcomes get expanded, which is itself a search decision.
         let allowance =
-            self.cfg.chance_widen_c * f64::from(visits + 1).powf(self.cfg.chance_widen_alpha);
+            self.cfg.chance_widen_c * libm::pow(f64::from(visits + 1), self.cfg.chance_widen_alpha);
 
         if width == 0 || (width as f64) < allowance {
             let (outcome, prob) = chance::sample(&state, action, rng);

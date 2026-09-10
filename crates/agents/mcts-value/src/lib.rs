@@ -281,6 +281,64 @@
 //! place this agent's Elo comes from. Read that as known headroom that is not
 //! architectural: an antisymmetric head would make the property exact for free.
 //!
+//! ## An inference-time patch for it, checked offline before being wired in
+//!
+//! `docs/roadmap.md`'s Tier 0-B: averaging the net's two disagreeing
+//! perspectives on the same position — `p_sym = (P(win|One) + (1 -
+//! P(win|Two))) / 2` — is a free two-member ensemble over the incoherence
+//! above, *if* it actually predicts better. Checked, not assumed, on the `v1`
+//! corpus's held-out test split (`arena/corpus/mcts-eval-nodes2000.jsonl`,
+//! `seed % 10 == 9`, the same split rule `tools/train_value.py` uses; 10,000
+//! games, 1,343,298 (position, perspective) rows). The exact corpus `v2.bin`
+//! itself trained on is not checked into the repository (it is `arena/corpus/`-
+//! gitignored, like every corpus, and regenerating it — 55,000 games — was out
+//! of this check's ~30-minute scope), but this corpus is a fully disjoint seed
+//! range from either of `v2`'s two training corpora, so it is a valid held-out
+//! set for it too:
+//!
+//! | predictor | Brier | log loss | ROC AUC |
+//! | --- | --- | --- | --- |
+//! | `win_probability()` (single perspective) | 0.17436 | 0.51480 | 0.81680 |
+//! | **`p_sym` (averaged)** | **0.17266** | **0.51006** | **0.82017** |
+//!
+//! `p_sym` won on every metric measured, so it was implemented as a new,
+//! opt-in leaf: [`LeafValue::LearnedSymmetric`]. It costs **one extra forward
+//! pass per leaf** — both perspectives are evaluated instead of one — so it
+//! trades throughput for accuracy, the same shape as
+//! [`LeafValue::LearnedBlend`]'s trade against [`LeafValue::Learned`].
+//!
+//! **Arena result (exploratory, not a promotion decision):** 400 paired-seed,
+//! seat-swapped games at `nodes:2000` against this crate's default
+//! (`LeafValue::Learned`), one seed range — well under this project's
+//! promotion convention of ~2,000 games at a tightened SPRT bound
+//! (`docs/conventions.md`, `duels-value`'s crate docs' "Recalibrating the
+//! test"), and explicitly not run to that standard here:
+//!
+//! | candidate | games | W-L-D | Elo | 95% CI | SPRT (`elo1=20`) | mechanism gate |
+//! | --- | --: | --- | --: | --- | --- | --- |
+//! | `leaf=learned_symmetric` vs `leaf=learned` | 400 | 222-178-0 | +38.3 | [+4.1, +72.5] | Continue (Inconclusive) | Pass |
+//!
+//! (`arena/results/experiments/sym-check-learned-symmetric-vs-learned/`.)
+//! Victory kinds: the candidate won 31 military / 41 science / 150 civilian;
+//! the control 32 military / 30 science / 112 civilian / 4 tiebreak — a
+//! similar mix to the default's own, not a shift into one victory kind, which
+//! the mechanism gate's `Pass` on all three shares confirms.
+//!
+//! **Read this plainly: a positive point estimate with a 95% CI that
+//! excludes zero at the *cell* level, but the pooled SPRT itself reads
+//! `Continue` (this project's `Inconclusive`, not `AcceptH1`) at the
+//! `elo1 = 20` bound** — a single 400-game range is not enough evidence to
+//! either accept or reject a `+20`-Elo-or-larger effect here, exactly the
+//! shape `duels-value`'s crate docs describe for `v2` vs `v1`'s own first-pass
+//! cell. This is a first read, not a confirmed effect: a second, disjoint
+//! seed range and a larger sample at a tighter bound (`elo1 = 10`, ~2,000
+//! games, this project's promotion convention) is what turning this into a
+//! promotion decision would need, and that is future work, not something this
+//! exploratory check did.
+//!
+//! Not the default. Opt-in, reachable as `mcts-value:leaf=learned_symmetric`
+//! (or the `lsym` alias).
+//!
 //! # Why chance nodes
 //!
 //! 7 Wonders Duel is a two-player zero-sum *stochastic* game: the cards behind
@@ -1339,6 +1397,7 @@ mod tests {
             LeafValue::Truncated { plies: 8 },
             LeafValue::Learned,
             LeafValue::LearnedBlend { weight: 0.5 },
+            LeafValue::LearnedSymmetric,
         ]
         .into_iter()
         .enumerate()
@@ -1407,6 +1466,7 @@ mod tests {
         assert!(
             describe(LeafValue::LearnedBlend { weight: 0.5 }).contains("leaf=learned_blend(0.500)")
         );
+        assert!(describe(LeafValue::LearnedSymmetric).contains("leaf=learned_symmetric"));
 
         // A learned leaf also has to record *which* weights it used: the
         // shape alone would make two results files from either side of a
