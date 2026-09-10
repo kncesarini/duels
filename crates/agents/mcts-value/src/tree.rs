@@ -51,6 +51,7 @@
 //! computed (exactly once per expanded node, never per simulation).
 
 use duels_core::engine::{self, Outcome};
+use duels_core::scoring::VictoryKind;
 use duels_core::{Action, GameResult, GameState, Player};
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -138,6 +139,77 @@ impl PriorMode {
                 format!("progressive_bias({weight:.3})")
             }
         }
+    }
+}
+
+/// What a search is rewarded for winning: any victory at all, or one
+/// specific [`VictoryKind`].
+///
+/// # Why this exists
+///
+/// Every agent on this ladder, this crate's default included, is trained and
+/// searched to maximise **any** win — the raw, heavily civilian-skewed outcome
+/// distribution `duels-value`'s crate docs measure (civilian 80.64%, military
+/// 15.43%, science 2.31% in the corpus that shaped `v1`). `Objective` is what
+/// lets the *same* leaf model (`v2.bin`, retrained on nothing new) be searched
+/// under a different reward instead: "did **this** specific victory kind
+/// happen", so the resulting agent's play can be read as what maximally
+/// specialised play toward one strategy looks like, and used as a genuinely
+/// distinct sparring partner — not a stronger generalist. See
+/// `duels_value`'s crate docs, "What's next: beyond mixing corpora", for the
+/// research question this was built to answer, and this crate's own docs for
+/// the purity measurements it produced.
+///
+/// **This is not a strength-seeking objective**, and a specialist built from
+/// it is not expected to out-Elo [`Config::default`] — see this crate's docs
+/// for why that is the wrong question to ask of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Objective {
+    /// Reward `1.0` for a Player One win of any kind, `0.0` for a Player Two
+    /// win, `0.5` for a draw -- [`value_of`], unchanged. [`Config::default`]'s
+    /// objective, and the only one every other agent on this ladder has.
+    WinProbability,
+    /// Reward **only** a win of exactly this [`VictoryKind`] **by the seat
+    /// this tree is actually searching for** ([`Tree::me`]): `1.0` if `me`
+    /// won by `kind`, `0.0` for everything else -- the other seat winning
+    /// (including a win of `kind` itself), a draw, or `me` winning by a
+    /// *different* kind. See [`objective_value_of`]'s docs for the exact rule
+    /// and [`Tree::exploit`]'s docs for why this is anchored to `me` rather
+    /// than to a game-fixed `Player::One`: unlike ordinary win/loss, "One
+    /// wins by kind K" and "Two wins by kind K" are not complementary, so a
+    /// fixed anchor would reward the wrong player's achievement whenever this
+    /// tree is searching for Player Two.
+    ///
+    /// [`duels_value::Outcome::of`] already folds
+    /// [`VictoryKind::CivilianVictory`] and [`VictoryKind::CivilianTiebreak`]
+    /// into one class, on the reasoning that a civilian win is a civilian win
+    /// whether or not it needed the tiebreak; [`objective_value_of`] makes the
+    /// identical call, so passing either civilian variant as `kind` matches
+    /// both.
+    TargetKind(VictoryKind),
+}
+
+impl Objective {
+    /// A compact, stable description for [`Config::describe`]. `None` for the
+    /// default, so [`Config::default`]'s params string -- and therefore every
+    /// existing results file's -- stays byte-for-byte what it was before this
+    /// field existed.
+    fn describe(&self) -> Option<String> {
+        match self {
+            Objective::WinProbability => None,
+            Objective::TargetKind(kind) => Some(format!("target({})", victory_kind_name(*kind))),
+        }
+    }
+}
+
+/// A short, stable name for a [`VictoryKind`], since the type itself has no
+/// `Display`/name method and [`Objective::describe`] needs one that will not
+/// silently change if `Debug`'s derive output ever does.
+const fn victory_kind_name(kind: VictoryKind) -> &'static str {
+    match kind {
+        VictoryKind::MilitarySupremacy => "military",
+        VictoryKind::ScientificSupremacy => "science",
+        VictoryKind::CivilianVictory | VictoryKind::CivilianTiebreak => "civilian",
     }
 }
 
@@ -232,6 +304,22 @@ pub struct Config {
     /// `duels-arena match`, rather than requiring two separately-built
     /// binaries. `crate::WEIGHTS_V1` is the frozen copy this exists for.
     pub value_weights_override: Option<&'static [u8]>,
+    /// What the search is rewarded for winning: any victory
+    /// ([`Objective::WinProbability`], the default) or one specific
+    /// [`VictoryKind`] ([`Objective::TargetKind`]).
+    ///
+    /// This is the one field on this struct that changes *what the search is
+    /// for* rather than *how well it plays toward the usual goal*: it is read
+    /// by both [`Tree::leaf_value`] (the learned leaf reads
+    /// [`duels_value::Dist::p`] of the target outcome instead of
+    /// [`duels_value::Dist::win_probability`]) and by every terminal/rollout
+    /// result this tree backs up (`Tree::node_for`, `Tree::rollout_from`, and
+    /// the `Truncated` leaf's finished-early arm all go through
+    /// [`objective_value_of`] rather than [`value_of`] directly). See
+    /// [`Objective`]'s own docs for why this exists and
+    /// `tests::objective_win_probability_is_bit_identical_to_value_of` for the
+    /// proof that leaving it at its default changes nothing.
+    pub objective: Objective,
 }
 
 impl Default for Config {
@@ -272,6 +360,7 @@ impl Default for Config {
             eval_override: None,
             value_summation: duels_value::Summation::default(),
             value_weights_override: None,
+            objective: Objective::WinProbability,
         }
     }
 }
@@ -386,6 +475,12 @@ impl Config {
                 self.value_summation.name()
             ),
             false => String::new(),
+        } + &match self.objective.describe() {
+            // Appended only when set, for the same reason the `value=` tail
+            // above is conditional: `Config::default`'s params string must
+            // stay byte-for-byte what it was before this field existed.
+            Some(desc) => format!(";objective={desc}"),
+            None => String::new(),
         }
     }
 }
@@ -455,12 +550,68 @@ impl Node {
 }
 
 /// `1.0` if Player One won, `0.0` if Player Two won, `0.5` for a draw.
+///
+/// **Frozen.** This is the reward every agent on this ladder has always used,
+/// and it is what the two verbatim historical copies further down this file
+/// (`eval_legacy_*`, `legacy_*`) call directly rather than going through
+/// [`objective_value_of`] -- they exist to reproduce `mcts-eval`/`mcts-uct`
+/// node for node, and neither of those agents has an [`Objective`] to be
+/// aware of. Production code calls [`objective_value_of`] instead, which
+/// reproduces this function bit-for-bit at [`Objective::WinProbability`].
 #[inline]
 pub(crate) fn value_of(result: GameResult) -> f64 {
     match result.winner() {
         Some(Player::One) => 1.0,
         Some(Player::Two) => 0.0,
         None => 0.5,
+    }
+}
+
+/// [`value_of`], generalized by [`Config::objective`]: the reward a search is
+/// actually built to maximize.
+///
+/// At [`Objective::WinProbability`] this is [`value_of`], verbatim -- same
+/// match, same three arms, same order, and `me` is ignored entirely -- which
+/// is what makes
+/// `tests::objective_win_probability_is_bit_identical_to_value_of` a real
+/// check rather than a tautology the type system already guarantees.
+///
+/// At [`Objective::TargetKind`], only a win **by `me`** of exactly `kind`
+/// scores `1.0`; everything else -- the *other* seat winning by any kind
+/// (`kind` included), a draw, or `me` winning by a *different* kind -- scores
+/// `0.0`. `me` is [`Tree::me`]: the seat this tree is actually searching for,
+/// not a game-fixed constant -- see [`Tree::exploit`]'s docs for why
+/// anchoring this to a fixed seat regardless of who is searching was a bug,
+/// not a simplification, and this crate's docs for what fixing it measured.
+/// That makes this a deliberately narrower reward than [`value_of`]'s: "only
+/// rewarded from scientific-supremacy outcomes" (to take the sharpest
+/// example) means a specialist gets nothing at all for winning by military
+/// supremacy, civilian victory, or by science as the *other* player.
+#[inline]
+pub(crate) fn objective_value_of(result: GameResult, objective: Objective, me: Player) -> f64 {
+    match objective {
+        Objective::WinProbability => value_of(result),
+        Objective::TargetKind(target) => match result {
+            GameResult::Win { winner, kind }
+                if winner == me && kind_matches_target(kind, target) =>
+            {
+                1.0
+            }
+            _ => 0.0,
+        },
+    }
+}
+
+/// Whether a finished game's actual [`VictoryKind`] counts as an achievement
+/// of `target`, folding [`VictoryKind::CivilianVictory`] and
+/// [`VictoryKind::CivilianTiebreak`] together the same way
+/// [`duels_value::Outcome::of`] does -- see [`Objective::TargetKind`]'s docs.
+#[inline]
+pub(crate) fn kind_matches_target(actual: VictoryKind, target: VictoryKind) -> bool {
+    use VictoryKind::{CivilianTiebreak, CivilianVictory};
+    match (actual, target) {
+        (CivilianVictory | CivilianTiebreak, CivilianVictory | CivilianTiebreak) => true,
+        _ => actual == target,
     }
 }
 
@@ -529,6 +680,12 @@ pub(crate) struct Tree {
     /// hash goes into [`Config::describe`], and the `golden` module pins
     /// twenty positions' predictions so a retrain fails a test.
     pub learned_net: Option<duels_value::Net>,
+    /// The player to move at the **root** — i.e. whichever seat this tree is
+    /// actually searching for, in the real game this tree was built to decide
+    /// a move in. Captured once, here, because [`Objective::TargetKind`]'s
+    /// reward has to be anchored to *this* seat rather than to a
+    /// game-fixed one; see [`Tree::exploit`]'s docs for why.
+    me: Player,
 }
 
 impl Tree {
@@ -573,6 +730,7 @@ impl Tree {
             }
             .with_summation(cfg.value_summation)
         });
+        let me = state.current_player();
         let mut tree = Self {
             nodes: Vec::with_capacity(1024),
             cfg,
@@ -583,6 +741,7 @@ impl Tree {
             rankings: 0,
             eval_root,
             learned_net,
+            me,
         };
         let root = decision_node(state, actions, rng);
         tree.nodes.push(root);
@@ -605,12 +764,43 @@ impl Tree {
 
     /// Exploitation term for `child` from `mover`'s perspective: the one and
     /// only place the two-player perspective flip happens.
+    ///
+    /// The anchor `mean` is backed up against depends on [`Config::objective`]:
+    /// at [`Objective::WinProbability`] it is always [`Player::One`] (see
+    /// [`value_of`] — this is what every other agent on this ladder does, and
+    /// what this crate's default search does too, so this arm must stay
+    /// exactly `Player::One`, unconditionally, for the bit-identical
+    /// guarantee `tests::objective_win_probability_is_bit_identical_to_value_of`
+    /// checks). `P(One wins) = 1 - P(Two wins)` always, which is what makes a
+    /// single Player-One-anchored scalar plus this flip valid for *either*
+    /// seat's tree.
+    ///
+    /// At [`Objective::TargetKind`] the anchor is [`Tree::me`] instead — the
+    /// seat this *specific* tree is searching for, i.e. whichever seat had
+    /// the move at the root. This is not the same fix as the
+    /// `WinProbability` arm applied to a different constant: `P(One achieves
+    /// kind K)` and `P(Two achieves kind K)` are **not** complementary (most
+    /// games, neither player achieves a specific rare kind), so anchoring to
+    /// a game-fixed `Player::One` regardless of which seat is searching is a
+    /// bug, not a simplification — a tree built for `Player::Two` would then
+    /// score every one of its own branches by "does the *other* seat get the
+    /// kind", which is backwards. This was caught empirically: a science
+    /// specialist showed 54.7% science-race exposure as `Player::One` but
+    /// 0.0% as `Player::Two` in the same measurement run, which is exactly
+    /// the signature of this bug (the flipped, `Player::One`-anchored
+    /// quantity is dominated by the ~90%+ "science wasn't achieved by One"
+    /// mass regardless of the true prospects for `Two`).
     #[inline]
     pub fn exploit(&self, child: NodeId, mover: Player) -> f64 {
         let mean = self.nodes[child as usize].mean();
-        match mover {
-            Player::One => mean,
-            Player::Two => 1.0 - mean,
+        let anchor = match self.cfg.objective {
+            Objective::WinProbability => Player::One,
+            Objective::TargetKind(_) => self.me,
+        };
+        if mover == anchor {
+            mean
+        } else {
+            1.0 - mean
         }
     }
 
@@ -622,7 +812,7 @@ impl Tree {
                 visits: 0,
                 value_sum: 0.0,
                 kind: Kind::Terminal {
-                    value: value_of(result),
+                    value: objective_value_of(result, self.cfg.objective, self.me),
                 },
             };
         }
@@ -630,7 +820,11 @@ impl Tree {
         if self.buf.is_empty() {
             // `legal_actions` is empty exactly when the game is over, so this
             // is unreachable; score it rather than trusting the invariant.
-            let value = value_of(duels_core::scoring::civilian_result(&state));
+            let value = objective_value_of(
+                duels_core::scoring::civilian_result(&state),
+                self.cfg.objective,
+                self.me,
+            );
             return Node {
                 state,
                 visits: 0,
@@ -926,18 +1120,22 @@ impl Tree {
                 match finished {
                     // The game ended inside the window, so there is a real
                     // result and no judgement to make.
-                    Some(result) => value_of(result),
+                    Some(result) => objective_value_of(result, self.cfg.objective, self.me),
                     None => match self.eval_root.as_ref() {
                         Some(root) => leaf::static_value(&state, root),
-                        None => value_of(rollout::play_out(
-                            &mut state,
-                            &self.cfg.rollout,
-                            &self.cfg.race,
-                            &mut self.buf,
-                            &mut self.wbuf,
-                            rng,
-                            self.cfg.max_rollout_plies,
-                        )),
+                        None => objective_value_of(
+                            rollout::play_out(
+                                &mut state,
+                                &self.cfg.rollout,
+                                &self.cfg.race,
+                                &mut self.buf,
+                                &mut self.wbuf,
+                                rng,
+                                self.cfg.max_rollout_plies,
+                            ),
+                            self.cfg.objective,
+                            self.me,
+                        ),
                     },
                 }
             }
@@ -984,7 +1182,7 @@ impl Tree {
             rng,
             self.cfg.max_rollout_plies,
         );
-        value_of(result)
+        objective_value_of(result, self.cfg.objective, self.me)
     }
 
     /// [`leaf::static_value`] of `node`, or `None` if this tree has no
@@ -998,7 +1196,12 @@ impl Tree {
     /// network.
     fn learned_from(&self, node: NodeId) -> Option<f64> {
         let net = self.learned_net.as_ref()?;
-        Some(leaf::learned_value(&self.nodes[node as usize].state, net))
+        Some(leaf::learned_value(
+            &self.nodes[node as usize].state,
+            net,
+            self.cfg.objective,
+            self.me,
+        ))
     }
 
     /// One selection / expansion / playout / backpropagation cycle.
@@ -1359,7 +1562,17 @@ impl Tree {
 
     fn eval_legacy_learned_from(&self, node: NodeId) -> Option<f64> {
         let net = self.learned_net.as_ref()?;
-        Some(leaf::learned_value(&self.nodes[node as usize].state, net))
+        // Threaded through like the live `learned_from` above: the
+        // equivalence tests that drive this frozen copy only ever build it
+        // from `Config::default`/`eval_base`/`rollout_base`, all of which
+        // leave `objective` at `Objective::WinProbability`, so this reads
+        // identically to the pre-`Objective` call it replaces.
+        Some(leaf::learned_value(
+            &self.nodes[node as usize].state,
+            net,
+            self.cfg.objective,
+            self.me,
+        ))
     }
 
     fn eval_legacy_leaf_value(&mut self, node: NodeId, rng: &mut StdRng) -> f64 {
@@ -1754,6 +1967,7 @@ pub(crate) fn backpropagate(nodes: &mut [Node], path: &[NodeId], value: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duels_core::testing::StateBuilder;
     use rand::SeedableRng;
 
     fn terminal(value: f64) -> Node {
@@ -1933,6 +2147,206 @@ mod tests {
             0.0
         );
         assert_eq!(value_of(GameResult::Draw), 0.5);
+    }
+
+    /// [`Config::objective`]'s off value must reproduce [`value_of`]
+    /// bit-for-bit, over every kind of finished game, **regardless of `me`**
+    /// -- this is the `docs/conventions.md` proof that a new opt-in `Config`
+    /// field changes nothing when left at its default, and it holds by
+    /// construction here: [`objective_value_of`] at
+    /// [`Objective::WinProbability`] is a pure delegation to [`value_of`]
+    /// with no arithmetic in between and `me` unused, so there is no
+    /// floating-point reassociation for this test to miss, and no way for
+    /// `me` to leak in.
+    #[test]
+    fn objective_win_probability_is_bit_identical_to_value_of() {
+        use VictoryKind::{
+            CivilianTiebreak, CivilianVictory, MilitarySupremacy, ScientificSupremacy,
+        };
+        let results = [
+            GameResult::Draw,
+            GameResult::Win {
+                winner: Player::One,
+                kind: MilitarySupremacy,
+            },
+            GameResult::Win {
+                winner: Player::Two,
+                kind: MilitarySupremacy,
+            },
+            GameResult::Win {
+                winner: Player::One,
+                kind: ScientificSupremacy,
+            },
+            GameResult::Win {
+                winner: Player::Two,
+                kind: ScientificSupremacy,
+            },
+            GameResult::Win {
+                winner: Player::One,
+                kind: CivilianVictory,
+            },
+            GameResult::Win {
+                winner: Player::Two,
+                kind: CivilianVictory,
+            },
+            GameResult::Win {
+                winner: Player::One,
+                kind: CivilianTiebreak,
+            },
+            GameResult::Win {
+                winner: Player::Two,
+                kind: CivilianTiebreak,
+            },
+        ];
+        for result in results {
+            for me in [Player::One, Player::Two] {
+                assert_eq!(
+                    objective_value_of(result, Objective::WinProbability, me),
+                    value_of(result),
+                    "objective_value_of disagreed with value_of for {result:?} (me={me:?})"
+                );
+            }
+        }
+        // And the field really is `Config::default`'s objective, not just an
+        // option that happens to exist.
+        assert_eq!(Config::default().objective, Objective::WinProbability);
+    }
+
+    /// The specialist reward is anchored to `me` — the seat the tree is
+    /// actually searching for — not to a game-fixed `Player::One`.
+    ///
+    /// This replaces an earlier version of this test (and an earlier version
+    /// of [`objective_value_of`]) that pinned the reward to a hardcoded
+    /// `Player::One` regardless of `me`, on the mistaken assumption that this
+    /// mirrored [`value_of`]'s own `Player::One` anchoring safely. It does
+    /// not: `value_of`'s anchor is safe to fix at `Player::One` for *either*
+    /// seat's tree only because `P(One wins) = 1 - P(Two wins)` always holds
+    /// (win/loss is complementary), which [`Tree::exploit`]'s flip relies on.
+    /// `P(One wins by kind K)` and `P(Two wins by kind K)` are **not**
+    /// complementary — most games neither player wins by a specific kind —
+    /// so a tree searching for `Player::Two` that scored its own reward by
+    /// "did `Player::One` get the target kind" was rewarding the *wrong
+    /// player's* achievement throughout. This was caught empirically: a
+    /// science specialist showed real science-seeking behaviour as
+    /// `Player::One` (54.7% science-race exposure, well above the ~31%
+    /// generalist baseline) and none at all as `Player::Two` (0% exposure,
+    /// 0/150 wins) in the same measurement run.
+    #[test]
+    fn target_kind_terminal_values_are_anchored_to_me_not_player_one() {
+        let science = Objective::TargetKind(VictoryKind::ScientificSupremacy);
+
+        // Each seat's own target-kind win scores 1.0 for `me` == that seat,
+        // and 0.0 for `me` == the other seat: the reward genuinely swaps with
+        // `me`, rather than staying pinned to one player regardless.
+        for (winner, me, expected) in [
+            (Player::One, Player::One, 1.0),
+            (Player::One, Player::Two, 0.0),
+            (Player::Two, Player::Two, 1.0),
+            (Player::Two, Player::One, 0.0),
+        ] {
+            assert_eq!(
+                objective_value_of(
+                    GameResult::Win {
+                        winner,
+                        kind: VictoryKind::ScientificSupremacy,
+                    },
+                    science,
+                    me,
+                ),
+                expected,
+                "winner={winner:?}, me={me:?}: the reward must track whether \
+                 `me` (not a fixed seat) won by the target kind"
+            );
+        }
+
+        // Whichever seat is `me`, winning the *wrong* kind must not score as
+        // a target win.
+        for me in [Player::One, Player::Two] {
+            assert_eq!(
+                objective_value_of(
+                    GameResult::Win {
+                        winner: me,
+                        kind: VictoryKind::MilitarySupremacy,
+                    },
+                    science,
+                    me,
+                ),
+                0.0,
+                "me={me:?} winning the *wrong* kind must not score as a target win"
+            );
+            assert_eq!(
+                objective_value_of(GameResult::Draw, science, me),
+                0.0,
+                "a draw is not a target win (me={me:?})"
+            );
+        }
+
+        // The civilian-tiebreak/civilian-victory distinction `Outcome::of`
+        // already collapses: this objective makes the identical call, so a
+        // civilian target matches either variant, for whichever seat is `me`.
+        let civilian = Objective::TargetKind(VictoryKind::CivilianVictory);
+        for me in [Player::One, Player::Two] {
+            assert_eq!(
+                objective_value_of(
+                    GameResult::Win {
+                        winner: me,
+                        kind: VictoryKind::CivilianTiebreak,
+                    },
+                    civilian,
+                    me,
+                ),
+                1.0,
+                "a civilian target must match the tiebreak variant, not just \
+                 the exact enum case (me={me:?})"
+            );
+        }
+    }
+
+    /// [`Tree::exploit`]'s anchor for [`Objective::TargetKind`] must be `me`,
+    /// not a fixed `Player::One` -- the direct regression test for the bug
+    /// [`target_kind_terminal_values_are_anchored_to_me_not_player_one`]'s
+    /// docs describe. A hand-built two-node tree where the child is a
+    /// terminal `Player::Two` science win: searched as `me = Player::Two`,
+    /// `exploit` from `Two`'s own decision node must read this as a `1.0`
+    /// (a real target win for the seat that's searching), not as `0.0` (what
+    /// the old `Player::One`-anchored code, flipped for `Two`, produced).
+    #[test]
+    fn exploit_anchors_target_kind_to_me_not_a_fixed_player() {
+        let science = Objective::TargetKind(VictoryKind::ScientificSupremacy);
+        let cfg = Config {
+            objective: science,
+            ..Config::default()
+        };
+        let mut rng = StdRng::seed_from_u64(0);
+        // A tree whose root move belongs to Player Two, so `Tree::me` is
+        // `Player::Two` -- exactly the seat the reported bug affected.
+        let root_state = StateBuilder::new().current(Player::Two).build();
+        let mut tree = Tree::new(root_state, vec![Action::Discard { slot: 0 }], cfg, &mut rng);
+        assert_eq!(tree.me, Player::Two, "the root's mover must set Tree::me");
+
+        // Two won by science: a real target-win for the seat that's
+        // searching, and the *only* fixture this test needs. `mean()` reads
+        // `value_sum`/`visits`, not the `Kind::Terminal` label, so both are
+        // set to one visit worth of this exact backed-up value.
+        let value = objective_value_of(
+            GameResult::Win {
+                winner: Player::Two,
+                kind: VictoryKind::ScientificSupremacy,
+            },
+            science,
+            tree.me,
+        );
+        let mut node = terminal(value);
+        node.visits = 1;
+        node.value_sum = value;
+        let child = tree.push(node);
+
+        assert_eq!(
+            tree.exploit(child, Player::Two),
+            1.0,
+            "Player Two's own science win must read as a full target-win, not \
+             be flipped away by an anchor stuck on Player::One"
+        );
     }
 
     /// `best_of` over one tree must be the pre-ensemble rule, term for term,

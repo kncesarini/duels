@@ -365,6 +365,224 @@
 //! [`duels_core::Player::One`]'s perspective; the zero-sum flip happens once,
 //! at selection) and the widening rule are documented in the `tree` module.
 //!
+//! # Specialist objectives (`Config::objective`): how purely can the same
+//! weights be searched toward one victory kind?
+//!
+//! `duels-value`'s crate docs end on a proposal: rather than another blind
+//! corpus-size increase, try **specialist value functions/agents trained
+//! under different reward shaping** — one rewarded only for scientific
+//! supremacy, one only for military, one only civilian — as a deliberately
+//! different idea from "add more games of the same kind". [`Objective`] is
+//! that idea, built the cheapest way it can be: **no retrain.** `v2.bin`
+//! already predicts a four-way softmax over [`duels_value::Outcome`], so a
+//! specialist search does not need a new net — it needs to read a different
+//! *component* of the existing one, and to score a finished game by a
+//! different rule. [`Objective::WinProbability`] (the default, unchanged) is
+//! [`duels_value::Dist::win_probability`] at the leaf and [`crate::tree::value_of`]
+//! at a terminal, exactly as before, `me` unused. [`Objective::TargetKind`] is
+//! [`duels_value::Dist::p`] of the one matching outcome at the leaf,
+//! evaluated **for `me`** — the seat this specific tree is searching for, not
+//! a game-fixed constant ([`leaf::learned_value`]'s two arms) — and
+//! [`crate::tree::objective_value_of`] at a terminal: `1.0` for a win **by
+//! `me`** of exactly that kind, `0.0` for everything else — the *other* seat
+//! winning by any kind, a draw, or `me` winning by a *different* kind. Both
+//! arms are bit-identical to the pre-existing path at the default
+//! (`tests::objective_win_probability_is_bit_identical_to_value_of`,
+//! `leaf::tests::learned_value_at_win_probability_is_bit_identical_to_win_probability`).
+//!
+//! **The point of this section is explicitly not strength.** Nothing below is
+//! a candidate for `Config::default`, none of it is on the ladder, and a
+//! specialist losing to the generalist is the expected, uninteresting result,
+//! not a failure. The question this measures is **purity**: does a specialist
+//! actually play differently, and does it convert and *provoke* its target
+//! victory kind far more than the generalist does — not whether it wins more
+//! often.
+//!
+//! ## A correctness bug this section's first measurement round had, and why
+//! it invalidated that round rather than just limiting it
+//!
+//! An earlier version of [`Objective::TargetKind`]'s reward was anchored to a
+//! **literal, game-fixed [`duels_core::Player::One`]** — "did `Player::One` win by kind
+//! K" — regardless of which seat the tree calling it was actually searching
+//! for, on the reasoning that this mirrored [`crate::tree::value_of`]'s own
+//! `Player::One` anchoring. It does not, and the difference is not a matter
+//! of degree: "Player One wins" and "Player Two wins" partition the outcome
+//! space (up to a draw), so [`crate::tree::Tree::exploit`]'s `1.0 - mean` flip
+//! at a Player Two node correctly reads as "Player Two's own win
+//! probability". "Player One wins by kind K" and "Player Two wins by kind K"
+//! do **not** partition the outcome space — most games, neither player wins
+//! by a specific rare kind — so the identical flip at a Player Two node
+//! reads as "how often does One *not* get kind K", a quantity dominated by
+//! the ~90%+ mass in which *nobody* achieves K and therefore almost constant
+//! regardless of Two's actual prospects. A tree built for `Player::Two` was,
+//! in effect, searching to advance an all-but-uninformative signal.
+//!
+//! This was found, not merely suspected, from the first measurement round's
+//! own numbers: split by seat, the science specialist showed real, sharp
+//! target-seeking behaviour as `Player::One` (100% purity, well-elevated
+//! science-race exposure) and **no** target-seeking behaviour at all as
+//! `Player::Two` (0% science-race exposure, 0/150 wins in one matchup). That
+//! is the exact signature the mechanism above predicts, and it was reported
+//! in that round's writeup — but reported as a documented limitation and a
+//! "what's next" item, when a defect this large (every pooled purity and
+//! race-seeking number in that round mixed a fully-functional `Player::One`
+//! search with a non-functional `Player::Two` one) makes every pooled number
+//! in that round's tables unreliable, not merely caveated. **The fix
+//! (anchor the reward to `Tree::me`, [`crate::tree::Tree`]'s own root seat —
+//! instead of a fixed `Player::One`) is what this crate now does,
+//! and it needed a full remeasurement, not an addendum, before any purity
+//! number here could be trusted.** `tree::tests::exploit_anchors_target_kind_to_me_not_a_fixed_player`
+//! and `tree::tests::target_kind_terminal_values_are_anchored_to_me_not_player_one`
+//! are the regression tests for it.
+//!
+//! ## Measurement setup
+//!
+//! `duels-arena match`, `--budget nodes:2000` (the ladder's production
+//! budget), `--games 300` (150 paired, seat-swapped seeds), `--seed 1001`,
+//! one match per (specialist, opponent) cell: each of the three specialists
+//! (`mcts-value:objective=science`, `objective=military`, `objective=civilian`)
+//! against each of four opponents — the generalist itself (`mcts-value`,
+//! self-play), `mcts-eval`, `mcts-uct`, and `alphabeta` — plus the generalist
+//! against the same four, as the baseline every purity number below is read
+//! against. Sixteen cells, 4,800 games total, run against the seat-anchoring
+//! fix above (the numbers in the section immediately above this one were
+//! withdrawn and re-run from scratch; nothing below reuses a pre-fix figure).
+//! This is a descriptive/behavioural measurement, not a strength claim, so it
+//! is not run at SPRT-rigor sample sizes; Elo is reported below purely as
+//! context.
+//!
+//! **Sanity check.** Every one of the 4,800 games completed normally (a
+//! legality violation panics rather than corrupting a result) with game
+//! lengths in the same 36-77-ply range across every specialist and the
+//! generalist alike — no stalling, no outlier caused by chasing an
+//! unreachable target.
+//!
+//! ## The seat symmetry, confirmed
+//!
+//! Splitting every game by which literal seat the specialist occupied (600
+//! games per seat per specialist, pooled across all four opponents) is the
+//! direct check on the fix above:
+//!
+//! | specialist | as Player One: win rate, purity, target-race exposure | as Player Two: win rate, purity, target-race exposure |
+//! |---|---|---|
+//! | `objective=science` | 45.0%, 100.0%, 83.5% | 50.8%, 100.0%, 86.0% |
+//! | `objective=military` | 45.7%, 99.3%, 80.3% | 48.2%, 99.7%, 82.0% |
+//! | `objective=civilian` | 62.0%, 100.0%, (4.5% science / 33.5% military) | 58.3%, 100.0%, (7.0% science / 35.0% military) |
+//!
+//! Compare this to the first round's science specialist: 45.0% win rate /
+//! 100.0% purity / 83.5% exposure as Player One, against **1.0%** win rate /
+//! 3.3% exposure as Player Two — the exact collapse the correctness section
+//! above describes. Every specialist is now within a few points of itself
+//! across seats on every measure, which is what a genuinely seat-symmetric
+//! specialist should look like, and is the property the fix was built to
+//! restore.
+//!
+//! ## Conversion: when a specialist wins, how does it win?
+//!
+//! The generalist's own baseline mix, aggregated over all four opponents (its
+//! self-play wins from both seats, plus its wins against `mcts-eval`,
+//! `mcts-uct` and `alphabeta` — 980 wins):
+//!
+//! | kind | share of the generalist's own wins |
+//! |---|---|
+//! | military supremacy | 12.9% |
+//! | scientific supremacy | 31.5% |
+//! | civilian victory | 54.7% |
+//! | civilian tiebreak | 0.9% |
+//!
+//! Each specialist's own win-kind mix, aggregated the same way (both seats,
+//! all four opponents):
+//!
+//! | specialist | wins | target-kind wins | purity |
+//! |---|---:|---:|---|
+//! | `objective=science` | 575 | 575 | **100.0%** |
+//! | `objective=military` | 563 | 560 (2 science, 1 civilian tiebreak) | **99.5%** |
+//! | `objective=civilian` | 722 | 722 (708 civilian, 14 tiebreak) | **100.0%** |
+//!
+//! All three specialists now convert essentially every win into their target
+//! kind — civilian included, which the first (buggy) round measured at only
+//! 88.9% because half its Player Two games were not actually pursuing
+//! civilian victory at all. With the anchor fixed, there is no meaningful
+//! purity gap left between the three: **the "civilian is the least dramatic"
+//! prediction was itself an artefact of the seat bug**, not a property of the
+//! civilian objective — once both seats genuinely pursue their target, all
+//! three specialists convert almost perfectly.
+//!
+//! ## Race-seeking: does a specialist provoke more races, not just convert
+//! the ones that arise?
+//!
+//! Game-level race exposure (`crate::match_runner::race_exposure_at`: either
+//! player within one step of an instant win, regardless of who eventually
+//! wins), specialist vs. the generalist baseline in the *same* opponent slot:
+//!
+//! | opponent | baseline military / science | `objective=military` military | `objective=science` science |
+//! |---|---|---|---|
+//! | generalist (self-play) | 49.7% / 30.7% | 60.3% | 57.7% |
+//! | `mcts-eval` | 42.0% / 44.0% | **85.7%** | **90.3%** |
+//! | `mcts-uct` | 48.3% / 43.0% | **85.3%** | **97.0%** |
+//! | `alphabeta` | 44.0% / 29.7% | **93.3%** | **94.0%** |
+//!
+//! Both specialists provoke dramatically more of their target race against
+//! every opponent, third parties especially — science races nearly triple
+//! their baseline rate against `mcts-uct` and `alphabeta`, and military races
+//! roughly double against every third party. This is now an unambiguous
+//! result, not the mixed one the seat-broken first round reported: fixing the
+//! anchor did not just repair the losing seat, it more than doubled the
+//! measured race-seeking effect in the *winning* seat too, since half of what
+//! looked like "the specialist's Player One behaviour" in the first round's
+//! pooled tables was being diluted by a non-functional Player Two half.
+//!
+//! The civilian specialist's signature is the mirror image, and sharper still
+//! with the fix: it *suppresses both other races* far below baseline against
+//! every opponent —
+//!
+//! | opponent | baseline military / science | `objective=civilian` military / science |
+//! |---|---|---|
+//! | generalist (self-play) | 49.7% / 30.7% | 39.0% / 22.0% |
+//! | `mcts-eval` | 42.0% / 44.0% | 32.0% / **0.7%** |
+//! | `mcts-uct` | 48.3% / 43.0% | 33.3% / **0.0%** |
+//! | `alphabeta` | 44.0% / 29.7% | 32.7% / **0.3%** |
+//!
+//! Against every third party the science race is all but eliminated (0.0-0.7%
+//! against a 29.7-44.0% baseline) and the military race is meaningfully
+//! reduced too — a purely civilian strategy denying the opponent a shot at
+//! *either* supremacy condition, not merely failing to pursue them itself.
+//!
+//! ## Overall win rate, as context — not a verdict
+//!
+//! Pooled over all four opponents, 1,200 games each: `objective=science`
+//! 47.9%, `objective=military` 46.9%, `objective=civilian` 60.2% (the
+//! generalist wins 51.7-87.0% across the same four opponents, for scale). All
+//! three are markedly stronger than the seat-broken first round measured
+//! (23.0% / 26.4% / 43.6%) simply because a specialist that actually plays
+//! toward its goal in *both* seats is a better player than one that is
+//! only functional in one — `objective=military` even shows a positive point
+//! estimate against `mcts-uct` (+41.8 `[+2.2, +81.3]`) and `alphabeta`
+//! (+135.8 `[+93.5, +178.1]`), and `objective=civilian` against `mcts-uct`
+//! (+120.0) and `alphabeta` (+250.7). None of that promotes any of these to a
+//! ladder candidate — the point of this section remains purity, not
+//! strength — but it is worth stating plainly: a specialist that is genuinely
+//! seat-symmetric is not obviously the weak, narrow thing "specialist" might
+//! suggest, in this budget range and against this ladder.
+//!
+//! ## What's next
+//!
+//! 1. **A retrained, binary-target net**, per `duels-value`'s own suggestion:
+//!    "did this player win by science" vs. everything else, as a dedicated
+//!    fit rather than a repurposed component of the four-way head. Whether it
+//!    sharpens a specialist beyond what reading `v2.bin`'s existing head
+//!    already achieves is an open question — the conversion numbers above say
+//!    the *leaf's* own ceiling is already close to 100% pure once the search
+//!    around it is seat-correct, which narrows what a retrain would need to
+//!    improve on.
+//! 2. **Genuine sparring partners, not a mixture-of-experts blend.** These
+//!    three specialists were built to be measurably different opponents for
+//!    the arena, and the numbers above say they are: three agents that share
+//!    every weight with the champion and one exploration constant, and still
+//!    play recognisably different, seat-consistent games. Whether that
+//!    diversity is useful training signal for a *future* generalist is a
+//!    separate question this round deliberately did not ask.
+//!
 //! # Reproducing
 //!
 //! ```text
@@ -410,7 +628,7 @@ use rand::SeedableRng;
 
 pub use leaf::LeafValue;
 pub use rollout::{RaceWeights, RolloutWeights, RAIL};
-pub use tree::{Config, PriorMode, RootStats};
+pub use tree::{Config, Objective, PriorMode, RootStats};
 
 /// A frozen historical `duels-value` weights generation, embedded for A/B
 /// measurement against the live default via
