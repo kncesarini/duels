@@ -217,7 +217,7 @@ pub const ANCHOR_ELO: f64 = 1000.0;
 /// **The caveat is not a footnote, and promoting this agent does not retire
 /// it: the margin is a targeted counter to one opponent's known blind spot,
 /// not a uniform improvement in strength.** `mcts-eval`'s value is
-/// miscalibrated on the science read (`docs/` has the `science_calibration`
+/// miscalibrated on the science read (`examples/science_residual.rs` is the
 /// investigation that established this independently), and `mcts-value` wins
 /// by *routing through* that gap rather than by playing better everywhere. The
 /// victory-kind breakdown is unambiguous about it — in the confirmation run

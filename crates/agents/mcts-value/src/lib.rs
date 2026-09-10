@@ -24,9 +24,9 @@
 //! it wins them out of its *own* civilian column rather than adding to its
 //! total. What this agent is, on the evidence, is **a targeted counter to
 //! `mcts-eval`'s already-documented science-value miscalibration** (see
-//! `duels-eval`'s `science_calibration`, PR #57) rather than a better player in
-//! general. The "What it does not measure" section below is the load-bearing
-//! one; do not quote the headline numbers without it.
+//! `duels-arena`'s `science_residual` example, PR #57) rather than a better
+//! player in general. The "What it does not measure" section below is the
+//! load-bearing one; do not quote the headline numbers without it.
 //!
 //! This agent shipped *registered but deliberately unrated* — playable and
 //! spec-addressable, off `duels_arena::leaderboard::LADDER` — precisely
@@ -250,8 +250,8 @@
 //!
 //! That is the whole finding, stated plainly: **this agent exploits a
 //! calibration error in one specific opponent.** The error is not a surprise —
-//! `duels-eval`'s `science_calibration` (PR #57) measured and documented it
-//! before this line of work started — and exploiting it is a legitimate,
+//! `duels-arena`'s `science_residual` example (PR #57) measured and documented
+//! it before this line of work started — and exploiting it is a legitimate,
 //! reproducible Elo gain against `mcts-eval`. It is just not evidence of a
 //! better player.
 //!

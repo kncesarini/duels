@@ -2,9 +2,18 @@
 //! race?** A read-only diagnostic over an existing value corpus.
 //!
 //! ```text
-//! cargo run --release -p duels-arena --example science_calibration -- \
+//! cargo run --release -p duels-arena --example science_residual -- \
 //!     arena/corpus/mcts-eval-nodes2000.jsonl
 //! ```
+//!
+//! Not to be confused with `duels-eval`'s `examples/science_calibration.rs`,
+//! which this file was called until the two collided on one output filename.
+//! That one asks whether `duels_eval::win_probability` is well-calibrated per
+//! `(age, distinct_science)` bucket over fresh self-play, and its answers are
+//! written in victory points per science rung. This one holds a *search's*
+//! backed-up root value fixed and asks whether `duels_strategy::science_read`
+//! still predicts the outcome inside a value band — a residual test over an
+//! existing corpus, which is what "residual" in the name means.
 //!
 //! # The question
 //!
@@ -164,15 +173,14 @@ const BOOTSTRAP_SEED: u64 = 0x5C1E_5EED;
 
 // --- the corpus format, read-only ------------------------------------------
 
+/// One recorded decision. `value_corpus.rs` also writes `visits` and `chosen`
+/// per decision; neither is read here, and serde ignores unknown fields by
+/// default, so they are simply not declared.
 #[derive(Debug, Clone, Deserialize)]
 struct Decision {
     ply: u32,
     mover: Player,
     value: f64,
-    #[allow(dead_code)]
-    visits: u64,
-    #[allow(dead_code)]
-    chosen: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -241,7 +249,7 @@ fn main() {
         .or_else(|| flag("--corpus"))
         .unwrap_or_else(|| {
             eprintln!(
-                "science_calibration <corpus.jsonl> [--games N] \
+                "science_residual <corpus.jsonl> [--games N] \
                  [--mag-bins 0.02,0.10,0.30,0.60]\n\
                  \n\
                  Joint calibration of the corpus's recorded search value against\n\
