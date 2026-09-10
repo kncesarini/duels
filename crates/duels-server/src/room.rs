@@ -826,9 +826,9 @@ mod tests {
 
     /// How long one analysis takes on a real mid-game position. Ignored by
     /// default (a timing measurement is not a correctness assertion, and
-    /// `CLAUDE.md` keeps benchmark-shaped runs out of the default `cargo test`
-    /// path); run with `cargo test -p duels-server --release -- --ignored
-    /// --nocapture analysis_cost`.
+    /// `docs/conventions.md` keeps benchmark-shaped runs out of the default
+    /// `cargo test` path); run with `cargo test -p duels-server --release --
+    /// --ignored --nocapture analysis_cost`.
     #[tokio::test]
     #[ignore = "timing measurement, not an assertion"]
     async fn analysis_cost_on_a_real_position() {

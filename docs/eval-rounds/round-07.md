@@ -317,7 +317,7 @@ result. It is the more correct model and it is available as an option with
 the measurement written down.
 
 **3. `EvalWeights::to_move` (default `0.0`).** The right to move is worth
-a great deal in this game (`CLAUDE.md` records ~67/33 between equal
+a great deal in this game (`../conventions.md` records ~67/33 between equal
 `mcts-uct` configurations) and an extra turn is the only thing that
 re-assigns the remaining slots. Nothing priced either. Two things came out
 of trying: first, a term reading `GameState::extra_turn` is **exactly zero

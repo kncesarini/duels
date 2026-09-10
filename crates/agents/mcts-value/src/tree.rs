@@ -1223,13 +1223,13 @@ pub(crate) fn best_of(trees: &[Tree]) -> Option<Action> {
 ///
 /// This is **the load-bearing test asset of this crate**, and it is what makes
 /// the "self-contained copy" invariant checkable rather than merely asserted.
-/// `CLAUDE.md` forbids one agent crate depending on another, so the search
-/// below the leaf value here is a copy of `mcts-eval`'s; every strength number
-/// in the crate docs is an *ablation* against that agent, and the ablation only
-/// means anything if the copy really is the same search. A frozen second copy
-/// is how that gets said in one binary, node for node, rather than by two
-/// humans reading two crates side by side — and if somebody edits the live
-/// search, this is the test that notices.
+/// `docs/conventions.md` forbids one agent crate depending on another, so the
+/// search below the leaf value here is a copy of `mcts-eval`'s; every strength
+/// number in the crate docs is an *ablation* against that agent, and the
+/// ablation only means anything if the copy really is the same search. A
+/// frozen second copy is how that gets said in one binary, node for node,
+/// rather than by two humans reading two crates side by side — and if somebody
+/// edits the live search, this is the test that notices.
 ///
 /// It is checked at **every** configuration in the leaf family, not just at
 /// [`Config::eval_base`], so the claim covers this crate's own default leaf as
@@ -2035,7 +2035,7 @@ mod tests {
     /// `expand`/`select_ucb1`/`leaf_value`/`simulate` in the `eval_legacy`
     /// block above.
     ///
-    /// This is the test that makes `CLAUDE.md`'s "agent crates are
+    /// This is the test that makes `docs/conventions.md`'s "agent crates are
     /// self-contained" duplication *checkable* here. Every strength number in
     /// the crate docs is an ablation against `mcts-eval`, so the copy below
     /// this crate's leaf value has to be that agent's search and not a
@@ -2632,10 +2632,10 @@ mod tests {
     }
 
     /// **The determinization-invariance property, for this crate's own leaf.**
-    /// `CLAUDE.md` requires one for any new logic that touches game state, and
-    /// this is the one that covers the default path: the learned leaf value of
-    /// a position must not depend on *which* hidden world the root
-    /// determinization drew, compared bit-for-bit via `to_bits`.
+    /// `docs/conventions.md` requires one for any new logic that touches game
+    /// state, and this is the one that covers the default path: the learned
+    /// leaf value of a position must not depend on *which* hidden world the
+    /// root determinization drew, compared bit-for-bit via `to_bits`.
     ///
     /// `duels-value` holds the same property for the model itself
     /// (`tests/determinization_invariance.rs`); this is the statement one

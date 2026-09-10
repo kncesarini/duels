@@ -15,9 +15,9 @@
 //!
 //! It exists as its own crate because more than one agent is going to want the
 //! evaluation, and this repository's rule is that **no agent crate depends on
-//! another agent crate** (see `CLAUDE.md`). A shared evaluation therefore has
-//! to live below the agents, next to [`duels_strategy`], rather than inside
-//! whichever agent happened to build it first.
+//! another agent crate** (see `docs/conventions.md`). A shared evaluation
+//! therefore has to live below the agents, next to [`duels_strategy`], rather
+//! than inside whichever agent happened to build it first.
 //!
 //! Nothing here is random and nothing here reads a clock: [`Root::new`],
 //! [`evaluate`] and [`expected_value`] are pure functions of the state handed

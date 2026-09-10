@@ -2,8 +2,8 @@
 
 Living reference. Update this file whenever a milestone or checkpoint changes status —
 at a merge that finishes one, when scope on an open one shifts, or when a new one is
-added. This is the source of truth for "where are we"; `CLAUDE.md`'s architecture
-section should stay pointed at this file rather than duplicating a summary.
+added. This is the source of truth for "where are we" — `README.md` and `docs/`
+should point here rather than duplicating a status summary that then drifts.
 
 The table and the four checkpoints below are the original delivery plan from this
 project's kickoff Architect design pass (see `git log` around the M0-M3 PRs for the

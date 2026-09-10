@@ -4,12 +4,13 @@
 //!
 //! # Why this exists, and why `mcts-eval` deliberately has no equivalent
 //!
-//! `CLAUDE.md` records the rule and both of its sides: *whether a search that
-//! consumes a value library should pin a generation depends on whether the
-//! value is incidental to the agent or **is** the agent.* `mcts-eval` is the
-//! second case for `duels-eval` — its whole reason to exist is "`duels-eval`
-//! inside a search", it is meant to strengthen automatically as evaluation
-//! rounds land, and so it pins nothing and holds no golden-values test.
+//! `docs/conventions.md` records the rule and both of its sides: *whether a
+//! search that consumes a value library should pin a generation depends on
+//! whether the value is incidental to the agent or **is** the agent.*
+//! `mcts-eval` is the second case for `duels-eval` — its whole reason to exist
+//! is "`duels-eval` inside a search", it is meant to strengthen automatically
+//! as evaluation rounds land, and so it pins nothing and holds no
+//! golden-values test.
 //!
 //! This crate is the **first** case for `duels-value`, and the argument is not
 //! symmetric with that one:

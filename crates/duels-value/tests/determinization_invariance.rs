@@ -1,6 +1,6 @@
 //! The non-negotiable invariant: `duels-value` never sees hidden information.
 //!
-//! `CLAUDE.md`'s form of this check is "compare two different
+//! The form of this check in `docs/conventions.md` is "compare two different
 //! `Observation::sample_state` draws bit-for-bit (`to_bits()` on floats)", and
 //! that is what this file does — for the feature vector, for the forward pass
 //! over it, and for the scalar a search would consume.

@@ -11,8 +11,8 @@
 //! # The property, and why nothing enforces it
 //!
 //! 7 Wonders Duel is two-player zero-sum with no private information
-//! (`CLAUDE.md`), and a draw is a 0.07% event in the corpus these weights were
-//! fitted on. So for any position,
+//! (`docs/conventions.md`), and a draw is a 0.07% event in the corpus these
+//! weights were fitted on. So for any position,
 //!
 //! ```text
 //! P(win | Player::One) + P(win | Player::Two) ~= 1
@@ -93,12 +93,12 @@
 //! # Why hand-built positions are *also* here, and their sharp caveat
 //!
 //! [`duels_core::testing::StateBuilder`] is this repository's established way
-//! to say exactly what a position is (`CLAUDE.md`, "Testing conventions").
-//! Its own docs are explicit that it "performs no rules validation" and "can
-//! build states that a real game would never reach", and that bites
-//! specifically here: **a truly symmetric board is illegal in this game**,
-//! because every card exists exactly once, so two identical cities cannot
-//! coexist. Positions built that way are off-manifold and a network's
+//! to say exactly what a position is (`docs/conventions.md`, "Testing
+//! conventions"). Its own docs are explicit that it "performs no rules
+//! validation" and "can build states that a real game would never reach", and
+//! that bites specifically here: **a truly symmetric board is illegal in this
+//! game**, because every card exists exactly once, so two identical cities
+//! cannot coexist. Positions built that way are off-manifold and a network's
 //! behaviour off-manifold says nothing about its fit. They are therefore kept
 //! as a labelled diagnostic only, and every *assertion* in this file is made
 //! on positions reached by legal play from [`duels_core::engine::new_game`].

@@ -13,8 +13,9 @@
 //! `tests/determinization_invariance.rs` samples two different concrete
 //! `GameState`s from the same [`duels_core::Observation`] and asserts the two
 //! feature vectors are equal **bit for bit** (`to_bits()` on every `f32`),
-//! which is this repository's established shape for the check (`CLAUDE.md`,
-//! "Non-negotiable invariants"). If a future feature reaches for a hidden
+//! which is this repository's established shape for the check
+//! (`docs/conventions.md`, "Hidden information, and the
+//! determinization-invariance test"). If a future feature reaches for a hidden
 //! identity, that test fails rather than a search quietly getting stronger by
 //! cheating.
 //!

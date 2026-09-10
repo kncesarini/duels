@@ -9,8 +9,9 @@
 //! wrong one for "what would it cost a search to call this evaluation at a
 //! leaf", which is a single `evaluate` on a state the search already holds,
 //! against a `Root` the search would build once per tree node and cache
-//! (`CLAUDE.md`: `duels-strategy`'s reads are cheap enough per node, too
-//! expensive per simulation — and `Root::new` *is* a slate of those reads).
+//! (`docs/conventions.md`: `duels-strategy`'s reads are cheap enough per node,
+//! too expensive per simulation — and `Root::new` *is* a slate of those
+//! reads).
 //!
 //! So this benchmark separates the two:
 //!

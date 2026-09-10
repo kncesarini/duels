@@ -1,13 +1,13 @@
 //! The measurement protocol as a tool, rather than as a ritual.
 //!
-//! `CLAUDE.md` spells out how this project validates an agent change: paired
-//! seeds and swapped seats, **two or more disjoint seed ranges**, **both a
-//! `Nodes` and a `TimeMs` budget**, an explicit control arm, Elo with a
-//! confidence interval rather than a bare win count, and an SPRT verdict. All
-//! of that was prose, executed by hand as a series of `duels-arena match`
-//! invocations whose numbers were then transcribed somewhere by eye — which
-//! is how a session ends up hunting an earlier run's raw JSON out of
-//! `arena/results/` to pool it with a later one.
+//! `docs/conventions.md` spells out how this project validates an agent
+//! change: paired seeds and swapped seats, **two or more disjoint seed
+//! ranges**, **both a `Nodes` and a `TimeMs` budget**, an explicit control
+//! arm, Elo with a confidence interval rather than a bare win count, and an
+//! SPRT verdict. All of that was prose, executed by hand as a series of
+//! `duels-arena match` invocations whose numbers were then transcribed
+//! somewhere by eye — which is how a session ends up hunting an earlier run's
+//! raw JSON out of `arena/results/` to pool it with a later one.
 //!
 //! This module runs that protocol as one command and emits **one
 //! machine-readable verdict** ([`ExperimentSummary`], written as JSON)

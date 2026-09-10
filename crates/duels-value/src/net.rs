@@ -272,9 +272,9 @@ impl Net {
     ///
     /// Not `#[cfg(test)]`: it is reachable from an agent's configuration on
     /// purpose, so the Elo numbers taken before the unroll can be reproduced
-    /// exactly rather than approximately. `CLAUDE.md`'s first rule of agent
-    /// development is that the old behaviour stays available as an explicit,
-    /// proven-identical option.
+    /// exactly rather than approximately. The first rule of agent development
+    /// in `docs/conventions.md` is that the old behaviour stays available as an
+    /// explicit, proven-identical option.
     pub fn forward_serial(&self, x: &[f32; NUM_FEATURES]) -> [f32; NUM_OUTCOMES] {
         // Hidden layer. Walked as `hidden` contiguous rows of `NUM_FEATURES`,
         // which is why `w1` is stored row-major. `MAX_HIDDEN` bounds both this

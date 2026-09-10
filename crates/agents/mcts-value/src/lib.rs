@@ -81,12 +81,12 @@
 //!
 //! The search machinery itself — `tree`, `chance`, `rollout`, `leaf` and the
 //! [`Agent`] impl below — is a deliberate **copy** of `mcts-eval`'s (which is
-//! itself a copy of `mcts-uct`'s), not a dependency on it. `CLAUDE.md`'s "agent
-//! crates are self-contained" invariant forbids one agent crate depending on
-//! another, and this is the same accepted, intentional duplication `mcts-eval`
-//! already carries. `duels-value` and `duels-eval` are a different matter: they
-//! are shared libraries *below* the agents, which is exactly what the layering
-//! is for.
+//! itself a copy of `mcts-uct`'s), not a dependency on it.
+//! `docs/conventions.md`'s "agent crates are self-contained" invariant forbids
+//! one agent crate depending on another, and this is the same accepted,
+//! intentional duplication `mcts-eval` already carries. `duels-value` and
+//! `duels-eval` are a different matter: they are shared libraries *below* the
+//! agents, which is exactly what the layering is for.
 //!
 //! ## The copies drift, and nothing mechanical stops them
 //!
@@ -138,11 +138,11 @@
 //! So the `golden` module pins twenty fixed positions' predictions to
 //! `weights/v1.bin` within a tight tolerance, and pins
 //! [`duels_value::default_weights_id`]'s content hash outright. A retrain
-//! **fails a test** rather than re-defining the agent, exactly as `CLAUDE.md`'s
-//! standing prior asks for a search whose identity is its search and whose
-//! value input is incidental. `Config::describe` records the same weights
-//! identity in every [`AgentSpec`], so a results file names the model that
-//! produced it.
+//! **fails a test** rather than re-defining the agent, exactly as
+//! `docs/conventions.md`'s standing prior asks for a search whose identity is
+//! its search and whose value input is incidental. `Config::describe` records
+//! the same weights identity in every [`AgentSpec`], so a results file names
+//! the model that produced it.
 //!
 //! # What it measures
 //!
@@ -162,17 +162,18 @@
 //! the budget the nightly round robin runs at, and it is the weakest of the
 //! three — the effect grows with budget rather than being a low-budget
 //! artefact. The `TimeMs(1000)` row was taken with each candidate run strictly
-//! one after the other on a machine verified quiet by a process snapshot before
-//! and after every cell, per `CLAUDE.md`'s warning about load-sensitive
-//! wall-clock runs.
+//! one after the other on a machine verified quiet by a process snapshot
+//! before and after every cell, per `docs/conventions.md`'s warning about
+//! load-sensitive wall-clock runs.
 //!
 //! ## The exploration constant, re-derived
 //!
-//! `CLAUDE.md`: *"any future change to what a leaf backs up should re-derive
-//! `c` before measuring"*. This is that re-derivation, and it was worth about
-//! 83 Elo. [`LeafValue::Blend`]'s `c = c₀·(1 - w)` rescaling gives no guidance
-//! for a leaf that replaces the playout outright — there is no Bernoulli spread
-//! left to shrink — so `c` was swept at `Nodes(32000)`, 600 games per row:
+//! `docs/conventions.md`: *"any future change to what a leaf backs up should
+//! re-derive `c` before measuring"*. This is that re-derivation, and it was
+//! worth about 83 Elo. [`LeafValue::Blend`]'s `c = c₀·(1 - w)` rescaling gives
+//! no guidance for a leaf that replaces the playout outright — there is no
+//! Bernoulli spread left to shrink — so `c` was swept at `Nodes(32000)`, 600
+//! games per row:
 //!
 //! | `c` | Elo vs `mcts-eval` | directory |
 //! |---|---|---|
