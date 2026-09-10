@@ -285,12 +285,23 @@ pub struct Config {
     /// crate's default leaf included, so unlike [`Config::eval_override`] this
     /// field is squarely on the default path.
     ///
-    /// The four-way unroll is the default. It is worth `1.41x` on the forward
-    /// pass and measured Elo-neutral (`-1.7 [-25.8, +22.3]` over 798 games),
-    /// but it *reassociates a floating-point sum*, so it is not bit-identical
-    /// to the arithmetic some of the crate docs' earlier rows were taken with.
-    /// That is exactly why `duels_value::Summation::Serial` stays reachable
-    /// rather than being deleted (`mcts-value:value_sum=serial`) and why
+    /// The transposed-`w1` axpy order is the default, promoted over the
+    /// four-way unroll it replaced: `duels_value`'s crate docs and
+    /// `examples/value_bench.rs` measure it at a further real speedup on this
+    /// forward pass, and unlike the unroll it is *not a reassociation* —
+    /// `duels_value::tests::summation_equivalence` checks it agrees with
+    /// `Summation::Serial` **bit for bit**, not merely to within tolerance.
+    /// Its arena validation at production's `Budget::TimeMs(1_000)` is
+    /// `arena/results/experiments/axpy-vs-default-timems1000-quiet` (and two
+    /// earlier, noisier-machine batches alongside it) — consistently
+    /// positive across 2,000 games, quiet-machine reading `+32.2
+    /// [+8.0, +56.4]` — and `axpy-vs-default-nodes32000` confirms no
+    /// behaviour change at a fixed node count, as a change of this shape has
+    /// to show. The four-way unroll it replaced is worth `1.41x` on the
+    /// forward pass and was itself measured Elo-neutral (`-1.7 [-25.8,
+    /// +22.3]` over 798 games) against `Summation::Serial`, the original
+    /// order; both stay reachable rather than being deleted
+    /// (`mcts-value:value_sum=unrolled4`, `mcts-value:value_sum=serial`), and
     /// [`Config::describe`] records which order ran.
     pub value_summation: duels_value::Summation,
     /// Pin the learned leaf to a specific frozen `duels-value` weights

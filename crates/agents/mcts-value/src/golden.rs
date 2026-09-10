@@ -60,13 +60,16 @@
 //! `TOLERANCE` is `1e-6` on an `f32`-valued quantity in `[0, 1]`, which is
 //! about eight times that type's epsilon near one. Tight enough that no
 //! retrain survives it and no weight edit does either; loose enough that
-//! `f32` reassociation across target architectures (the hidden layer's sum is
-//! four-way unrolled by default — see `duels_value::Summation`) does not turn
-//! a green CI red on a different machine. Bit-for-bit equality was the
-//! alternative and was rejected for exactly that portability reason;
-//! `duels_value`'s own `tests/summation_equivalence.rs` measures the two
-//! orders at worst `4.768e-7` apart over 2,000 pairs, which is the scale this
-//! bound is set against.
+//! `f32` reassociation across target architectures does not turn a green CI
+//! red on a different machine — see `duels_value::Summation` for the default
+//! order (`TransposedAxpy`, since promoted over `Unrolled4`) and why it is
+//! *not* itself expected to need this slack (it is checked bit-for-bit
+//! against `Serial`, not merely to within tolerance). Bit-for-bit equality
+//! across every order was the alternative and was rejected for the remaining
+//! `Unrolled4` case, on portability grounds; `duels_value`'s own
+//! `tests/summation_equivalence.rs` measures `Serial` and `Unrolled4` at worst
+//! `4.768e-7` apart over 2,000 pairs, which is the scale this bound is set
+//! against.
 
 #[cfg(test)]
 mod tests {
@@ -86,10 +89,14 @@ mod tests {
     /// numeric mismatches.
     const WEIGHTS_ID: &str = "211x128x4/17fee9ab";
 
-    /// The summation order the table was generated at. Recorded because the
-    /// unroll reassociates the hidden layer's sum, so the table is only
-    /// reproducible to `TOLERANCE` and not to the last bit across orders.
-    const SUMMATION: &str = "unrolled4";
+    /// The summation order the table was generated at. Recorded because a
+    /// summation order change can move the hidden layer's sum (a
+    /// reassociation, for [`duels_value::Summation::Unrolled4`]; a reordered
+    /// loop nest that happens to be bit-identical to `Serial`, for the
+    /// current default [`duels_value::Summation::TransposedAxpy`]), so the
+    /// table is only reproducible to `TOLERANCE` and not to the last bit
+    /// across orders in general.
+    const SUMMATION: &str = "axpy";
 
     /// One reproducible position: a game seed and how many plies of uniform
     /// legal play to apply to `engine::new_game(seed)`.
@@ -120,24 +127,24 @@ mod tests {
     /// below (it is `#[ignore]`d) and paste. Do not edit an entry by hand to
     /// make a failing test pass; see the module docs.
     const GOLDEN: &[(u64, u32, f64)] = &[
-        (0, 6, 0.249034613),
-        (1, 12, 0.147285119),
-        (2, 18, 0.254448652),
+        (0, 6, 0.249034643),
+        (1, 12, 0.147285193),
+        (2, 18, 0.254448742),
         (3, 24, 0.377593189),
-        (4, 30, 0.274122626),
-        (5, 36, 0.340896249),
-        (6, 42, 0.131832182),
+        (4, 30, 0.274122655),
+        (5, 36, 0.340896219),
+        (6, 42, 0.131832302),
         (7, 48, 0.626218438),
-        (8, 52, 0.028342869),
-        (9, 56, 0.734272659),
-        (10, 8, 0.702561021),
-        (11, 14, 0.543785334),
-        (12, 20, 0.705659032),
-        (13, 26, 0.276564270),
-        (14, 32, 0.896245122),
-        (15, 38, 0.458042026),
-        (16, 44, 0.028793165),
-        (17, 50, 0.006973101),
+        (8, 52, 0.028342843),
+        (9, 56, 0.734272599),
+        (10, 8, 0.702561140),
+        (11, 14, 0.543785214),
+        (12, 20, 0.705658972),
+        (13, 26, 0.276564330),
+        (14, 32, 0.896245182),
+        (15, 38, 0.458041877),
+        (16, 44, 0.028793152),
+        (17, 50, 0.006973108),
         (18, 54, 0.881050408),
         (19, 58, 0.948036909),
     ];
@@ -153,11 +160,11 @@ mod tests {
     /// Pins the *decomposition*, not just its sum — see the module docs for
     /// why a scalar-only table would miss the change that matters most here.
     const GOLDEN_DIST: &[(u64, u32, [f64; 4])] = &[
-        (0, 6, [0.045614015, 0.107367657, 0.096052952, 0.750965416]),
-        (1, 12, [0.057360068, 0.007702519, 0.082222529, 0.852714837]),
-        (2, 18, [0.012840232, 0.004448325, 0.237160087, 0.745551348]),
-        (3, 24, [0.037631761, 0.013930339, 0.326031089, 0.622406840]),
-        (4, 30, [0.032998152, 0.000616496, 0.240507990, 0.725877345]),
+        (0, 6, [0.045614015, 0.107367679, 0.096052952, 0.750965416]),
+        (1, 12, [0.057360105, 0.007702523, 0.082222566, 0.852714837]),
+        (2, 18, [0.012840244, 0.004448324, 0.237160176, 0.745551229]),
+        (3, 24, [0.037631758, 0.013930346, 0.326031089, 0.622406840]),
+        (4, 30, [0.032998160, 0.000616495, 0.240508005, 0.725877345]),
     ];
 
     /// The weights identity is pinned on its own, so a retrain says so in one

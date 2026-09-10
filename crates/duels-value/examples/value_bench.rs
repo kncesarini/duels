@@ -118,6 +118,86 @@
 //! which a `5e-7` arithmetic difference can cost strength at a **fixed node
 //! count** — a node is a node — so the scatter is divergent trajectories and
 //! nothing else, and 200 games is simply not enough to see zero.
+//!
+//! # A third order: transpose the loop nest instead of the reduction
+//!
+//! [`duels_value::Summation::TransposedAxpy`] targets the *other* half of the
+//! diagnosis just above: the loop is memory-bound, not only latency-bound, and
+//! widening the unroll further does not touch that. It reads `w1` in the
+//! opposite order — pre-transposed, and visited input-by-input rather than
+//! unit-by-unit — so the hidden layer becomes 211 axpy updates into a
+//! 128-wide accumulator instead of 128 dot products, with no horizontal
+//! reduction until the very end. All three orders, timed in one run under one
+//! load (a concurrent, unrelated `duels-arena` match on the same machine —
+//! this file's whole argument is that the *ratios* are what travels, not the
+//! microseconds, and that is doubly true here):
+//!
+//! ```text
+//! features                0.32-0.39 us
+//! forward (serial)        8.68-9.51 us
+//! forward (unrolled4)     5.96-6.36 us
+//! forward (axpy)          1.94-2.26 us
+//! evaluate (both)         6.67-7.38 us
+//! full playout           18.08-19.42 us
+//!
+//! axpy speedup            4.2x-4.5x   (vs serial; 2.6x-3.3x vs unrolled4)
+//! ```
+//!
+//! (Two back-to-back runs, both under the same shared-machine load; the range
+//! above is that spread, not noise from a single sample.) This is a real,
+//! substantial recovery of the memory-bound half `Unrolled4` left on the
+//! table — the loop's shape (a stream of independent, non-reducing
+//! multiply-adds across the hidden dimension) is a far better match for the
+//! CPU's vector units than a reduction is, even reading the identical 108 KiB
+//! of weights. It is smaller than a since-superseded planning estimate of
+//! `5.8x` taken on a different, throwaway benchmark; the honest number is the
+//! one measured here, on this machine, against this weights file.
+//!
+//! Unlike the unroll, this is **not a reassociation**: [`Summation`]'s docs
+//! argue that for a fixed hidden unit, this order adds the same terms in the
+//! same sequence as [`duels_value::Summation::Serial`], and
+//! `tests/summation_equivalence.rs` checks that directly rather than bounding
+//! it numerically — `axpy` matches `serial` bit for bit on every sampled
+//! position, in both debug and release builds. So `evaluate / playout` for
+//! this order is exactly the `serial` figure with `forward` swapped for the
+//! faster one, and the pure `LeafValue::Learned` case (no playout to
+//! amortise against) is the one this crate's own docs already flagged as the
+//! most wall-clock-sensitive: at these ratios it goes from roughly a third of
+//! a playout (`unrolled4`) to roughly a tenth of one, which is the kind of
+//! difference that should show up as more simulations, not just a faster
+//! function.
+//!
+//! **It does, and it is promoted.** `arena/results/experiments/` holds a
+//! `Nodes(32000)` sanity check and three `Budget::TimeMs(1_000)` batches
+//! (production's own budget) of `mcts-value:value_sum=axpy` against the
+//! previous default:
+//!
+//! ```text
+//! axpy-vs-default-nodes32000        600 games   +1.2  [-26.6, +28.9]   (fixed node count: no effect, as expected)
+//! axpy-vs-default-timems1000        400 games  +40.0  [ +5.8, +74.3]   (shared machine)
+//! axpy-vs-default-timems1000-confirm 800 games  +23.5  [ -0.7, +47.6]   (shared machine, tail end)
+//! axpy-vs-default-timems1000-quiet   800 games  +32.2  [ +8.0, +56.4]   (verified-quiet machine)
+//! ```
+//!
+//! The `Nodes` cell is the required control: no mechanism lets a bit-identical
+//! (or even a merely-reassociated) forward pass change anything at a **fixed**
+//! node count, and none showed up. The three `TimeMs(1_000)` batches — 2,000
+//! games total, one on a machine confirmed quiet by a process-level snapshot
+//! rather than by load average (`duels-arena` parallelises within a match, so
+//! load average alone is not a usable quiet-machine proxy here) — are
+//! consistently positive and every one of them passes the mechanism gate
+//! (`civilian_share`, `science_share`, `military_share`), so this is a real
+//! strength gain from more simulations per fixed wall clock, not a shift in
+//! how the extra strength is won. The point estimate moves around between
+//! batches (as this project's own docs warn a small-sample `TimeMs` figure
+//! will) but never crosses zero in the direction that would matter, and the
+//! quiet-machine batch — the one reading to trust most — is the middle of the
+//! three. `duels_value::Summation::TransposedAxpy` is now
+//! [`duels_value::Summation::default`]; `crates/agents/mcts-value/src/golden.rs`
+//! was regenerated against it (same weights, `SUMMATION` now `"axpy"`), and
+//! `Summation::Unrolled4` and `Summation::Serial` both stay reachable
+//! (`mcts-value:value_sum=unrolled4`, `mcts-value:value_sum=serial`) as the
+//! generations this replaces.
 
 use std::time::Instant;
 
@@ -221,6 +301,10 @@ fn main() {
         "forward (unrolled4)",
         Box::new(|x| net.forward_unrolled4(x)[0]),
     );
+    let t_forward_axpy = time_forward(
+        "forward (axpy)",
+        Box::new(|x| net.forward_transposed_axpy(x)[0]),
+    );
     let t_evaluate = time(
         "evaluate (both)",
         Box::new(|s| net.win_probability(s, Player::One)),
@@ -268,12 +352,23 @@ fn main() {
         t_forward * 1e6,
     );
     println!(
+        "axpy speedup        {:>6.2}x   (serial {:.2} us -> axpy {:.2} us, vs unrolled4 {:.2}x)",
+        t_forward_serial / t_forward_axpy,
+        t_forward_serial * 1e6,
+        t_forward_axpy * 1e6,
+        t_forward / t_forward_axpy,
+    );
+    println!(
         "serial   evaluate / playout would be {:>5.1}%",
         100.0 * (t_features + t_forward_serial) / t_playout
     );
     println!(
         "unrolled evaluate / playout would be {:>5.1}%",
         100.0 * (t_features + t_forward) / t_playout
+    );
+    println!(
+        "axpy     evaluate / playout would be {:>5.1}%",
+        100.0 * (t_features + t_forward_axpy) / t_playout
     );
     println!("(checksum {sink:.3e})");
 }

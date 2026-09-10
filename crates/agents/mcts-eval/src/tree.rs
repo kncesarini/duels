@@ -202,16 +202,21 @@ pub struct Config {
     /// Which accumulation order the learned leaves' forward pass uses.
     ///
     /// Only read when [`LeafValue::needs_learned_net`] is true, so it cannot
-    /// affect the default configuration at all. It exists so the four-way
-    /// accumulator unroll in `duels_value::Summation` can be A/B tested the
-    /// same way [`Config::eval_override`] lets a `duels-eval` change be: one
-    /// binary, one process, one `duels-arena experiment`, with the old
-    /// arithmetic reachable as `mcts-eval:leaf=learned,value_sum=serial`.
+    /// affect the default configuration at all. It exists so a change to
+    /// `duels_value::Summation` — the four-way accumulator unroll, and since
+    /// then the transposed-`w1` axpy order that replaced it as
+    /// `duels_value`'s own default — can be A/B tested the same way
+    /// [`Config::eval_override`] lets a `duels-eval` change be: one binary,
+    /// one process, one `duels-arena experiment`, with an older arithmetic
+    /// reachable as `mcts-eval:leaf=learned,value_sum=serial` or
+    /// `mcts-eval:leaf=learned,value_sum=unrolled4`.
     ///
     /// The unroll reassociates a floating-point sum, so it is not
     /// bit-identical to the order the crate docs' Elo numbers were measured
     /// with — which is exactly why the old order stays reachable rather than
-    /// being deleted.
+    /// being deleted. The axpy order is different: it is a reordered loop
+    /// nest rather than a reassociation, and `duels_value`'s own tests check
+    /// it matches `Summation::Serial` bit for bit.
     pub value_summation: duels_value::Summation,
 }
 
