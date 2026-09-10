@@ -848,17 +848,20 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
             // `duels_agent_mcts_value::Config::value_weights_override`. The
             // whole point is measuring the current generation against the one
             // it replaced, in one process (`duels-arena match --agent-a
-            // mcts-value --agent-b mcts-value:weights=v1`), so `v1` is the
-            // only generation kept; the live default is `v2` (see
-            // `duels_value`'s crate docs on why `v2` was promoted).
+            // mcts-value --agent-b mcts-value:weights=v1`); the live default
+            // is `v2` (see `duels_value`'s crate docs on why `v2` was
+            // promoted). `candidate` is the class-reweighting experiment's
+            // best-of-grid candidate (crate docs' "Follow-up round three"),
+            // kept reachable the same way for its own A/B measurement.
             "weights" => {
                 cfg.value_weights_override = match v {
                     "default" | "live" | "current" => None,
                     "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
+                    "candidate" => Some(duels_agent_mcts_value::WEIGHTS_CANDIDATE_REWEIGHTED),
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
-                             \"default\" or \"v1\")"
+                             \"default\", \"v1\" or \"candidate\")"
                         ))
                     }
                 };

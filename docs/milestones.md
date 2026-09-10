@@ -114,6 +114,16 @@ meaningfully closed the `mcts-uct` third-party gap (about 65%, up from `v1`'s 28
 leaving `alphabeta`'s (~15%) about where it was. See `duels_value`'s crate docs and
 `leaderboard::CHAMPION`'s for the full numbers.
 
+**A cheaper follow-up — reweighting the training loss to upweight the rare
+science/military classes (class-balanced or focal loss) — was tried and is a clean
+negative.** Every configuration that moved the science/military heads at all also
+inflated predicted win probability systematically, breaking zero-sum coherence and
+aggregate calibration; the best-of-grid candidate then lost to `v2` directly in the
+arena (`-51.8` Elo, 2,000 games, CI excluding zero) and underperformed `v2`'s own
+fresh baseline through both third parties. Not promoted; kept reachable via
+`mcts-value:weights=candidate`. See `duels_value`'s crate docs, "Follow-up round
+three."
+
 **The Elo anchor moved from `greedy` to `mcts-uct`, and the scale changed with it.**
 Deleting `greedy` removed `ANCHOR_AGENT` entirely, so the joint Bradley-Terry fit needed a
 new pin. The rationale in `leaderboard::ANCHOR_AGENT`'s own docs is what decided it: the

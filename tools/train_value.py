@@ -40,6 +40,15 @@ is the honest yardstick: the incumbent leaf signal already produces a
 calibrated win probability, at the cost of 2000 nodes of search. A learned
 value that does not beat it as a *predictor* has no business being tried as a
 leaf.
+
+**Class reweighting is opt-in and defaults to off.** `--class-weight-mode`
+(`inverse` or `effective`) and `--focal-gamma` reweight the four-way softmax
+loss to upweight the rarer win classes (scientific supremacy is ~2-10% of
+games depending on which agent generated the corpus); the default
+(`--class-weight-mode none --focal-gamma 0.0`) reproduces the original
+unweighted gradient exactly, byte for byte, so `v1.bin`/`v2.bin` stay
+reproducible from this script unmodified. See `crates/duels-value/src/lib.rs`
+for whether reweighting was found to help.
 """
 
 import argparse
@@ -129,13 +138,40 @@ class Mlp:
             out.append(self.forward(x[i : i + batch])[1])
         return np.concatenate(out) if out else np.zeros((0, self.w2.shape[1]), np.float32)
 
-    def step(self, x, target, lr, weight_decay):
+    def step(self, x, target, lr, weight_decay, y_idx=None, class_weight=None, focal_gamma=0.0):
         """One Adam step on a minibatch. `target` is one-hot (softmax) or a
         column of 0/1 (sigmoid); the gradient of cross-entropy through either
-        output layer is the same `p - target`."""
+        output layer is the same `p - target`.
+
+        `y_idx`/`class_weight`/`focal_gamma` are the reweighting hooks (see
+        `--class-weight-mode` and `--focal-gamma` below) and only apply to the
+        softmax path: `y_idx` is the integer class of each row, `class_weight`
+        a `[n_out]` per-class multiplier, and `focal_gamma` a focal-loss
+        exponent applied to `(1 - p_true)`. Leaving all three at their
+        defaults (`None`/`None`/`0.0`) reproduces the prior unweighted
+        gradient `(p - target) / n` exactly -- this method must stay
+        byte-for-byte identical on that path so `v2.bin` remains reproducible
+        from this script.
+
+        The focal factor is treated as a fixed per-sample scalar (no gradient
+        flows back through it) -- the standard simplification for a
+        from-scratch numpy implementation with no autodiff, and the one this
+        script uses rather than differentiating the modulating term itself.
+        """
         n = len(x)
         h, p = self.forward(x)
-        dz = (p - target) / n
+        diff = p - target
+        if y_idx is None or (class_weight is None and not focal_gamma):
+            dz = diff / n
+        else:
+            w = np.ones(n, np.float32)
+            if class_weight is not None:
+                w = w * class_weight[y_idx]
+            if focal_gamma:
+                p_true = p[np.arange(n), y_idx]
+                w = w * (1.0 - p_true) ** focal_gamma
+            w = w.reshape(-1, 1)
+            dz = (diff * w) / w.sum()
         gw2 = h.T @ dz
         gb2 = dz.sum(axis=0)
         dh = dz @ self.w2.T
@@ -261,11 +297,49 @@ def print_calibration(rows):
 
 
 # ---------------------------------------------------------------------------
+# Class reweighting (the experiment this script was extended for: does
+# upweighting the rare win classes in the training loss sharpen the science /
+# military heads without needing a bigger or differently-sourced corpus?).
+#
+# Both modes are computed from *training-split label counts only* (never
+# validation or test), normalised so that the weighted average over the
+# training rows is 1 -- i.e. `sum_k count_k * w_k == total`. That keeps the
+# overall gradient scale comparable to the unweighted run instead of
+# shrinking or exploding it, so `--lr` does not need retuning alongside
+# `--class-weight-mode`.
+# ---------------------------------------------------------------------------
+
+
+def class_weights(counts, mode, beta=0.999):
+    """Per-class loss multipliers from training label counts. `mode` is
+    'none' (all ones -- the default, unweighted behaviour), 'inverse'
+    (inverse class frequency), or 'effective' (Cui et al. 2019's "effective
+    number of samples", `(1 - beta^n) / (1 - beta)`, softer than raw inverse
+    frequency for very rare classes since it saturates rather than blowing up
+    as `n -> 0`)."""
+    counts = np.asarray(counts, dtype=np.float64)
+    total = counts.sum()
+    if mode == "none":
+        raw = np.ones_like(counts)
+    elif mode == "inverse":
+        raw = 1.0 / np.maximum(counts, 1.0)
+    elif mode == "effective":
+        eff_num = (1.0 - beta**counts) / (1.0 - beta)
+        raw = 1.0 / np.maximum(eff_num, 1e-12)
+    else:
+        raise SystemExit(f"unknown --class-weight-mode {mode!r}")
+    # Normalise so the training-weighted average multiplier is 1.
+    denom = float((counts * raw).sum())
+    scale = total / denom if denom > 0 else 1.0
+    return (raw * scale).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
 
-def train(net, xtr, ttr, xva, yva_win, args, tag):
+def train(net, xtr, ttr, xva, yva_win, args, tag, ytr_idx=None, class_weight=None):
     """Minibatch Adam with validation-log-loss early stopping.
 
     Selection is on the *aggregate win probability*'s log loss for both model
@@ -284,7 +358,11 @@ def train(net, xtr, ttr, xva, yva_win, args, tag):
         t0 = time.time()
         for i in range(0, n, args.batch):
             idx = order[i : i + args.batch]
-            net.step(xtr[idx], ttr[idx], lr, args.weight_decay)
+            y_idx = ytr_idx[idx] if ytr_idx is not None else None
+            net.step(
+                xtr[idx], ttr[idx], lr, args.weight_decay,
+                y_idx=y_idx, class_weight=class_weight, focal_gamma=args.focal_gamma,
+            )
         p = net.predict(xva)
         pw = win_prob(p)
         ll = log_loss(pw, yva_win)
@@ -336,6 +414,38 @@ def main():
         help="train the single-sigmoid baseline of identical shape and compare",
     )
     ap.add_argument("--max-rows", type=int, default=0, help="0 = all; for a quick smoke run")
+    ap.add_argument(
+        "--class-weight-mode",
+        choices=["none", "inverse", "effective"],
+        default="none",
+        help=(
+            "reweight the four-way softmax loss by training-split class "
+            "frequency: 'none' (default, unweighted -- reproduces the "
+            "original behaviour exactly), 'inverse' (1/frequency), or "
+            "'effective' (Cui et al. effective-number-of-samples, see "
+            "--cb-beta). Applies only to the decomposed model; the "
+            "--also-scalar control is always trained unweighted so it stays "
+            "a fixed reference point."
+        ),
+    )
+    ap.add_argument(
+        "--cb-beta",
+        type=float,
+        default=0.999,
+        help="effective-number beta for --class-weight-mode=effective (closer to 1 = stronger reweighting)",
+    )
+    ap.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=0.0,
+        help=(
+            "focal-loss exponent applied to (1 - p_true) on top of any "
+            "--class-weight-mode multiplier, 0.0 = disabled (default, no "
+            "change to the loss). The modulating factor is treated as a "
+            "fixed per-sample weight (no gradient through it), the standard "
+            "simplification for a hand-derived, no-autodiff numpy trainer."
+        ),
+    )
     args = ap.parse_args()
 
     m, n_in, n_out, games = load_matrix(args.matrix)
@@ -388,12 +498,27 @@ def main():
 
     # --- the decomposed model, the one that ships -------------------------
     print()
+    train_counts = [int((ytr == k).sum()) for k in range(n_out)]
+    cweights = class_weights(train_counts, args.class_weight_mode, args.cb_beta)
+    results["class_weight_mode"] = args.class_weight_mode
+    results["cb_beta"] = args.cb_beta
+    results["focal_gamma"] = args.focal_gamma
+    results["class_weights"] = {OUTCOME_NAMES[k]: float(cweights[k]) for k in range(n_out)}
+    if args.class_weight_mode != "none" or args.focal_gamma:
+        print(
+            f"reweight class-weight-mode={args.class_weight_mode} cb-beta={args.cb_beta} "
+            f"focal-gamma={args.focal_gamma}"
+        )
+        print("         " + "  ".join(f"{OUTCOME_NAMES[k]}={cweights[k]:.3f}" for k in range(n_out)))
     print("training the four-way decomposed model")
     onehot = np.zeros((len(ytr), n_out), np.float32)
     onehot[np.arange(len(ytr)), ytr] = 1.0
     net = Mlp(n_in, args.hidden, n_out, args.seed, softmax=True)
+    weighted = args.class_weight_mode != "none" or args.focal_gamma
     results["decomposed_history"], results["decomposed_best_epoch"] = train(
-        net, xtr, onehot, xva, yva_win, args, "4way"
+        net, xtr, onehot, xva, yva_win, args, "4way",
+        ytr_idx=ytr if weighted else None,
+        class_weight=cweights if weighted else None,
     )
 
     print()

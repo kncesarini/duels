@@ -436,6 +436,23 @@ pub use tree::{Config, PriorMode, RootStats};
 /// away in one process, rather than requiring two separately-built binaries.
 pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
 
+/// The class-reweighting experiment's candidate: `v2`'s exact corpus recipe
+/// (a mix of `mcts-value` self-play and a fresh `mcts-eval` insurance batch,
+/// regenerated on fresh seeds since `v2`'s own corpus files are gitignored
+/// and its exact seeds were never recorded) and `v2`'s exact hyperparameters,
+/// with one variable changed: the four-way loss is reweighted with
+/// `tools/train_value.py --class-weight-mode effective --cb-beta 0.999999`
+/// (the "effective number of samples" class-balanced loss, Cui et al. 2019),
+/// picked out of a small grid (also tried: plain inverse-frequency weights,
+/// several other betas, and focal loss at a couple of gammas — see
+/// `duels_value`'s crate docs for the full table and why this one was
+/// picked). Not adopted, and not a clean win offline — see the crate docs'
+/// "Follow-up round three" section before reading anything into
+/// `weights=candidate` beating or losing to the live default. Kept reachable
+/// the same way `WEIGHTS_V1` is, via `mcts-value:weights=candidate`.
+pub const WEIGHTS_CANDIDATE_REWEIGHTED: &[u8] =
+    include_bytes!("../../../duels-value/weights/candidate-reweighted.bin");
+
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
 ///

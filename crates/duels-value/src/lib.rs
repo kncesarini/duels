@@ -622,6 +622,230 @@
 //! "add more games of the same kind," and a natural next thing to put in
 //! front of a planning pass.
 //!
+//! # Follow-up round three: class-reweighting the loss, not adopted
+//!
+//! The cheaper of the two ideas the previous round's "what's next" left on
+//! the table (specialist per-outcome nets being the pricier one): same
+//! corpus recipe, same architecture, same split, only the training loss's
+//! class weighting changes. The hypothesis was that the four-way softmax's
+//! unweighted cross-entropy is dominated by the heavily civilian/loss-skewed
+//! row mass even though the science head is independently the sharpest of
+//! the four (AUC 0.955 above), so upweighting the rarer win classes might
+//! sharpen science/military prediction further without a bigger or
+//! differently-sourced corpus. **It does not. Every reweighting configuration
+//! tried makes the net measurably worse, both offline and in the arena, and
+//! the arena loss is clean and decisive rather than borderline.**
+//!
+//! ## What changed in the tooling
+//!
+//! `tools/train_value.py` gained `--class-weight-mode {none,inverse,effective}`
+//! (inverse class frequency, or Cui et al. 2019's "effective number of
+//! samples" with a `--cb-beta`) and `--focal-gamma` (a focal-loss exponent on
+//! `(1 - p_true)`, treated as a fixed per-sample weight with no gradient
+//! through it — the standard simplification for a from-scratch numpy
+//! trainer with no autodiff). Both apply only to the four-way decomposed
+//! model; `--also-scalar`'s control is always trained unweighted, to stay a
+//! fixed reference point. The default (`none`, `gamma=0.0`) reproduces the
+//! original unweighted gradient `(p - target) / n` exactly, verified by
+//! matching the first-epoch validation loss bit-for-bit against the
+//! pre-existing code path on a synthetic matrix, so `v1.bin`/`v2.bin` stay
+//! reproducible from the script unmodified.
+//!
+//! ## The corpus: same recipe, not the same bytes
+//!
+//! `v2`'s exact corpus is not on disk — `arena/corpus/` is gitignored by
+//! design (a corpus is a regenerable artifact) — and its exact seed ranges
+//! were never recorded anywhere in this repository's history (checked: the
+//! commits that built and validated `v2` name the recipe, the game counts
+//! and the merged totals, never the seeds). So this round **regenerated the
+//! same recipe** rather than reusing or exactly reproducing `v2`'s corpus:
+//! 40,000 games of `mcts-value` self-play at `nodes:2000` (seeds
+//! `1..40000`) mixed with a fresh 15,000-game `mcts-eval` insurance batch at
+//! the same budget (seeds `1000001..1015000`, disjoint), merged with
+//! `tools/merge_feature_matrices.py` into **7,348,668 rows / 55,000 games**
+//! — a game count identical to `v2`'s and a row count within 0.5%, with a
+//! closely comparable victory-kind mix (this run's `mcts-value` self-play
+//! half: 18.5% military / 13.3% science / 66.6% civilian / 1.4% tiebreak,
+//! against `v2`'s documented 10.07% science for the same half).
+//!
+//! **One provenance difference is worth stating plainly rather than
+//! glossing over.** `v2`'s own `mcts-value` self-play corpus was generated
+//! *before* `v2` existed — the champion at that time embedded `v1.bin` — so
+//! it is `v1`-self-play data. This round's regeneration used *this* build,
+//! which embeds `v2.bin` as the champion, so it is `v2`-self-play data. Since
+//! the crate docs above already show `v2` is more science-skewed in its own
+//! self-play than `v1` was, this plausibly explains the higher science share
+//! measured here (13.3% against `v1`'s-era 10.07%) independently of anything
+//! about seeds. The experiment below isolates the loss-weighting variable
+//! against *this* freshly-generated, `v2`-recipe corpus, not against a
+//! byte-identical replay of the original — an unavoidable consequence of
+//! `arena/corpus/` being gitignored, disclosed here rather than left implicit.
+//!
+//! ## The offline grid
+//!
+//! Every fit below used `v1`/`v2`'s exact hyperparameters (`--hidden 128
+//! --epochs 60 --lr 2e-3 --weight-decay 1e-5 --patience 8 --also-scalar`) on
+//! the corpus above; only the loss weighting varies. Held-out **test** rows
+//! (aggregate win probability) and **validation** per-kind AUCs (selection
+//! is on validation, so per-kind numbers are reported there, matching every
+//! earlier round in this file), plus `coherence_check` run against each
+//! candidate's own weights file (the same diagnostic `tests/
+//! probability_coherence.rs` pins for the embedded default, generalized to
+//! an arbitrary `--weights` path for exactly this kind of not-yet-adopted
+//! candidate):
+//!
+//! | config | test Brier | test log loss | test AUC | val science AUC | val military AUC | val argmax acc | coherence mean gap | opening mass |
+//! | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+//! | baseline (unweighted) | **0.18318** | **0.53725** | **0.7969** | 0.9288 | 0.8034 | **0.6580** | **0.0563** | **1.0026** |
+//! | `inverse` | 0.22056 | 0.63169 | 0.7704 | 0.9303 | 0.8060 | 0.5402 | 0.2576 | 1.4893 |
+//! | `effective`, β=0.999 | 0.18318 | 0.53725 | 0.7969 | 0.9288 | 0.8034 | 0.6580 | 0.0563 | 1.0026 |
+//! | `effective`, β=0.9999 | 0.18318 | 0.53725 | 0.7969 | 0.9288 | 0.8034 | 0.6580 | 0.0563 | 1.0026 |
+//! | `effective`, β=0.999999 | 0.19146 | 0.55687 | 0.7856 | **0.9304** | **0.8080** | 0.6297 | 0.1028 | 1.2151 |
+//! | `effective`, β=0.9999997 | 0.20624 | 0.59374 | 0.7765 | 0.9302 | 0.8069 | 0.5813 | 0.1894 | 1.3891 |
+//! | focal, γ=2.0 | 0.19821 | 0.57775 | 0.7806 | 0.9227 | 0.7898 | 0.6509 | 0.1085 | 1.1922 |
+//! | focal, γ=0.5 | 0.18436 | 0.54090 | 0.7966 | 0.9291 | 0.8046 | 0.6577 | 0.0600 | 1.0743 |
+//! | `inverse` + focal, γ=1.0 | 0.21998 | 0.62584 | 0.7598 | 0.9242 | 0.7919 | 0.5439 | 0.2552 | 1.4597 |
+//!
+//! Two things fell out of this grid before any arena game was played.
+//!
+//! **The textbook "effective number of samples" betas do nothing at this
+//! corpus's scale, and that is itself worth recording.** β=0.999 and
+//! β=0.9999 — reasonable-looking values by the Cui et al. paper's own
+//! examples — reproduce the unweighted baseline bit-for-bit. The reason is
+//! arithmetic: `effective_num = (1 - β^n) / (1 - β)` saturates to `1/(1-β)`
+//! for every class once `n·(1-β) ≫ 1`, and this corpus's smallest class
+//! (`science_win`) alone has n ≈ 345,000 training rows — `β^345000` is
+//! indistinguishable from zero at β=0.999, so *every* class saturates
+//! identically and the per-class weights come out equal. Getting any
+//! differentiation at all needed β within `~1e-6` of 1 (0.999999,
+//! 0.9999997) — four to five nines further than the values usually quoted
+//! for small-N image-classification benchmarks, because this corpus's
+//! per-class counts are three to four orders of magnitude larger. Anyone
+//! reusing this formula on a corpus this size should budget for that, not
+//! copy a benchmark's β.
+//!
+//! **Every configuration that had any effect at all made the aggregate
+//! predictor and the zero-sum coherence property worse, and by a lot.**
+//! Raw `inverse` weighting is the starkest: test Brier degrades 20%
+//! (0.183→0.221), four-way argmax accuracy drops from 65.8% to 54.0%, and
+//! zero-sum coherence — already the model's known soft spot (see
+//! `tests/probability_coherence.rs`) — breaks badly: mean `|P(One)+P(Two)-1|`
+//! roughly quadruples (0.056→0.258) and the opening mass balloons to 1.489
+//! (both players told they have a ~75% win probability simultaneously,
+//! against the correct ~50/50 split). The mechanism is not a bug: reweighting
+//! the loss lowers the penalty for false-positive win predictions on the
+//! upweighted classes relative to false negatives, which pushes predicted win
+//! probability up **systematically and for both perspectives at once** —
+//! exactly the direction that breaks a property which depends on the two
+//! perspectives' errors cancelling. Every setting that moved science/military
+//! AUC at all paid some of this cost; none escaped it.
+//!
+//! ## The candidate picked for arena validation
+//!
+//! `effective`, β=0.999999 — the only configuration with the best joint
+//! science *and* military AUC among all eight (0.9304, 0.8080, both the
+//! grid's maxima) at the smallest aggregate/coherence cost of any setting
+//! that moved the needle (test Brier +4.5% against `inverse`'s +20.4%,
+//! opening mass 1.215 against `inverse`'s 1.489). Embedded as
+//! `crates/duels-value/weights/candidate-reweighted.bin` and reachable via
+//! `mcts-value:weights=candidate` (mirroring `duels-agent-mcts-value`'s
+//! `WEIGHTS_V1`/`weights=v1` convention) to compare directly, not promoted or
+//! wired into [`DEFAULT_WEIGHTS`].
+//!
+//! ## The arena validation
+//!
+//! `duels-arena experiment`, `nodes:2000`, two disjoint 1000-game (v2) or
+//! 400-game (third parties) seed ranges, sized from the outset per
+//! `docs/conventions.md` item 8 (the historical `elo1=20`/400-game default is
+//! underpowered for the effect sizes this project now expects) — the
+//! decisive comparison against `v2` used `elo1=10` and 2,000 games directly,
+//! rather than starting at the historical default and re-running only if it
+//! came back inconclusive:
+//!
+//! | Match | Games | W-L-D (candidate) | Elo | 95% CI | SPRT |
+//! | --- | ---: | --- | ---: | --- | --- |
+//! | candidate vs **`v2`** (the correct control) | 2000 | 852-1148-0 | **-51.8** | `[-67.2, -36.4]` | AcceptH0 |
+//! | candidate vs `mcts-eval` | 800 | 490-310-0 | +79.4 | `[+54.7, +104.1]` | AcceptH1 |
+//! | candidate vs `mcts-uct` | 800 | 582-218-0 | +170.3 | `[+143.3, +197.3]` | AcceptH1 |
+//! | candidate vs `alphabeta` | 800 | 681-119-0 | +302.4 | `[+268.7, +336.2]` | AcceptH1 |
+//! | `v2` vs `mcts-uct` (fresh baseline, same run) | 800 | 596-204-0 | +186.0 | `[+158.4, +213.6]` | AcceptH1 |
+//! | `v2` vs `alphabeta` (fresh baseline, same run) | 800 | 696-104-0 | +329.5 | `[+293.8, +365.2]` | AcceptH1 |
+//!
+//! **The direct comparison is a clean, decisive loss, not a borderline
+//! "inconclusive."** Both disjoint cells against `v2` are individually
+//! negative with CIs excluding zero (-62.4 `[-84.3,-40.6]` and -41.1
+//! `[-62.8,-19.5]`), the pooled interval `[-67.2,-36.4]` sits entirely below
+//! zero, and the SPRT accepted H0 (no `+10`-Elo improvement) rather than
+//! reading `Inconclusive`. Per this project's statistical-power discipline,
+//! a larger follow-up sample is for a *promising, inconclusive* point
+//! estimate; this one is unambiguously negative already at the enlarged
+//! sample, so no further run was warranted.
+//!
+//! The candidate still beats every third party in isolation — `mcts-eval`,
+//! `mcts-uct`, `alphabeta` all `AcceptH1` — but **every one of those margins
+//! is smaller than the corresponding baseline this same run measured for
+//! `v2`**: +79.4 against `v2`'s documented +109.2 over `mcts-eval`; +170.3
+//! against `v2`'s own fresh +186.0 over `mcts-uct`; +302.4 against `v2`'s own
+//! fresh +329.5 over `alphabeta`. Every comparison available — direct,
+//! and through two different third parties — points the same way. This is
+//! not the mixed, opponent-specific picture earlier rounds in this file
+//! found; it is uniform.
+//!
+//! ### The mechanism: the reweighting did what it was told to, and that was the problem
+//!
+//! Victory-kind breakdowns (candidate wins → mil/sci/civ/tie):
+//!
+//! | pairing | candidate | opponent |
+//! | --- | --- | --- |
+//! | vs `v2` | 289/296/262/5 (852) | 70/44/1027/7 (1148) |
+//! | vs `mcts-eval` | 122/278/90/0 (490) | 17/0/290/3 (310) |
+//! | vs `mcts-uct` | 134/354/93/1 (582) | 9/0/204/5 (218) |
+//! | vs `alphabeta` | 88/364/225/4 (681) | 3/0/113/3 (119) |
+//!
+//! The reweighting's narrow, mechanistic goal was achieved: the candidate's
+//! science-win share of its own wins is 35-61% in every pairing (296/852,
+//! 278/490, 354/582, 364/681), well above `v2`'s documented 27-44% range
+//! against `mcts-eval` alone. The mechanism gate's `civilian_share` bound
+//! **fails in every pairing that has enough events to test it** — the
+//! candidate wins a far smaller share of its games by civilian victory than
+//! `v2`'s own historical mix requires (e.g. 30.8% against `v2` itself, where
+//! ≥44.7% is required) — and `military_share` fails alongside it wherever
+//! testable, meaning the candidate over-indexes on *both* non-civilian
+//! victory kinds at civilian's expense. Reweighting shifted the win-kind mix
+//! exactly as designed; it just traded away enough civilian conversion
+//! strength to be a net loss against the one opponent that matters most for
+//! a promotion decision (`v2` itself), and a smaller absolute gain against
+//! every other opponent than `v2` already had.
+//!
+//! ## The verdict
+//!
+//! **Not promoted, and not recommended for promotion.** Every diagnostic
+//! measured — offline aggregate calibration, offline zero-sum coherence, the
+//! direct arena comparison against `v2`, and the indirect comparison through
+//! two different third parties — agrees in direction: this candidate is
+//! worse than the champion it would replace. Unlike the `v1`/`v2` transition,
+//! where the arena result (a real win) contradicted the offline metrics (a
+//! worse predictor) and the arena was right to override them, here offline
+//! and arena evidence agree, which makes this a considerably more confident
+//! "no" than that round's promotion was a "yes." `weights=candidate` is kept
+//! reachable, exactly as `v1` was kept after `v2` replaced it, so this result
+//! stays reproducible rather than only living in a PR description.
+//!
+//! ## What this round teaches, going forward
+//!
+//! Naive per-sample class reweighting (inverse-frequency or effective-number
+//! alike) is not a free lever on this corpus: it moves the win-kind mix in
+//! the intended direction but does so by introducing a systematic upward
+//! bias in predicted win probability that costs more in calibration and
+//! zero-sum coherence than it gains in rare-class discrimination, and that
+//! trade is net-negative even at the mildest setting tried. The previous
+//! round's other, pricier idea — **separate specialist value functions per
+//! victory kind, or a search that consults more than one head rather than
+//! reweighting one shared softmax** — sidesteps this specific failure mode
+//! (no single loss term fights the aggregate calibration of the others) and
+//! remains the more promising structural direction for a future attempt,
+//! now with one cheaper alternative measured and ruled out first.
+//!
 //! # Usage
 //!
 //! ```
