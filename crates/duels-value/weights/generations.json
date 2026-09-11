@@ -1,0 +1,185 @@
+{
+  "$schema_note": "docs/roadmap.md's Tier 1-F design: a committed JSON index of every duels-value weights generation, promoted or not, so a retrain is first-class data instead of a hand-pinned hash. Do not edit an entry's measured fields by hand after the fact -- append a new generation or update `status`/`notes`, the same discipline golden.rs's own docs ask for. Archived detail (raw battery records, training logs, corpus manifests) lives at /Volumes/storage/duels/, referenced here by path/label rather than duplicated -- this file is an index, not a database, matching this project's existing convention for corpus .manifest.json sidecars and arena/leaderboard.json.",
+  "schema": 1,
+  "generations": [
+    {
+      "id": "v1",
+      "status": "frozen_reference",
+      "notes": "The first duels-value generation. Superseded by v2 (corpus-generalization retrain). Kept in the repository and reachable via mcts-value:weights=v1, and as a comparison baseline in duels_value's own crate docs.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/v1.bin",
+        "archive_path": "weights/v1.bin",
+        "sha256": "62ed2911980bf474f191a2b07a6ba440ad7eaef1eb43474c28150c533920fd35",
+        "weights_id": "211x128x4/036d2b5e",
+        "reachable_via": "mcts-value:weights=v1"
+      },
+      "corpus": {
+        "label": "v1-mcts-eval-100k",
+        "archive_manifest": "corpus/v1-mcts-eval-100k/mcts-eval-nodes2000.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus.rs",
+        "generating_agent": "mcts-eval",
+        "budget": "nodes:2000",
+        "seed_range": [1, 100000],
+        "games": 100000,
+        "decisions": 6722636
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/features-v1.bin (feature_dump.rs, --stride 2)",
+        "hidden": 128,
+        "value_target_lambda": 1.0
+      },
+      "battery": {
+        "note": "Pre-Tier-1-G; no frozen reference panel existed yet. See crates/duels-value/src/lib.rs's crate docs for this generation's original promotion write-up."
+      },
+      "golden": { "weights_id": "211x128x4/036d2b5e", "pinned_in": null }
+    },
+    {
+      "id": "v2",
+      "status": "prior_default",
+      "notes": "The live default until this generation's promotion (see this file's newest 'promoted' entry). Retired to a frozen reference-panel slot (mcts-value:weights=v2) rather than deleted, per docs/roadmap.md Tier 1-G -- it is the direct ancestor at equal budget and stays in the frozen panel (nodes:32000 and nodes:2000 cells) going forward.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/v2.bin",
+        "archive_path": "weights/v2.bin",
+        "sha256": "058913b3a130505ed41e2b4f98aa777f05e513eb0a1f396316781f381eb571f6",
+        "weights_id": "211x128x4/17fee9ab",
+        "reachable_via": "mcts-value:weights=v2"
+      },
+      "corpus": {
+        "label": "v2 corpus (40k mcts-value self-play + 15k mcts-eval insurance)",
+        "archive_manifest": null,
+        "note": "Never archived before the Tier 1 archive existed; arena/corpus/ is gitignored and this corpus was already overwritten by the time /Volumes/storage/duels/ was set up (2026-09-11). This loss is exactly why the archive exists -- see archive-meta/README.md."
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "hidden": 128,
+        "value_target_lambda": 1.0
+      },
+      "battery": {
+        "note": "See crates/duels-value/src/lib.rs's crate docs (\"Recalibrating the test, not just the weights\") for the full promotion write-up: +34.5 Elo confirmed at 2,000 games, elo1=10."
+      },
+      "golden": { "weights_id": "211x128x4/17fee9ab", "pinned_in": "crates/agents/mcts-value/src/golden.rs" }
+    },
+    {
+      "id": "tier1-arm-a",
+      "status": "rejected",
+      "notes": "Tier 1-D/E control: plain argmax generator (no exploration, no specialists), lambda=1.0 (today's exact training target before this experiment). Isolates D and E's effects by being neither. Not promoted -- kept reachable as an ablation baseline via mcts-value:weights=arm-a.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/arm-a-candidate.bin",
+        "archive_path": "weights/tier1-arm-a-candidate.bin",
+        "sha256": "63c77eeed8abe5136221369bf547e695a62435d8d87e451d82b47ee592d85230",
+        "weights_id": "211x128x4/21061eaa",
+        "reachable_via": "mcts-value:weights=arm-a"
+      },
+      "corpus": {
+        "label": "tier1-arm-a-control",
+        "archive_manifest": "corpus/tier1-arm-a-control/arm-a-control.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
+        "generating_agent": "mcts-value",
+        "budget": "nodes:2000",
+        "seed_range": [2000001, 2100000],
+        "games": 100000,
+        "sampling": { "tau": 1.0, "plies": 0, "specialist_frac": 0.0 }
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/arm-a-control-features.bin",
+        "hidden": 128,
+        "epochs_ran": 19,
+        "best_epoch": 10,
+        "value_target_lambda": 1.0,
+        "metrics_archive": "generations/tier1-arm-a/arm-a-metrics.json"
+      },
+      "battery": {
+        "gate_note": "affected_by_gradient_bug: false (lambda=1.0)",
+        "cells": [
+          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 14.8, "sprt": "see archive" },
+          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -41.0 },
+          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 94.7 },
+          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 168.2 }
+        ],
+        "archive_dir": "generations/tier1-battery-results/arm-a-vs-*"
+      },
+      "golden": { "weights_id": "211x128x4/21061eaa", "pinned_in": null }
+    },
+    {
+      "id": "tier1-arm-b",
+      "status": "accepted_candidate",
+      "notes": "Tier 1-D+E: corpus generated WITH exploration (visits^(1/tau), tau=1, 14 plies) and 25% specialist-seat mixing, lambda=1.0. +32.0 Elo vs v2 at 2,000 games (elo1=10), reproduced at +26.8 Elo on a disjoint seed range (arm-b-vs-v2-nodes2000-confirm). Both accepted, mechanism gate Pass. Strongest generation measured before the Tier 1-D/E gradient-bug fix and its retest (this file's newest entries) -- see this generation's status update once that comparison lands.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/arm-b-candidate.bin",
+        "archive_path": "weights/tier1-arm-b-candidate.bin",
+        "sha256": "1bed0416ecc3656adb9951fffe8dc3987c9036d416157c995305721cbafc220d",
+        "weights_id": "211x128x4/81d06b58",
+        "reachable_via": "mcts-value:weights=arm-b"
+      },
+      "corpus": {
+        "label": "tier1-arm-bc-explore",
+        "archive_manifest": "corpus/tier1-arm-bc-explore/arm-bc-explore.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
+        "generating_agent": "mcts-value",
+        "budget": "nodes:2000",
+        "seed_range": [2200001, 2300000],
+        "games": 100000,
+        "sampling": { "tau": 1.0, "plies": 14, "specialist_frac": 0.25 }
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/arm-bc-explore-features.bin",
+        "hidden": 128,
+        "best_epoch": 4,
+        "value_target_lambda": 1.0,
+        "metrics_archive": "generations/tier1-arm-b/arm-b-metrics.json"
+      },
+      "battery": {
+        "gate_note": "affected_by_gradient_bug: false (lambda=1.0)",
+        "cells": [
+          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 32.0, "elo_ci": [16.8, 47.3], "sprt": "AcceptH1", "mechanism": "Pass" },
+          { "opponent": "mcts-value (v2), disjoint seed range", "budget": "nodes:2000", "games": 2000, "elo": 26.8, "label": "arm-b-vs-v2-nodes2000-confirm" },
+          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -55.1 },
+          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 91.9 },
+          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 153.2 },
+          { "opponent": "mcts-value:weights=arm-a (direct, isolates D from A)", "budget": "nodes:2000", "games": 2000, "elo": 2.4, "label": "arm-b-vs-arm-a-direct" }
+        ],
+        "archive_dir": "generations/tier1-battery-results/arm-b-vs-*"
+      },
+      "golden": { "weights_id": "211x128x4/81d06b58", "pinned_in": null }
+    },
+    {
+      "id": "tier1-arm-c",
+      "status": "rejected",
+      "notes": "Tier 1-E: the SAME corpus as arm-b, retrained at value-target-lambda=0.5. Read as -17.2 Elo vs v2 and rejected -- but a later review found tools/train_value.py's two-term-loss gradient for the LOSS logit was wrong ((s-t)/(1-s) instead of s-t; only fires when lambda<1.0), confirmed by finite-difference (tools/test_train_value_grad.py) and by this generation's own training log (divide-by-zero/overflow/invalid-value RuntimeWarnings during the forward/backward pass, and val-loss that never improved past epoch 0 -- unlike arm-a/b, which are unaffected since lambda=1.0 short-circuits the buggy path). This result is therefore NOT a trustworthy reading on the value-target-blend idea and should not be cited as one; see tier1-arm-c-prime for the corrected retest from the same corpus.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/arm-c-candidate.bin",
+        "archive_path": "weights/tier1-arm-c-candidate.bin",
+        "sha256": "7af36010478f4058c76db050066acaf8db86cc89c94e5372a818762d2fe7dd53",
+        "weights_id": "211x128x4/3b584273",
+        "reachable_via": "mcts-value:weights=arm-c"
+      },
+      "corpus": {
+        "label": "tier1-arm-bc-explore",
+        "note": "Same corpus as tier1-arm-b -- see that entry."
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/arm-bc-explore-features.bin",
+        "hidden": 128,
+        "best_epoch": 0,
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-arm-c/arm-c-metrics.json",
+        "known_bug": "affected_by_gradient_bug: true -- trained with the pre-fix blended_dz; see tools/train_value.py git history"
+      },
+      "battery": {
+        "gate_note": "SUSPECT: trained with a known-buggy gradient",
+        "cells": [
+          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": -17.2 },
+          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -133.8 },
+          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 27.8 },
+          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 110.7 }
+        ],
+        "archive_dir": "generations/tier1-battery-results/arm-c-vs-*"
+      },
+      "golden": { "weights_id": "211x128x4/3b584273", "pinned_in": null }
+    }
+  ]
+}
