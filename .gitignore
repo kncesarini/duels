@@ -26,3 +26,5 @@ Cargo.lock.bak
 # per that script's own docstring). Regenerable, machine-specific; not part
 # of the repository the way the training tool itself is.
 .venv*/
+__pycache__/
+*.pyc
