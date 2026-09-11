@@ -727,6 +727,17 @@ pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bi
 /// however many further generations follow `v3`.
 pub const WEIGHTS_V2: &[u8] = include_bytes!("../../../duels-value/weights/v2.bin");
 
+/// `v3`, the generation `v4` (Generation 3 of the loop, `gen3-l05`) replaced
+/// -- see `duels_value`'s crate docs, "Generation 3", and
+/// `crates/duels-value/weights/generations.json`'s `tier1-arm-c-prime`
+/// entry. Kept reachable and frozen the same way [`WEIGHTS_V1`]/
+/// [`WEIGHTS_V2`] are, and additionally joins the frozen reference panel at
+/// `nodes:2000` (the new "cumulative gain since the immediate predecessor"
+/// cell, the role [`WEIGHTS_V2`]'s equal-budget cell already plays for the
+/// generation before it) -- see
+/// `crates/duels-arena/examples/reference_panel.rs`.
+pub const WEIGHTS_V3: &[u8] = include_bytes!("../../../duels-value/weights/v3.bin");
+
 /// Unpromoted candidate `duels-value` weights from the roadmap's Tier 1-D/E
 /// experiment (`docs/roadmap.md`, "Tier 1 design"): three generations trained
 /// from matched-conditions ~100k-game corpora to isolate the exploration/
@@ -779,24 +790,44 @@ pub const WEIGHTS_ARM_C_PRIME: &[u8] =
 pub const WEIGHTS_ARM_D_PRIME: &[u8] =
     include_bytes!("../../../duels-value/weights/arm-d-prime-candidate.bin");
 
-/// Generation 3 (`docs/roadmap.md`'s "Generation 3 (2026-09-11): the
-/// gain-decay question, answered — held, not promoted"): a fresh ~100k-game
-/// corpus (`tier1-gen3-explore`) self-played by `v3`, the same
-/// exploration+specialist-mixing config as the `arm-b`/`arm-c` corpus.
-/// `gen3-l05` (`--value-target-lambda 0.5`) read a real, mechanism-clean
-/// +17.2 Elo pooled gain over `v3` at 2,000 games, but was held rather than
-/// promoted after a frozen-panel non-regression check (a gate stage this
-/// project's promotion gate did not previously have) found a statistically
-/// real regression against two non-ancestor panel members. `gen3-l10`
-/// (`--value-target-lambda 1.0`) is its lambda=1.0 control sibling from the
-/// identical corpus. **`v3.bin` remains `DEFAULT_WEIGHTS`.** Both trained
-/// with the *pre-recipe-calibration* recipe (patience-based early stopping,
-/// never actually annealing below ~1.17e-3) -- see [`WEIGHTS_GEN3_L05_FIXEDRECIPE`]
+/// Generation 3: docs/roadmap.md's "run it again from `v3`" follow-up to Tier
+/// 1 -- a fresh ~100k-game corpus generated with the live champion (`v3`,
+/// bare `mcts-value`) as the generator, same exploration+specialist-mixing
+/// config that produced the winning `tier1-arm-bc-explore` corpus
+/// (`--sample-plies 14 --tau 1.0 --specialist-frac 0.25`), on a disjoint seed
+/// range (`2,400,001..=2,500,000`; see
+/// `crates/duels-value/weights/generations.json`, id `tier1-gen3`).
+/// Replay-verified cleanly and sealed to `/Volumes/storage/duels/` before
+/// training, per this project's standing corpus-loss-prevention discipline.
+///
+/// Two siblings trained from the *same* corpus, window=1 (this generation's
+/// corpus alone, not combined with `tier1-arm-bc-explore`): `gen3-l05` at
+/// `--value-target-lambda 0.5` (this project's post-Tier-1 baseline, per
+/// `v3`'s own promotion) and `gen3-l10` at `--value-target-lambda 1.0` (a
+/// control sibling, to see whether `0.5`'s advantage holds on a fresh corpus
+/// or was somewhat corpus-specific -- it does: `gen3-l10` did not clear the
+/// gating bar against `v3`, `gen3-l05` did, and `gen3-l05` beats `gen3-l10`
+/// directly by +35.4 Elo from the identical corpus).
+///
+/// **`gen3-l05` was held, not promoted.** It beats `v3` head-to-head, real
+/// and reproduced (+17.2 Elo pooled, `AcceptH1`) -- but reads *weaker* than
+/// `v3`'s own numbers against two of the three non-ancestor frozen panel
+/// members, a statistically real regression an independent gate-design
+/// review flagged as disqualifying on its own, regardless of the clean
+/// head-to-head win. `v3.bin` stays `duels-value`'s `DEFAULT_WEIGHTS`.
+/// `gen3-l05` and its `gen3-l10` (`--value-target-lambda 1.0`) control
+/// sibling both stay reachable (`mcts-value:weights=gen3-l05`/`weights=gen3
+/// -l10`) as a fully measured, archived, held result -- not a promotion,
+/// but not a discarded one either. See `duels_value`'s crate docs,
+/// "Generation 3", for the full write-up. Both were trained with the
+/// *pre-recipe-calibration* recipe (patience-based early stopping, never
+/// actually annealing below ~1.17e-3) -- see [`WEIGHTS_GEN3_L05_FIXEDRECIPE`]
 /// for the same corpus retrained with the fixed recipe, the direct isolation
 /// this crate's docs call for.
 pub const WEIGHTS_GEN3_L05: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
-/// See [`WEIGHTS_GEN3_L05`]'s docs.
+/// See [`WEIGHTS_GEN3_L05`]'s docs. The `--value-target-lambda 1.0` control
+/// sibling, same corpus.
 pub const WEIGHTS_GEN3_L10: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
 
@@ -809,10 +840,10 @@ pub const WEIGHTS_GEN3_L10: &[u8] =
 /// SWA weight-averaging over the final third of epochs (shipped only
 /// because it beat the single best epoch's validation log loss: 0.50650 vs
 /// 0.50656). Zero other variables changed from `gen3-l05`, so a head-to-head
-/// against it isolates the recipe fix's effect on its own. Not promoted
-/// merely by existing here -- see
-/// `crates/duels-value/weights/generations.json`'s corresponding entry (once
-/// recorded) and the calibration write-up for the actual gating result.
+/// against it isolates the recipe fix's effect on its own. **Measured: no
+/// detectable gain** (-6.4 Elo vs `gen3-l05` directly, `AcceptH0`) -- see
+/// `docs/roadmap.md`'s "Recipe calibration day" section for the full
+/// write-up. Not promoted; not the default.
 pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l05-fixedrecipe-candidate.bin");
 
@@ -825,12 +856,13 @@ pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
 /// node budget -- `nodes:2000` (matching production) for [`WEIGHTS_NB2000`],
 /// `nodes:8000` for [`WEIGHTS_NB8000`]. Both trained with the identical
 /// (recipe-calibration-day) recipe and `--value-target-lambda 0.5` from
-/// their own matched-size corpus. Neither is promoted or the default --
-/// reachable purely for this ablation's own gating comparison (each vs `v3`,
-/// and directly against each other) to test whether a deeper generating
-/// search's less noisy `q_root` (the mechanism the project owner's idea
-/// rests on, since `v3`/`gen3-l05-fixedrecipe` blend the training target
-/// toward `q_root` at `lambda=0.5`) actually shows up in arena strength.
+/// their own matched-size corpus. **Measured: no benefit found** --
+/// `nb8000` lost to `nb2000` directly (-14.2 Elo, `AcceptH0`), though
+/// flagged as inconclusive-leaning-negative rather than settled, since both
+/// were tested in the same data-starved regime the calibration day's own
+/// diagnostics identified as the dominant issue at this corpus size. Neither
+/// is promoted or the default -- reachable purely for this ablation's own
+/// gating comparison.
 pub const WEIGHTS_NB2000: &[u8] =
     include_bytes!("../../../duels-value/weights/nb2000-candidate.bin");
 /// See [`WEIGHTS_NB2000`]'s docs -- the `nodes:8000` half of the same paired

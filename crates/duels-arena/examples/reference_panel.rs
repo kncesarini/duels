@@ -22,8 +22,19 @@
 //! | ------ | ------ | ----: |
 //! | `mcts-value:weights=v2` (frozen) | `nodes:32000` | 800 |
 //! | `mcts-value:weights=v2` (frozen) | `nodes:2000`  | 1,000 |
+//! | `mcts-value:weights=v3` (frozen) | `nodes:2000`  | 1,000 |
 //! | `mcts-eval` (frozen at its current tuning) | `nodes:8000` | 800 |
 //! | `mcts-uct` (the non-learned/library-free route-substitution detector) | `nodes:8000` | 800 |
+//!
+//! The `v3` row was added when Generation 3 (`v4`, `gen3-l05`) replaced `v3`
+//! as the live default, mirroring the role `v2`'s own equal-budget row plays
+//! for the generation after *it*: "cumulative gain since the immediate
+//! predecessor, at equal budget". Only the equal-budget cell was added, not
+//! a second `v3@nodes:32000` row — that budget's whole point is a stable,
+//! rarely-changing high-budget yardstick, and `v2`'s own row already serves
+//! that purpose across every generation since; adding one per generation
+//! would grow the panel's most expensive cell without adding a distinct
+//! question it answers.
 //!
 //! The candidate always plays at `nodes:2000` (production's own search
 //! budget) against every member above.
@@ -73,6 +84,12 @@ const PANEL: &[(&str, &str, Budget, u32)] = &[
     (
         "v2-nodes2000",
         "mcts-value:weights=v2",
+        Budget::Nodes(2000),
+        1000,
+    ),
+    (
+        "v3-nodes2000",
+        "mcts-value:weights=v3",
         Budget::Nodes(2000),
         1000,
     ),

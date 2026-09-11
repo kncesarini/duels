@@ -860,16 +860,17 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
             // `duels_agent_mcts_value::Config::value_weights_override`. The
             // whole point is measuring the current generation against a
             // prior one, in one process (`duels-arena match --agent-a
-            // mcts-value --agent-b mcts-value:weights=v2`); the live default
-            // is `v3` (see `duels_value`'s crate docs, "Follow-up round
-            // three", on why `v3` was promoted), and `v1`/`v2` both stay
-            // reachable as frozen generations -- `v2` additionally as a
-            // frozen reference-panel member (`docs/roadmap.md` Tier 1-G).
+            // mcts-value --agent-b mcts-value:weights=v3`); the live default
+            // is `v4` (see `duels_value`'s crate docs, "Generation 3", on
+            // why `v4`/`gen3-l05` was promoted), and `v1`/`v2`/`v3` all stay
+            // reachable as frozen generations -- `v2` and `v3` additionally
+            // as frozen reference-panel members (`docs/roadmap.md` Tier 1-G).
             "weights" => {
                 cfg.value_weights_override = match v {
                     "default" | "live" | "current" => None,
                     "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
                     "v2" => Some(duels_agent_mcts_value::WEIGHTS_V2),
+                    "v3" => Some(duels_agent_mcts_value::WEIGHTS_V3),
                     // Unpromoted Tier 1-D/E experiment candidates -- see
                     // `duels_agent_mcts_value::WEIGHTS_ARM_A`'s docs for what
                     // each arm actually is. None of these is the default.
@@ -897,11 +898,12 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
-                             \"default\", \"v1\", \"v2\", \"arm-a\"/\"arm-b\"/\"arm-c\" for the \
-                             Tier 1-D/E experiment candidates, \"arm-c2\"/\"arm-d2\" for the \
-                             corrected-gradient retest, \"gen3-l05\"/\"gen3-l10\"/\
-                             \"gen3-l05-fixedrecipe\" for Generation 3 and its recipe-fix retest, \
-                             or \"nb2000\"/\"nb8000\" for the node-budget ablation)"
+                             \"default\", \"v1\", \"v2\", \"v3\", \"arm-a\"/\"arm-b\"/\"arm-c\" \
+                             for the Tier 1-D/E experiment candidates, \"arm-c2\"/\"arm-d2\" for \
+                             the corrected-gradient retest, \"gen3-l05\"/\"gen3-l10\"/\
+                             \"gen3-l05-fixedrecipe\" for Generation 3 and its recipe-fix retest \
+                             (v3 remains DEFAULT_WEIGHTS -- gen3-l05 was held, not promoted), or \
+                             \"nb2000\"/\"nb8000\" for the node-budget ablation)"
                         ))
                     }
                 };

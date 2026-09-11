@@ -735,6 +735,105 @@
 //! `+0.7`, `+1.0` Elo, every CI crossing zero) -- `0.15` is still fine for
 //! `v3`; no change made.
 //!
+//! # Generation 3 (`gen3-l05`), held -- the gain-decay question, answered
+//!
+//! `docs/roadmap.md`'s own plan asked, after Tier 1: "three generations is
+//! enough to see whether the gain per generation is holding ... or decaying
+//! toward zero." This round ran that experiment. A fresh ~100k-game corpus
+//! (`tier1-gen3-explore`, seed range `2,400,001-2,500,000`, disjoint from
+//! every prior range) was self-played by the then-champion `v3` with the
+//! identical exploration+specialist-mixing generator config that produced
+//! `tier1-arm-bc-explore` (`--sample-plies 14 --tau 1.0 --specialist-frac
+//! 0.25`), replay-verified cleanly (every game reproduced, all five checks
+//! held) and sealed to `/Volumes/storage/duels/` with a checksum comparison
+//! against the working copy before training. Trained window=1 (this
+//! generation's corpus alone, not combined with `tier1-arm-bc-explore`) at
+//! this project's production hyperparameters, `--value-target-lambda 0.5`
+//! (the post-Tier-1 baseline), plus a `lambda=1.0` control sibling
+//! (`gen3-l10`) from the *identical* corpus.
+//!
+//! **The gain decayed, roughly to a third of the previous jump, and this
+//! project's own stop rule came close to firing.** The properly pooled
+//! gating cell (4,000 games across two disjoint seed ranges, `elo1=10`)
+//! reads **+17.2 Elo vs `v3`**, `[+6.4, +28.0]`, `AcceptH1`, mechanism gate
+//! `Pass` -- real (the CI excludes zero) but well under half of `v2` -> `v3`'s
+//! own +61.0/+53.9. The two individual ranges disagreed sharply before
+//! pooling (+29.6 `AcceptH1` on the first, +4.9 `Continue` on the second),
+//! and the `TimeMs(1000)` cross-check (1,000 games, machine checked quiet by
+//! process list) read +9.4 Elo `[-12.2, +30.9]`, also `Continue` --
+//! directionally consistent but not independently significant at that
+//! sample size. `gen3-l10` (the `lambda=1.0` control, same corpus) does
+//! *not* clear the gating bar against `v3` (-10.8 Elo, `Continue`) and loses
+//! to `gen3-l05` directly by -35.4 Elo -- confirming the `lambda=0.5` blend,
+//! not fresh corpus content on its own, is still what carries a
+//! generation's edge, the same story `v3`'s own promotion told.
+//!
+//! | Candidate | vs `v3`@2000 (range 1) | vs `v3`@2000 (range 2) | vs `v3`@2000 (pooled, gating) | vs `v3`@TimeMs(1000) |
+//! | --- | ---: | ---: | ---: | ---: |
+//! | `gen3-l05` (0.5) | +29.6 | +4.9 | **+17.2** | +9.4 |
+//! | `gen3-l10` (1.0, control) | -10.8 | -- | -- | -- |
+//!
+//! The frozen reference panel (candidate at `nodes:2000`) adds a real
+//! nuance worth flagging rather than burying: vs frozen `v2@nodes:32000`,
+//! -1.7 Elo (`Continue`) -- *less* negative than `v3`'s own -34.4 in the
+//! identical cell, a secondary positive signal; vs frozen `v2@nodes:2000`,
+//! +81.3 Elo (`AcceptH1`); vs `mcts-eval@nodes:8000`, +142.4 Elo
+//! (`AcceptH1`) -- decisively positive in absolute terms, but *weaker* than
+//! `v3`'s own +196.4 against the identical panel member; vs
+//! `mcts-uct@nodes:8000`, +229.8 Elo (`AcceptH1`), again weaker than `v3`'s
+//! own +260.0. Elo readings against a common third party are not strictly
+//! transitive across generations (this project has hit that
+//! non-composition before, e.g. Tier 1-D/E's arm-a/arm-b subtraction
+//! caveat) — so this reads as a caveat a human should weigh, not a
+//! contradiction of the direct win over `v3`, but it is exactly the kind of
+//! drift the frozen panel exists to surface.
+//!
+//! The `c`-sweep was re-run for this generation's own weights rather than
+//! assuming `v3`'s sweep result still holds (`0.10`/`0.20`/`0.25` vs the
+//! shipped `0.15`, 1,000 games each at `nodes:2000`): `-1.4` (`Continue`),
+//! `-12.8` (`AcceptH0`, worse), `-26.8` (`AcceptH0`, worse) -- `0.15` stays
+//! the default.
+//!
+//! **Held, not promoted — a second, independent review reached the same
+//! call.** A head-to-head win against the immediate parent alone, even a
+//! reproduced and mechanism-clean one, is not sufficient evidence to
+//! promote once a frozen reference panel exists: this generation's
+//! non-ancestor panel readings are *weaker* than `v3`'s own (see the panel
+//! paragraph above; a pooled z-score against `mcts-eval`/`mcts-uct` of
+//! roughly -3, a statistically real regression against opponents `v3` was
+//! not tuned against). An architect review commissioned specifically to
+//! design a safe autonomous promotion gate (`docs/roadmap.md`'s
+//! "autonomous loop" design) independently proposed a panel
+//! non-regression check as a required gate stage, then applied it to this
+//! exact generation as a worked test case and reached the identical
+//! conclusion: hold, don't promote, keep the corpus (the champion is
+//! unchanged, so nothing about the data is invalidated), and let a future
+//! generation's larger data window try again from `v3`. `v3.bin` stays
+//! [`DEFAULT_WEIGHTS`]. Every generation measured in this round
+//! (`gen3-l05`, `gen3-l10`) is recorded in
+//! `crates/duels-value/weights/generations.json` per Tier 1-F, marked
+//! `held`, with the same corpus-manifest/training-args/battery/golden-
+//! reference shape every prior generation used — reachable via
+//! `mcts-value:weights=gen3-l05`/`weights=gen3-l10` for anyone who wants to
+//! build on the data or the finding rather than the weights.
+//!
+//! **Read this as this project's own predicted plateau largely bearing
+//! out, and as the moment the promotion gate itself needed to grow up.**
+//! `docs/roadmap.md`'s evaluation-discipline section already warned
+//! "expected effects from here on are +20 to +50 Elo per step, not the
+//! larger jumps this project's early rounds saw" — Generation 3's
+//! head-to-head landed *below* even that lowered range, and the panel
+//! regression is the sharper, more diagnostic signal: this generation
+//! likely over-fit to beating `v3` specifically (the same `q_root` distilled
+//! from the same parent, gated only against that parent) rather than
+//! becoming more generally correct. `docs/roadmap.md`'s "autonomous loop"
+//! design section lays out the fix this motivates: a data window spanning
+//! more than one generation, a fixed-epoch annealed training schedule
+//! (this project's training runs have never actually reached a low
+//! learning rate — early stopping has fired before the schedule's tail
+//! every time so far), and the panel-regression check itself as a standing
+//! gate, not a one-off review.
+//!
 //! # Usage
 //!
 //! ```
@@ -763,24 +862,40 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// `v3.bin`, the Tier 1 generate-explore-train loop's winning generation
-/// (`crates/duels-value/weights/generations.json`, id `tier1-arm-c-prime`) —
-/// a retrain on the same exploration+specialist-mixing corpus `v2.bin`'s
-/// successor experiment used, at a corrected `--value-target-lambda 0.5`
-/// blended loss — promoted over `v2.bin` after a 2,000-game confirmation
-/// run, reproduced on a disjoint seed range; see the crate docs' "Follow-up
-/// round three" section for the full arena validation and the reasoning.
-/// Embedding it rather than loading a file at run time keeps this crate a
-/// pure function of its inputs and keeps an agent that uses it reproducible
+/// `v3.bin` — **still the champion.** Generation 3 of the Tier 1
+/// generate-explore-train loop (`crates/duels-value/weights/generations.json`,
+/// id `tier1-gen3-l05`, embedded here as [`duels_agent_mcts_value::WEIGHTS_GEN3_L05`])
+/// was trained and fully gated, and is a real, mechanism-clean, reproduced
+/// gain over `v3` head-to-head (pooled **+17.2 Elo**, 95% CI `[+6.4, +28.0]`,
+/// `AcceptH1`) — but **was not promoted**. The frozen reference panel
+/// (`docs/roadmap.md`'s Tier 1-G) reads it as measurably *weaker* than `v3`
+/// against two of the panel's three non-ancestor members (`mcts-eval`,
+/// `mcts-uct` at `nodes:8000`) — still decisively positive against both in
+/// absolute terms, but a real, statistically-supported regression relative
+/// to `v3`'s own numbers there, and exactly the kind of non-transitive,
+/// beats-its-own-parent-but-not-generally-stronger pattern this project has
+/// hit before (`v1`'s original promotion, `v2`'s). See the crate docs'
+/// "Generation 3" section for the full write-up, including the honest
+/// framing that a head-to-head win against the immediate parent alone is
+/// not sufficient evidence to promote once a generation is being checked
+/// against a panel that predates it. `tier1-gen3-l05` and its
+/// `lambda=1.0` control sibling `tier1-gen3-l10` stay in the registry as
+/// **held** — measured, reproducible, fully archived — should a future
+/// round want to build on the data rather than the weights. Embedding
+/// `v3.bin` rather than loading a file at run time keeps this crate a pure
+/// function of its inputs and keeps an agent that uses it reproducible
 /// from its binary alone.
 ///
-/// **`v1.bin` and `v2.bin` sit alongside it in the same directory and are
-/// not this constant.** `v1.bin` is reachable via `mcts-value:weights=v1`
-/// (`duels_agent_mcts_value::WEIGHTS_V1`); `v2.bin`, the generation this one
-/// replaces, is reachable via `mcts-value:weights=v2`
-/// (`duels_agent_mcts_value::WEIGHTS_V2`) and stays in the frozen reference
-/// panel (`docs/roadmap.md`'s Tier 1-G) at both `nodes:32000` and
-/// `nodes:2000`.
+/// **`v1.bin`, `v2.bin`, and the held Generation 3 candidates sit alongside
+/// it in the same directory and are not this constant.** `v1.bin` is
+/// reachable via `mcts-value:weights=v1`
+/// (`duels_agent_mcts_value::WEIGHTS_V1`); `v2.bin` via
+/// `mcts-value:weights=v2` (`duels_agent_mcts_value::WEIGHTS_V2`) and stays
+/// in the frozen reference panel at both `nodes:32000` and `nodes:2000`;
+/// `gen3-l05`/`gen3-l10` are reachable via `mcts-value:weights=gen3-l05`
+/// (`duels_agent_mcts_value::WEIGHTS_GEN3_L05`) and `weights=gen3-l10`
+/// (`WEIGHTS_GEN3_L10`) for anyone who wants to reproduce or build on the
+/// held result.
 const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v3.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
