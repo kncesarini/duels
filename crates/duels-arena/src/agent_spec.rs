@@ -858,15 +858,18 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
             // Pins the learned leaf to a frozen historical `duels-value`
             // weights generation instead of the live embedded default — see
             // `duels_agent_mcts_value::Config::value_weights_override`. The
-            // whole point is measuring the current generation against the one
-            // it replaced, in one process (`duels-arena match --agent-a
-            // mcts-value --agent-b mcts-value:weights=v1`), so `v1` is the
-            // only generation kept; the live default is `v2` (see
-            // `duels_value`'s crate docs on why `v2` was promoted).
+            // whole point is measuring the current generation against a
+            // prior one, in one process (`duels-arena match --agent-a
+            // mcts-value --agent-b mcts-value:weights=v2`); the live default
+            // is `v3` (see `duels_value`'s crate docs, "Follow-up round
+            // three", on why `v3` was promoted), and `v1`/`v2` both stay
+            // reachable as frozen generations -- `v2` additionally as a
+            // frozen reference-panel member (`docs/roadmap.md` Tier 1-G).
             "weights" => {
                 cfg.value_weights_override = match v {
                     "default" | "live" | "current" => None,
                     "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
+                    "v2" => Some(duels_agent_mcts_value::WEIGHTS_V2),
                     // Unpromoted Tier 1-D/E experiment candidates -- see
                     // `duels_agent_mcts_value::WEIGHTS_ARM_A`'s docs for what
                     // each arm actually is. None of these is the default.
@@ -881,8 +884,8 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
-                             \"default\", \"v1\", \"arm-a\"/\"arm-b\"/\"arm-c\" for the Tier \
-                             1-D/E experiment candidates, or \"arm-c2\"/\"arm-d2\" for the \
+                             \"default\", \"v1\", \"v2\", \"arm-a\"/\"arm-b\"/\"arm-c\" for the \
+                             Tier 1-D/E experiment candidates, or \"arm-c2\"/\"arm-d2\" for the \
                              corrected-gradient retest)"
                         ))
                     }

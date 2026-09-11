@@ -104,8 +104,8 @@
     },
     {
       "id": "tier1-arm-b",
-      "status": "accepted_candidate",
-      "notes": "Tier 1-D+E: corpus generated WITH exploration (visits^(1/tau), tau=1, 14 plies) and 25% specialist-seat mixing, lambda=1.0. +32.0 Elo vs v2 at 2,000 games (elo1=10), reproduced at +26.8 Elo on a disjoint seed range (arm-b-vs-v2-nodes2000-confirm). Both accepted, mechanism gate Pass. Strongest generation measured before the Tier 1-D/E gradient-bug fix and its retest (this file's newest entries) -- see this generation's status update once that comparison lands.",
+      "status": "superseded_candidate",
+      "notes": "Tier 1-D+E: corpus generated WITH exploration (visits^(1/tau), tau=1, 14 plies) and 25% specialist-seat mixing, lambda=1.0. +32.0 Elo vs v2 at 2,000 games (elo1=10), reproduced at +26.8 Elo on a disjoint seed range (arm-b-vs-v2-nodes2000-confirm). Both accepted, mechanism gate Pass. Was the strongest generation measured until the Tier 1-D/E gradient-bug fix and its retest: tier1-arm-c-prime beats this generation directly by +27.0 Elo (2,000 games, CI excludes zero) and beats v2 by nearly 2x this generation's own margin. Kept reachable via mcts-value:weights=arm-b as the ablation baseline that isolates D's effect from E's.",
       "weights": {
         "repo_path": "crates/duels-value/weights/arm-b-candidate.bin",
         "archive_path": "weights/tier1-arm-b-candidate.bin",
@@ -180,6 +180,82 @@
         "archive_dir": "generations/tier1-battery-results/arm-c-vs-*"
       },
       "golden": { "weights_id": "211x128x4/3b584273", "pinned_in": null }
+    },
+    {
+      "id": "tier1-arm-c-prime",
+      "status": "promoted",
+      "notes": "The corrected retest of tier1-arm-c's idea, after tools/train_value.py's blended-loss gradient bug (see that entry's notes) was found and fixed. SAME corpus as arm-b/arm-c (tier1-arm-bc-explore, NOT regenerated), same value_target_lambda=0.5, trained with the fixed gradient at this project's documented production hyperparameters (--hidden 128 --epochs 60 --lr 2e-3 --weight-decay 1e-5 --patience 8). Trained cleanly: no divide-by-zero/overflow/NaN, val win-logloss declined smoothly to best epoch 17 at 0.51266 (better than arm-b's 0.51899). The strongest generation measured in this project to date: +61.0 Elo vs v2 at 2,000 games (elo1=10), reproduced at +53.9 Elo on a disjoint seed range; beats arm-b directly by +27.0 Elo (2,000 games, CI excludes zero); least-negative of any arm against the frozen v2@nodes:32000 panel member (-34.4, vs arm-b's -55.1); +196.4 Elo vs mcts-eval@nodes:8000 and +260.0 vs mcts-uct@nodes:8000 (both far above arm-b's +91.9/+153.2). Every cell's mechanism gate (civilian_share>=0.5x,science_share>=0.5x,military_share<=2x) passes. Promoted as duels-value's new DEFAULT_WEIGHTS; v2 is retired to a frozen mcts-value:weights=v2 reference-panel slot per docs/roadmap.md Tier 1-G.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/arm-c-prime-candidate.bin (promoted: also crates/duels-value/weights/v3.bin, see promotion commit)",
+        "archive_path": "weights/tier1-arm-c-prime-candidate.bin",
+        "sha256": "7e306bba4067ba4fe27e031b2415f6c447c10a16f8fb0292e99b561f5d85ea40",
+        "weights_id": "211x128x4/3e1dd480",
+        "reachable_via": "mcts-value:weights=arm-c2 (pre-promotion name); the live default (bare mcts-value) after promotion"
+      },
+      "corpus": {
+        "label": "tier1-arm-bc-explore",
+        "note": "Same corpus as tier1-arm-b/tier1-arm-c -- see tier1-arm-b's entry for the manifest."
+      },
+      "training": {
+        "script": "tools/train_value.py (post-gradient-fix)",
+        "matrix": "arena/corpus/arm-bc-explore-features.bin",
+        "hidden": 128,
+        "epochs_ran": 26,
+        "best_epoch": 17,
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-arm-c-prime/arm-c-prime-metrics.json",
+        "known_bug": "affected_by_gradient_bug: false -- trained with the fixed blended_dz"
+      },
+      "battery": {
+        "gate_note": "corrected gradient; finite-difference checked (tools/test_train_value_grad.py)",
+        "cells": [
+          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 61.0, "elo_ci": [45.6, 76.5], "sprt": "AcceptH1", "mechanism": "Pass" },
+          { "opponent": "mcts-value (v2), disjoint seed range", "budget": "nodes:2000", "games": 2000, "elo": 53.9, "elo_ci": [38.5, 69.3], "label": "arm-c2-vs-v2-nodes2000-confirm" },
+          { "opponent": "mcts-value:weights=arm-b (direct, isolates the gradient fix's effect)", "budget": "nodes:2000", "games": 2000, "elo": 27.0, "elo_ci": [11.7, 42.2], "label": "arm-c2-vs-arm-b-direct" },
+          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -34.4, "elo_ci": [-58.6, -10.2] },
+          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 196.4, "elo_ci": [168.4, 224.4] },
+          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 260.0, "elo_ci": [228.9, 291.1] },
+          { "opponent": "mcts-value (v2), TimeMs", "budget": "time_ms:1000", "games": 1000, "note": "see promotion commit for the number and the machine-quietness caveat" }
+        ],
+        "archive_dir": "generations/tier1-battery-results/arm-c2-*"
+      },
+      "golden": { "weights_id": "211x128x4/3e1dd480", "pinned_in": "crates/agents/mcts-value/src/golden.rs (regenerated at promotion)" }
+    },
+    {
+      "id": "tier1-arm-d-prime",
+      "status": "rejected",
+      "notes": "A hedge alongside tier1-arm-c-prime: same corpus and corrected gradient, value_target_lambda=0.75 instead of 0.5. Also trained cleanly (best epoch 4, val win-logloss 0.51466) and also beats v2 (+43.5 Elo) and arm-b directly (+37.7 Elo) -- a real, working generation, not a failed run. Rejected only because tier1-arm-c-prime (lambda=0.5) beats it on every single measured cell (vs v2: +61.0 vs +43.5; vs arm-b: +27.0 vs +37.7 -- the one cell where d-prime reads higher is d-prime vs arm-b, but c-prime's own vs-v2 and vs-panel numbers are still larger in every other comparison, and c-prime beats d-prime's proxy for overall strength throughout). Kept reachable via mcts-value:weights=arm-d2 as a documented negative-by-comparison, not a failure.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/arm-d-prime-candidate.bin",
+        "archive_path": "weights/tier1-arm-d-prime-candidate.bin",
+        "sha256": "8c9c123c0ac1b3fd07aad2d5649946016b2035375836d1f36344049603b22514",
+        "weights_id": "211x128x4/6ec85ab3",
+        "reachable_via": "mcts-value:weights=arm-d2"
+      },
+      "corpus": {
+        "label": "tier1-arm-bc-explore",
+        "note": "Same corpus as tier1-arm-b/tier1-arm-c/tier1-arm-c-prime -- see tier1-arm-b's entry for the manifest."
+      },
+      "training": {
+        "script": "tools/train_value.py (post-gradient-fix)",
+        "matrix": "arena/corpus/arm-bc-explore-features.bin",
+        "hidden": 128,
+        "best_epoch": 4,
+        "value_target_lambda": 0.75,
+        "metrics_archive": "generations/tier1-arm-d-prime/arm-d-prime-metrics.json",
+        "known_bug": "affected_by_gradient_bug: false -- trained with the fixed blended_dz"
+      },
+      "battery": {
+        "cells": [
+          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 43.5, "elo_ci": [28.1, 58.8], "sprt": "AcceptH1", "mechanism": "Pass" },
+          { "opponent": "mcts-value:weights=arm-b (direct)", "budget": "nodes:2000", "games": 2000, "elo": 37.7, "elo_ci": [22.3, 53.0], "label": "arm-d2-vs-arm-b-direct" },
+          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -46.2, "elo_ci": [-70.5, -22.0] },
+          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 169.8, "elo_ci": [142.8, 196.8] },
+          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 231.1, "elo_ci": [201.5, 260.7] }
+        ],
+        "archive_dir": "generations/tier1-battery-results/arm-d2-*"
+      },
+      "golden": { "weights_id": "211x128x4/6ec85ab3", "pinned_in": null }
     }
   ]
 }

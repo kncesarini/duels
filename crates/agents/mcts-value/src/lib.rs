@@ -717,6 +717,16 @@ pub use tree::{Config, Objective, PriorMode, RootStats};
 /// away in one process, rather than requiring two separately-built binaries.
 pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
 
+/// `v2`, the generation `v3` replaced (`duels_value`'s crate docs, "Follow-up
+/// round three"). Kept reachable and frozen the same way [`WEIGHTS_V1`] is
+/// -- and additionally, per `docs/roadmap.md`'s Tier 1-G, as a member of the
+/// **frozen reference panel** every future generation's promotion battery
+/// measures against (at both `nodes:32000` and `nodes:2000`; see
+/// `crates/duels-arena/examples/reference_panel.rs`), since it is the direct
+/// ancestor at equal budget and a stable, non-moving yardstick across
+/// however many further generations follow `v3`.
+pub const WEIGHTS_V2: &[u8] = include_bytes!("../../../duels-value/weights/v2.bin");
+
 /// Unpromoted candidate `duels-value` weights from the roadmap's Tier 1-D/E
 /// experiment (`docs/roadmap.md`, "Tier 1 design"): three generations trained
 /// from matched-conditions ~100k-game corpora to isolate the exploration/

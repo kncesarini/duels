@@ -82,12 +82,12 @@ mod tests {
     const TOLERANCE: f64 = 1e-6;
 
     /// The shape and content hash of the weights every number in this file was
-    /// taken against — `duels-value`'s `weights/v2.bin`.
+    /// taken against — `duels-value`'s `weights/v3.bin`.
     ///
     /// Checked on its own as well as through the values, so that a retrain
     /// fails with "the weights changed" rather than with twenty confusing
     /// numeric mismatches.
-    const WEIGHTS_ID: &str = "211x128x4/17fee9ab";
+    const WEIGHTS_ID: &str = "211x128x4/3e1dd480";
 
     /// The summation order the table was generated at. Recorded because a
     /// summation order change can move the hidden layer's sum (a
@@ -127,26 +127,26 @@ mod tests {
     /// below (it is `#[ignore]`d) and paste. Do not edit an entry by hand to
     /// make a failing test pass; see the module docs.
     const GOLDEN: &[(u64, u32, f64)] = &[
-        (0, 6, 0.249034643),
-        (1, 12, 0.147285193),
-        (2, 18, 0.254448742),
-        (3, 24, 0.377593189),
-        (4, 30, 0.274122655),
-        (5, 36, 0.340896219),
-        (6, 42, 0.131832302),
-        (7, 48, 0.626218438),
-        (8, 52, 0.028342843),
-        (9, 56, 0.734272599),
-        (10, 8, 0.702561140),
-        (11, 14, 0.543785214),
-        (12, 20, 0.705658972),
-        (13, 26, 0.276564330),
-        (14, 32, 0.896245182),
-        (15, 38, 0.458041877),
-        (16, 44, 0.028793152),
-        (17, 50, 0.006973108),
-        (18, 54, 0.881050408),
-        (19, 58, 0.948036909),
+        (0, 6, 0.207779959),
+        (1, 12, 0.164361119),
+        (2, 18, 0.261967212),
+        (3, 24, 0.323361874),
+        (4, 30, 0.462161571),
+        (5, 36, 0.540856838),
+        (6, 42, 0.106912859),
+        (7, 48, 0.686690211),
+        (8, 52, 0.037132513),
+        (9, 56, 0.567905903),
+        (10, 8, 0.638949752),
+        (11, 14, 0.517001033),
+        (12, 20, 0.643608391),
+        (13, 26, 0.254723907),
+        (14, 32, 0.888707876),
+        (15, 38, 0.415695608),
+        (16, 44, 0.019701943),
+        (17, 50, 0.041186132),
+        (18, 54, 0.961764872),
+        (19, 58, 0.906231046),
     ];
 
     /// `(seed, plies, [P(military), P(science), P(civilian), P(loss)])` for the
@@ -160,11 +160,11 @@ mod tests {
     /// Pins the *decomposition*, not just its sum — see the module docs for
     /// why a scalar-only table would miss the change that matters most here.
     const GOLDEN_DIST: &[(u64, u32, [f64; 4])] = &[
-        (0, 6, [0.045614015, 0.107367679, 0.096052952, 0.750965416]),
-        (1, 12, [0.057360105, 0.007702523, 0.082222566, 0.852714837]),
-        (2, 18, [0.012840244, 0.004448324, 0.237160176, 0.745551229]),
-        (3, 24, [0.037631758, 0.013930346, 0.326031089, 0.622406840]),
-        (4, 30, [0.032998160, 0.000616495, 0.240508005, 0.725877345]),
+        (0, 6, [0.036992673, 0.111281894, 0.059505392, 0.792220056]),
+        (1, 12, [0.085754678, 0.021291843, 0.057314601, 0.835638940]),
+        (2, 18, [0.015223198, 0.020112470, 0.226631537, 0.738032818]),
+        (3, 24, [0.014608924, 0.027844837, 0.280908108, 0.676638126]),
+        (4, 30, [0.057523295, 0.002094244, 0.402544022, 0.537838459]),
     ];
 
     /// The weights identity is pinned on its own, so a retrain says so in one
@@ -179,6 +179,49 @@ mod tests {
              updating anything here"
         );
         assert_eq!(duels_value::Summation::default().name(), SUMMATION);
+    }
+
+    /// **Every frozen generation gets a golden check too, not just the live
+    /// default** — `docs/roadmap.md`'s Tier 1-F design, resolved: a
+    /// generations registry (`crates/duels-value/weights/generations.json`)
+    /// replaces a single hand-pinned hash specifically so this stops being a
+    /// one-generation check. This is deliberately the *hash* only, not the
+    /// full twenty-position table above: those frozen generations are
+    /// reachable for comparison and (`v2`'s case) sit in the frozen
+    /// reference panel, but their own behaviour was already fully validated
+    /// when *they* were the live default (or, for the arms, in the
+    /// promotion write-up that measured them) — what would silently break
+    /// here is the constant pointing at the wrong bytes (a copy-paste or a
+    /// rebuild-with-different-file mistake), which the hash alone catches.
+    #[test]
+    fn every_frozen_generation_still_matches_its_recorded_hash() {
+        let frozen: &[(&str, &[u8], &str)] = &[
+            ("v1", crate::WEIGHTS_V1, "211x128x4/036d2b5e"),
+            ("v2", crate::WEIGHTS_V2, "211x128x4/17fee9ab"),
+            ("arm-a", crate::WEIGHTS_ARM_A, "211x128x4/21061eaa"),
+            ("arm-b", crate::WEIGHTS_ARM_B, "211x128x4/81d06b58"),
+            ("arm-c", crate::WEIGHTS_ARM_C, "211x128x4/3b584273"),
+            (
+                "arm-c2 (tier1-arm-c-prime; identical to the live v3 default)",
+                crate::WEIGHTS_ARM_C_PRIME,
+                "211x128x4/3e1dd480",
+            ),
+            (
+                "arm-d2 (tier1-arm-d-prime)",
+                crate::WEIGHTS_ARM_D_PRIME,
+                "211x128x4/6ec85ab3",
+            ),
+        ];
+        for (name, bytes, want) in frozen {
+            let got = duels_value::weights_id(bytes);
+            assert_eq!(
+                &got, want,
+                "mcts-value:weights={name} no longer matches the hash recorded in \
+                 crates/duels-value/weights/generations.json -- if this is an \
+                 intentional retrain of that generation, update both the constant's \
+                 doc comment and generations.json's entry for it together"
+            );
+        }
     }
 
     /// Every position in the table must still be a legal, reachable,
