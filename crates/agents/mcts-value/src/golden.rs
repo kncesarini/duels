@@ -82,12 +82,12 @@ mod tests {
     const TOLERANCE: f64 = 1e-6;
 
     /// The shape and content hash of the weights every number in this file was
-    /// taken against — `duels-value`'s `weights/v3.bin`.
+    /// taken against — `duels-value`'s `weights/v4.bin`.
     ///
     /// Checked on its own as well as through the values, so that a retrain
     /// fails with "the weights changed" rather than with twenty confusing
     /// numeric mismatches.
-    const WEIGHTS_ID: &str = "211x128x4/3e1dd480";
+    const WEIGHTS_ID: &str = "211x128x4/7b93dbf0";
 
     /// The summation order the table was generated at. Recorded because a
     /// summation order change can move the hidden layer's sum (a
@@ -127,26 +127,26 @@ mod tests {
     /// below (it is `#[ignore]`d) and paste. Do not edit an entry by hand to
     /// make a failing test pass; see the module docs.
     const GOLDEN: &[(u64, u32, f64)] = &[
-        (0, 6, 0.207779959),
-        (1, 12, 0.164361119),
-        (2, 18, 0.261967212),
-        (3, 24, 0.323361874),
-        (4, 30, 0.462161571),
-        (5, 36, 0.540856838),
-        (6, 42, 0.106912859),
-        (7, 48, 0.686690211),
-        (8, 52, 0.037132513),
-        (9, 56, 0.567905903),
-        (10, 8, 0.638949752),
-        (11, 14, 0.517001033),
-        (12, 20, 0.643608391),
-        (13, 26, 0.254723907),
-        (14, 32, 0.888707876),
-        (15, 38, 0.415695608),
-        (16, 44, 0.019701943),
-        (17, 50, 0.041186132),
-        (18, 54, 0.961764872),
-        (19, 58, 0.906231046),
+        (0, 6, 0.156503320),
+        (1, 12, 0.230790213),
+        (2, 18, 0.226690352),
+        (3, 24, 0.214289486),
+        (4, 30, 0.455280989),
+        (5, 36, 0.448438913),
+        (6, 42, 0.178346559),
+        (7, 48, 0.664573967),
+        (8, 52, 0.007190466),
+        (9, 56, 0.551578283),
+        (10, 8, 0.674222112),
+        (11, 14, 0.446133196),
+        (12, 20, 0.616146982),
+        (13, 26, 0.237339467),
+        (14, 32, 0.843671918),
+        (15, 38, 0.564001262),
+        (16, 44, 0.010758346),
+        (17, 50, 0.042280365),
+        (18, 54, 0.946439326),
+        (19, 58, 0.636122525),
     ];
 
     /// `(seed, plies, [P(military), P(science), P(civilian), P(loss)])` for the
@@ -160,11 +160,11 @@ mod tests {
     /// Pins the *decomposition*, not just its sum — see the module docs for
     /// why a scalar-only table would miss the change that matters most here.
     const GOLDEN_DIST: &[(u64, u32, [f64; 4])] = &[
-        (0, 6, [0.036992673, 0.111281894, 0.059505392, 0.792220056]),
-        (1, 12, [0.085754678, 0.021291843, 0.057314601, 0.835638940]),
-        (2, 18, [0.015223198, 0.020112470, 0.226631537, 0.738032818]),
-        (3, 24, [0.014608924, 0.027844837, 0.280908108, 0.676638126]),
-        (4, 30, [0.057523295, 0.002094244, 0.402544022, 0.537838459]),
+        (0, 6, [0.028610500, 0.093319364, 0.034573458, 0.843496680]),
+        (1, 12, [0.151212201, 0.021785734, 0.057792272, 0.769209802]),
+        (2, 18, [0.021559432, 0.021406159, 0.183724761, 0.773309648]),
+        (3, 24, [0.031408314, 0.025186313, 0.157694861, 0.785710454]),
+        (4, 30, [0.018139437, 0.000679088, 0.436462462, 0.544718981]),
     ];
 
     /// The weights identity is pinned on its own, so a retrain says so in one
@@ -198,11 +198,12 @@ mod tests {
         let frozen: &[(&str, &[u8], &str)] = &[
             ("v1", crate::WEIGHTS_V1, "211x128x4/036d2b5e"),
             ("v2", crate::WEIGHTS_V2, "211x128x4/17fee9ab"),
+            ("v3", crate::WEIGHTS_V3, "211x128x4/3e1dd480"),
             ("arm-a", crate::WEIGHTS_ARM_A, "211x128x4/21061eaa"),
             ("arm-b", crate::WEIGHTS_ARM_B, "211x128x4/81d06b58"),
             ("arm-c", crate::WEIGHTS_ARM_C, "211x128x4/3b584273"),
             (
-                "arm-c2 (tier1-arm-c-prime; identical to the live v3 default)",
+                "arm-c2 (tier1-arm-c-prime; identical to the frozen v3, not the live default)",
                 crate::WEIGHTS_ARM_C_PRIME,
                 "211x128x4/3e1dd480",
             ),
@@ -210,6 +211,16 @@ mod tests {
                 "arm-d2 (tier1-arm-d-prime)",
                 crate::WEIGHTS_ARM_D_PRIME,
                 "211x128x4/6ec85ab3",
+            ),
+            (
+                "gen3-l05 (tier1-gen3-l05; identical to the live v4 default)",
+                crate::WEIGHTS_GEN3_L05,
+                "211x128x4/7b93dbf0",
+            ),
+            (
+                "gen3-l10 (tier1-gen3, value-target-lambda=1.0 control sibling)",
+                crate::WEIGHTS_GEN3_L10,
+                "211x128x4/5afaaed3",
             ),
         ];
         for (name, bytes, want) in frozen {

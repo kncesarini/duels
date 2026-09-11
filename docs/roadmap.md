@@ -297,10 +297,69 @@ generation's corpus manifest, training args, battery result and golden
 reference. `v2` is retired to a frozen `mcts-value:weights=v2` slot (G) and
 stays in the frozen reference panel rather than being deleted.
 
-Not yet done from this tier's plan: a fresh from-`v3` generation (the
-"three generations, see if the gain decays" question) and the `duels-eval`
-`CODEOWNERS`-style discipline for `duels-value` itself — both left for a
+Not yet done from this tier's plan at the time: a fresh from-`v3` generation
+(the "three generations, see if the gain decays" question) and the
+`duels-eval` `CODEOWNERS`-style discipline for `duels-value` itself — the
+first is Generation 3, immediately below; the second is still left for a
 future round, not blocked on anything above.
+
+### Generation 3 (2026-09-11): the gain-decay question, answered
+
+Ran the "three generations, see whether the gain per generation holds or
+decays" experiment this tier's plan called for. A fresh ~100k-game corpus
+(`tier1-gen3-explore`, seed range `2,400,001-2,500,000`, disjoint from every
+prior range) was self-played by the then-champion `v3` with the identical
+exploration+specialist-mixing generator config that produced
+`tier1-arm-bc-explore` (`--sample-plies 14 --tau 1.0 --specialist-frac
+0.25`), replay-verified cleanly and sealed to `/Volumes/storage/duels/` with
+a checksum comparison before training — matching this project's standing
+corpus-loss-prevention discipline throughout. Trained window=1 (this
+corpus alone), at production hyperparameters, `--value-target-lambda 0.5`.
+
+**The honest headline: the gain decayed sharply, and this project's own
+stop rule (`docs/roadmap.md`'s "±10 Elo, two consecutive generations" test)
+is close to firing, though not conclusively yet.** The properly pooled
+gating cell (4,000 games across two disjoint seed ranges, `elo1=10`) reads
+**+17.2 Elo vs `v3`** `[+6.4, +28.0]`, `AcceptH1`, mechanism gate Pass —
+real, CI excludes zero, but roughly a **third** of `v2` → `v3`'s own
++61.0/+53.9 Elo jump. The two individual ranges disagreed sharply before
+pooling (+29.6 `AcceptH1` vs +4.9 `Continue`), and the `TimeMs(1000)`
+cross-check (1,000 games) read +9.4 Elo `[-12.2, +30.9]`, `Continue` —
+directionally consistent but not independently significant at that sample
+size. A `--value-target-lambda 1.0` control sibling trained from the
+*identical* corpus does not clear the gating bar against `v3` (-10.8 Elo,
+`Continue`) and loses to the `lambda=0.5` sibling directly by -35.4 Elo —
+confirming the lambda blend, not fresh corpus content on its own, is still
+what carries a generation's edge, the same story as `v2` → `v3`.
+
+The frozen reference panel adds a real nuance worth a human's attention:
+this generation reads **weaker than `v3`'s own numbers** against two of the
+panel's three non-ancestor members (`mcts-eval@nodes:8000`: +142.4 vs `v3`'s
++196.4; `mcts-uct@nodes:8000`: +229.8 vs `v3`'s +260.0) even though both
+remain decisively positive in absolute terms, while reading *less* negative
+than `v3` against the frozen `v2@nodes:32000` cell (-1.7 vs `v3`'s -34.4).
+Elo readings against a common third party are not strictly transitive
+across generations (this project has hit that non-composition before), so
+this is a flagged caveat, not a contradiction of the direct win over `v3` —
+but it is exactly the kind of drift signal Tier 1-G's frozen panel exists to
+surface, and a promotion PR should not bury it.
+
+Promoted as `v4.bin` on the strength of the mechanism-clean pooled
+head-to-head and the clean lambda-effect isolation against its own control
+sibling — see `crates/duels-value/weights/generations.json`'s
+`tier1-gen3-l05`/`tier1-gen3-l10` entries for the complete record (corpus
+manifest, training metrics, every battery cell, the re-run `c`-sweep, which
+again found no change from `c=0.15`). `v3` is retired to a frozen
+`mcts-value:weights=v3` slot and joins the reference panel at `nodes:2000`,
+alongside `v2`'s existing two cells. **Read this as this project's own
+predicted plateau largely bearing out** — "expected effects from here on
+are +20 to +50 Elo per step, not the larger jumps this project's early
+rounds saw" undersold even this: Generation 3 landed *below* that range.
+Whether a Generation 4 would clear the ±10 Elo bar at all, or whether this
+is the point to stop iterating this specific loop and invest in Tier 2/3
+instead (per-card features, a score-margin head, a learned policy prior),
+is an open, real question this generation's data does not resolve on its
+own — one more generation's reading would.
 
 **Future consideration, flagged by the project owner (2026-09-11), not yet
 tried:** generate future corpora at a higher node budget than production's
@@ -317,7 +376,10 @@ has to fit inside a single interactive session. Worth an isolated ablation
 (same corpus size and D/E settings, only the generating node budget
 changed) before assuming it's a clean win — a stronger generator could
 also shift the corpus's position distribution in ways that don't transfer
-to the champion's own `nodes:2000`/`TimeMs(1000)` production budget.
+to the champion's own `nodes:2000`/`TimeMs(1000)` production budget. Given
+Generation 3's own decaying-returns finding just above, this is now a
+reasonable next thing to try before running a plain Generation 4 at the
+same node budget again.
 
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
