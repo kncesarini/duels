@@ -19,7 +19,10 @@
         "generator": "duels-arena examples/value_corpus.rs",
         "generating_agent": "mcts-eval",
         "budget": "nodes:2000",
-        "seed_range": [1, 100000],
+        "seed_range": [
+          1,
+          100000
+        ],
         "games": 100000,
         "decisions": 6722636
       },
@@ -32,7 +35,10 @@
       "battery": {
         "note": "Pre-Tier-1-G; no frozen reference panel existed yet. See crates/duels-value/src/lib.rs's crate docs for this generation's original promotion write-up."
       },
-      "golden": { "weights_id": "211x128x4/036d2b5e", "pinned_in": null }
+      "golden": {
+        "weights_id": "211x128x4/036d2b5e",
+        "pinned_in": null
+      }
     },
     {
       "id": "v2",
@@ -58,7 +64,10 @@
       "battery": {
         "note": "See crates/duels-value/src/lib.rs's crate docs (\"Recalibrating the test, not just the weights\") for the full promotion write-up: +34.5 Elo confirmed at 2,000 games, elo1=10."
       },
-      "golden": { "weights_id": "211x128x4/17fee9ab", "pinned_in": "crates/agents/mcts-value/src/golden.rs" }
+      "golden": {
+        "weights_id": "211x128x4/17fee9ab",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs"
+      }
     },
     {
       "id": "tier1-arm-a",
@@ -77,9 +86,16 @@
         "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
         "generating_agent": "mcts-value",
         "budget": "nodes:2000",
-        "seed_range": [2000001, 2100000],
+        "seed_range": [
+          2000001,
+          2100000
+        ],
         "games": 100000,
-        "sampling": { "tau": 1.0, "plies": 0, "specialist_frac": 0.0 }
+        "sampling": {
+          "tau": 1.0,
+          "plies": 0,
+          "specialist_frac": 0.0
+        }
       },
       "training": {
         "script": "tools/train_value.py",
@@ -93,14 +109,38 @@
       "battery": {
         "gate_note": "affected_by_gradient_bug: false (lambda=1.0)",
         "cells": [
-          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 14.8, "sprt": "see archive" },
-          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -41.0 },
-          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 94.7 },
-          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 168.2 }
+          {
+            "opponent": "mcts-value (v2)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 14.8,
+            "sprt": "see archive"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -41.0
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 94.7
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 168.2
+          }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-a-vs-*"
       },
-      "golden": { "weights_id": "211x128x4/21061eaa", "pinned_in": null }
+      "golden": {
+        "weights_id": "211x128x4/21061eaa",
+        "pinned_in": null
+      }
     },
     {
       "id": "tier1-arm-b",
@@ -119,9 +159,16 @@
         "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
         "generating_agent": "mcts-value",
         "budget": "nodes:2000",
-        "seed_range": [2200001, 2300000],
+        "seed_range": [
+          2200001,
+          2300000
+        ],
         "games": 100000,
-        "sampling": { "tau": 1.0, "plies": 14, "specialist_frac": 0.25 }
+        "sampling": {
+          "tau": 1.0,
+          "plies": 14,
+          "specialist_frac": 0.25
+        }
       },
       "training": {
         "script": "tools/train_value.py",
@@ -134,16 +181,57 @@
       "battery": {
         "gate_note": "affected_by_gradient_bug: false (lambda=1.0)",
         "cells": [
-          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 32.0, "elo_ci": [16.8, 47.3], "sprt": "AcceptH1", "mechanism": "Pass" },
-          { "opponent": "mcts-value (v2), disjoint seed range", "budget": "nodes:2000", "games": 2000, "elo": 26.8, "label": "arm-b-vs-v2-nodes2000-confirm" },
-          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -55.1 },
-          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 91.9 },
-          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 153.2 },
-          { "opponent": "mcts-value:weights=arm-a (direct, isolates D from A)", "budget": "nodes:2000", "games": 2000, "elo": 2.4, "label": "arm-b-vs-arm-a-direct" }
+          {
+            "opponent": "mcts-value (v2)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 32.0,
+            "elo_ci": [
+              16.8,
+              47.3
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass"
+          },
+          {
+            "opponent": "mcts-value (v2), disjoint seed range",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 26.8,
+            "label": "arm-b-vs-v2-nodes2000-confirm"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -55.1
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 91.9
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 153.2
+          },
+          {
+            "opponent": "mcts-value:weights=arm-a (direct, isolates D from A)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 2.4,
+            "label": "arm-b-vs-arm-a-direct"
+          }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-b-vs-*"
       },
-      "golden": { "weights_id": "211x128x4/81d06b58", "pinned_in": null }
+      "golden": {
+        "weights_id": "211x128x4/81d06b58",
+        "pinned_in": null
+      }
     },
     {
       "id": "tier1-arm-c",
@@ -172,14 +260,37 @@
       "battery": {
         "gate_note": "SUSPECT: trained with a known-buggy gradient",
         "cells": [
-          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": -17.2 },
-          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -133.8 },
-          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 27.8 },
-          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 110.7 }
+          {
+            "opponent": "mcts-value (v2)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": -17.2
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -133.8
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 27.8
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 110.7
+          }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-c-vs-*"
       },
-      "golden": { "weights_id": "211x128x4/3b584273", "pinned_in": null }
+      "golden": {
+        "weights_id": "211x128x4/3b584273",
+        "pinned_in": null
+      }
     },
     {
       "id": "tier1-arm-c-prime",
@@ -209,27 +320,125 @@
       "battery": {
         "gate_note": "corrected gradient; finite-difference checked (tools/test_train_value_grad.py)",
         "cells": [
-          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 61.0, "elo_ci": [45.6, 76.5], "sprt": "AcceptH1", "mechanism": "Pass" },
-          { "opponent": "mcts-value (v2), disjoint seed range", "budget": "nodes:2000", "games": 2000, "elo": 53.9, "elo_ci": [38.5, 69.3], "label": "arm-c2-vs-v2-nodes2000-confirm" },
-          { "opponent": "mcts-value:weights=arm-b (direct, isolates the gradient fix's effect)", "budget": "nodes:2000", "games": 2000, "elo": 27.0, "elo_ci": [11.7, 42.2], "label": "arm-c2-vs-arm-b-direct" },
-          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -34.4, "elo_ci": [-58.6, -10.2] },
-          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 196.4, "elo_ci": [168.4, 224.4] },
-          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 260.0, "elo_ci": [228.9, 291.1] },
-          { "opponent": "mcts-value (v2), TimeMs (production's actual search budget)", "budget": "time_ms:1000", "games": 1000, "elo": 58.2, "elo_ci": [36.3, 80.0], "sprt": "AcceptH1", "mechanism": "Pass", "label": "arm-c2-vs-v2-timems1000", "caveat": "machine was not quiet during this run (other concurrent processes; load averages in the hundreds) -- see docs/conventions.md's warning that load-average is not a valid proxy here (duels-arena parallelises seeds). The actual process list was checked (no other duels-arena/training process running concurrently), and the effect size (+58 Elo) is far larger than this project's documented TimeMs load-noise (~15+ Elo swings), so it is trusted, but a rerun on a genuinely idle machine would be worth doing if one becomes available." }
+          {
+            "opponent": "mcts-value (v2)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 61.0,
+            "elo_ci": [
+              45.6,
+              76.5
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass"
+          },
+          {
+            "opponent": "mcts-value (v2), disjoint seed range",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 53.9,
+            "elo_ci": [
+              38.5,
+              69.3
+            ],
+            "label": "arm-c2-vs-v2-nodes2000-confirm"
+          },
+          {
+            "opponent": "mcts-value:weights=arm-b (direct, isolates the gradient fix's effect)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 27.0,
+            "elo_ci": [
+              11.7,
+              42.2
+            ],
+            "label": "arm-c2-vs-arm-b-direct"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -34.4,
+            "elo_ci": [
+              -58.6,
+              -10.2
+            ]
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 196.4,
+            "elo_ci": [
+              168.4,
+              224.4
+            ]
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 260.0,
+            "elo_ci": [
+              228.9,
+              291.1
+            ]
+          },
+          {
+            "opponent": "mcts-value (v2), TimeMs (production's actual search budget)",
+            "budget": "time_ms:1000",
+            "games": 1000,
+            "elo": 58.2,
+            "elo_ci": [
+              36.3,
+              80.0
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "arm-c2-vs-v2-timems1000",
+            "caveat": "machine was not quiet during this run (other concurrent processes; load averages in the hundreds) -- see docs/conventions.md's warning that load-average is not a valid proxy here (duels-arena parallelises seeds). The actual process list was checked (no other duels-arena/training process running concurrently), and the effect size (+58 Elo) is far larger than this project's documented TimeMs load-noise (~15+ Elo swings), so it is trusted, but a rerun on a genuinely idle machine would be worth doing if one becomes available."
+          }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-c2-*"
       },
       "c_sweep": {
         "note": "docs/conventions.md's documented history: a leaf/value change without a c re-derivation has cost real Elo before. 3 candidate values, 1,000 games each at nodes:2000, vs the shipped default c=0.15.",
         "cells": [
-          { "c": 0.10, "elo": 2.4, "elo_ci": [-19.1, 24.0], "sprt": "Inconclusive" },
-          { "c": 0.20, "elo": 0.7, "elo_ci": [-20.8, 22.2], "sprt": "Inconclusive" },
-          { "c": 0.25, "elo": 1.0, "elo_ci": [-20.5, 22.6], "sprt": "Inconclusive" }
+          {
+            "c": 0.1,
+            "elo": 2.4,
+            "elo_ci": [
+              -19.1,
+              24.0
+            ],
+            "sprt": "Inconclusive"
+          },
+          {
+            "c": 0.2,
+            "elo": 0.7,
+            "elo_ci": [
+              -20.8,
+              22.2
+            ],
+            "sprt": "Inconclusive"
+          },
+          {
+            "c": 0.25,
+            "elo": 1.0,
+            "elo_ci": [
+              -20.5,
+              22.6
+            ],
+            "sprt": "Inconclusive"
+          }
         ],
         "verdict": "no change -- 0.15 stays the default for v3",
         "archive_dir": "generations/tier1-c-sweep/v3-c-sweep-*"
       },
-      "golden": { "weights_id": "211x128x4/3e1dd480", "pinned_in": "crates/agents/mcts-value/src/golden.rs (regenerated at promotion)" }
+      "golden": {
+        "weights_id": "211x128x4/3e1dd480",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs (regenerated at promotion)"
+      }
     },
     {
       "id": "tier1-arm-d-prime",
@@ -257,15 +466,328 @@
       },
       "battery": {
         "cells": [
-          { "opponent": "mcts-value (v2)", "budget": "nodes:2000", "games": 2000, "elo": 43.5, "elo_ci": [28.1, 58.8], "sprt": "AcceptH1", "mechanism": "Pass" },
-          { "opponent": "mcts-value:weights=arm-b (direct)", "budget": "nodes:2000", "games": 2000, "elo": 37.7, "elo_ci": [22.3, 53.0], "label": "arm-d2-vs-arm-b-direct" },
-          { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -46.2, "elo_ci": [-70.5, -22.0] },
-          { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 169.8, "elo_ci": [142.8, 196.8] },
-          { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 231.1, "elo_ci": [201.5, 260.7] }
+          {
+            "opponent": "mcts-value (v2)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 43.5,
+            "elo_ci": [
+              28.1,
+              58.8
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass"
+          },
+          {
+            "opponent": "mcts-value:weights=arm-b (direct)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 37.7,
+            "elo_ci": [
+              22.3,
+              53.0
+            ],
+            "label": "arm-d2-vs-arm-b-direct"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -46.2,
+            "elo_ci": [
+              -70.5,
+              -22.0
+            ]
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 169.8,
+            "elo_ci": [
+              142.8,
+              196.8
+            ]
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 231.1,
+            "elo_ci": [
+              201.5,
+              260.7
+            ]
+          }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-d2-*"
       },
-      "golden": { "weights_id": "211x128x4/6ec85ab3", "pinned_in": null }
+      "golden": {
+        "weights_id": "211x128x4/6ec85ab3",
+        "pinned_in": null
+      }
+    },
+    {
+      "id": "tier1-gen3-l05",
+      "status": "held",
+      "notes": "Generation 3: the roadmap's 'run it again from v3, see whether the gain per generation holds or decays' follow-up. A fresh ~100k-game corpus (tier1-gen3-explore, disjoint seed range 2,400,001-2,500,000) self-played by the then-champion v3 with the identical exploration+specialist-mixing generator config that produced tier1-arm-bc-explore (--sample-plies 14 --tau 1.0 --specialist-frac 0.25), replay-verified cleanly (every game reproduced) and sealed to /Volumes/storage/duels/ with a checksum comparison against the working copy before training. Trained window=1 (this corpus alone, not combined with tier1-arm-bc-explore -- the roadmap's simpler default, no strong reason found to do otherwise) at this project's production hyperparameters (--hidden 128 --epochs 60 --lr 2e-3 --weight-decay 1e-5 --patience 8), --value-target-lambda 0.5. Trained cleanly, best epoch 20 of 60, val win-logloss 0.50694 (test 0.50313) -- no NaN/divergence. HONEST HEADLINE: this generation's gain over v3 is real but much smaller than v2->v3's (+61.0/+53.9 Elo): the properly pooled gating cell across two disjoint seed ranges (4,000 games total, elo1=10) reads +17.2 Elo [+6.4, +28.0], AcceptH1, mechanism Pass -- but the two individual ranges disagreed sharply before pooling (+29.6 AcceptH1 on the first, +4.9 Continue/Inconclusive on the second), and the TimeMs(1000) cross-check (1,000 games, machine checked quiet by process list -- the same persistent ~2.7-core Virtualization.framework process noted in tier1-arm-c-prime's own TimeMs run was present, no other duels-arena/training process was) read +9.4 Elo [-12.2, +30.9], also Inconclusive at that sample size. A lambda=1.0 control sibling (tier1-gen3-l10) trained from the IDENTICAL corpus does not clear the gating bar against v3 (-10.8 Elo, Inconclusive), and this generation beats that sibling directly by +35.4 Elo [+20.1, +50.7] (AcceptH1) -- confirming the lambda=0.5 blend, not fresh corpus content on its own, is what carries this generation's edge, consistent with v3's own promotion story. Frozen reference panel (candidate at nodes:2000): vs frozen v2@nodes:32000 reads -1.7 Elo [-25.8, +22.3] (Continue) -- notably LESS negative than v3's own -34.4 in this identical cell, a secondary positive signal; vs frozen v2@nodes:2000 reads +81.3 Elo [+59.2, +103.4] (AcceptH1); vs mcts-eval@nodes:8000 reads +142.4 Elo [+116.3, +168.5] (AcceptH1) -- decisively positive in absolute terms, but WEAKER than v3's own +196.4 reading against the identical panel member; vs mcts-uct@nodes:8000 reads +229.8 Elo [+200.3, +259.3] (AcceptH1), again WEAKER than v3's own +260.0. Elo readings against a common third party are not strictly transitive/comparable across generations (documented elsewhere in this project's history), so this is flagged as a caveat a human should weigh, not read as a contradiction of the direct win over v3. c-sweep (3 candidates, 1,000 games each at nodes:2000, vs the shipped default c=0.15): c=0.10 reads -1.4 Elo [-22.9, +20.1] (Continue), c=0.20 reads -12.8 Elo [-34.4, +8.7] (AcceptH0, worse), c=0.25 reads -26.8 Elo [-48.4, -5.2] (AcceptH0, worse) -- 0.15 stays the default, matching v3's own c-sweep verdict. TAKEN TOGETHER (initial read): a real, small, diminishing-returns generation, not a repeat of Generation 2's clean, large jump -- this project's own stop-rule prediction largely bearing out. REVISED, HELD NOT PROMOTED: a second, independent architect review -- commissioned to design a safe autonomous multi-generation promotion gate -- proposed a frozen-panel non-regression check as a required gate stage (a head-to-head win against the immediate parent alone is not sufficient once a panel predating that parent exists), applied it to this exact generation as a worked test case, and found the pooled regression against the two non-ancestor panel members (mcts-eval, mcts-uct) statistically real (pooled z roughly -3.0) -- disqualifying under that stage even though the direct v3 head-to-head is a clean AcceptH1. duels-value's DEFAULT_WEIGHTS stays v3.bin. This generation's weights, corpus, and full measurement stay archived and reachable (mcts-value:weights=gen3-l05) as a held, not discarded, result -- the champion is unchanged, so nothing about the data this generation produced is invalidated, and a future generation's larger data window (see docs/roadmap.md's autonomous-loop design) can build on it.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/gen3-l05-candidate.bin",
+        "archive_path": "weights/tier1-gen3-l05-candidate.bin",
+        "sha256": "1af41ab4aab0f8c33abcda0697f3ffdf13d2cf17d6319aab8dbc6eeb50e3f63c",
+        "weights_id": "211x128x4/7b93dbf0",
+        "reachable_via": "mcts-value:weights=gen3-l05 (held, never promoted to the live default)"
+      },
+      "corpus": {
+        "label": "tier1-gen3-explore",
+        "archive_manifest": "corpus/tier1-gen3-explore/gen3-explore.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
+        "generating_agent": "mcts-value (v3, the then-champion)",
+        "budget": "nodes:2000",
+        "seed_range": [
+          2400001,
+          2500000
+        ],
+        "games": 100000,
+        "decisions": 6641661,
+        "sampling": {
+          "tau": 1.0,
+          "plies": 14,
+          "specialist_frac": 0.25
+        },
+        "measured": {
+          "specialist_games": 24789,
+          "specialist_games_by_role": [
+            8283,
+            8122,
+            8384
+          ],
+          "sampled_decisions": 1051019
+        },
+        "sha256": "f917d1f1b14daa527267589de07ddc60aca308e5bc8280c1c5f3a98b93a04a0e",
+        "verify": "clean -- every game reproduced (value_corpus_mv --verify), all five checks held",
+        "sealed_at": "/Volumes/storage/duels/corpus/tier1-gen3-explore/, sha256 checksum-compared against the working copy before training",
+        "replay_window": "1 (this corpus alone, not combined with tier1-arm-bc-explore) -- the roadmap's simpler default; no specific strong reason found to combine windows for this generation"
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/gen3-explore-features.bin",
+        "hidden": 128,
+        "epochs_ran": 28,
+        "best_epoch": 20,
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-gen3-l05/gen3-l05-metrics.json",
+        "known_bug": "affected_by_gradient_bug: false -- trained with the fixed blended_dz (post-#77)"
+      },
+      "battery": {
+        "gate_note": "gating cell pooled across two disjoint seed ranges is this project's own defined 'reproduced' statistic (see duels-arena experiment's own docs); read alongside the two individual-range rows and the TimeMs cross-check, both of which were noisier at their own sample sizes",
+        "cells": [
+          {
+            "opponent": "mcts-value (v3)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 29.6,
+            "elo_ci": [
+              14.3,
+              44.9
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "gen3-l05-vs-v3-nodes2000 (range 1 of 2)"
+          },
+          {
+            "opponent": "mcts-value (v3), disjoint seed range",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 4.9,
+            "elo_ci": [
+              -10.4,
+              20.1
+            ],
+            "sprt": "Continue",
+            "mechanism": "Pass",
+            "label": "gen3-l05-vs-v3-nodes2000-confirm (range 2 of 2)"
+          },
+          {
+            "opponent": "mcts-value (v3), pooled across both ranges",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": 17.2,
+            "elo_ci": [
+              6.4,
+              28.0
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "gen3-l05-vs-v3-nodes2000-pooled (gating result)"
+          },
+          {
+            "opponent": "mcts-value:weights=gen3-l10 (direct, isolates the lambda effect on this fresh corpus)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 35.4,
+            "elo_ci": [
+              20.1,
+              50.7
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "gen3-l05-vs-gen3-l10-direct"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -1.7,
+            "elo_ci": [
+              -25.8,
+              22.3
+            ],
+            "sprt": "Continue"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:2000",
+            "games": 1000,
+            "elo": 81.3,
+            "elo_ci": [
+              59.2,
+              103.4
+            ],
+            "sprt": "AcceptH1"
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 142.4,
+            "elo_ci": [
+              116.3,
+              168.5
+            ],
+            "sprt": "AcceptH1"
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 229.8,
+            "elo_ci": [
+              200.3,
+              259.3
+            ],
+            "sprt": "AcceptH1"
+          },
+          {
+            "opponent": "mcts-value (v3), TimeMs (production's actual search budget)",
+            "budget": "time_ms:1000",
+            "games": 1000,
+            "elo": 9.4,
+            "elo_ci": [
+              -12.2,
+              30.9
+            ],
+            "sprt": "Continue",
+            "mechanism": "Pass",
+            "label": "gen3-l05-vs-v3-timems1000",
+            "caveat": "machine checked quiet by process list (no other duels-arena/training process running); a persistent ~2.7-core non-project VM process was present, same as during tier1-arm-c-prime's own TimeMs run. Inconclusive at n=1,000 -- directionally consistent with the nodes-budget pooled result but not independently significant at this sample size."
+          }
+        ],
+        "archive_dir": "generations/tier1-battery-results/gen3-l05-*"
+      },
+      "c_sweep": {
+        "note": "3 candidate values, 1,000 games each at nodes:2000, vs the shipped default c=0.15 -- re-run for this generation's own weights rather than assuming v3's sweep result still holds, per docs/roadmap.md's own discipline.",
+        "cells": [
+          {
+            "c": 0.1,
+            "elo": -1.4,
+            "elo_ci": [
+              -22.9,
+              20.1
+            ],
+            "sprt": "Continue"
+          },
+          {
+            "c": 0.2,
+            "elo": -12.8,
+            "elo_ci": [
+              -34.4,
+              8.7
+            ],
+            "sprt": "AcceptH0"
+          },
+          {
+            "c": 0.25,
+            "elo": -26.8,
+            "elo_ci": [
+              -48.4,
+              -5.2
+            ],
+            "sprt": "AcceptH0"
+          }
+        ],
+        "verdict": "no change -- 0.15 stays the default for v4",
+        "archive_dir": "arena/results/gen3-c-sweep/gen3-l05-c-sweep-*"
+      },
+      "golden": {
+        "weights_id": "211x128x4/7b93dbf0",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs (regenerated at promotion)"
+      }
+    },
+    {
+      "id": "tier1-gen3-l10",
+      "status": "rejected",
+      "notes": "Generation 3's lambda=1.0 control sibling, trained from the IDENTICAL corpus as tier1-gen3-l05 (tier1-gen3-explore), differing only in --value-target-lambda. Trained cleanly (best epoch 4 of 60, val win-logloss 0.51519, test 0.51204). Does not clear the gating bar against v3: -10.8 Elo [-26.0, +4.5] (Continue/Inconclusive), mechanism gate Pass. Loses to tier1-gen3-l05 directly by -35.4 Elo (the mirror of that entry's own +35.4 reading). This is the intended and expected result of running the control: it confirms --value-target-lambda 0.5 continues to matter on a fresh corpus rather than having been a one-off, corpus-specific effect from tier1-arm-bc-explore. Kept reachable as the ablation baseline that isolates the lambda effect for this generation, the same role tier1-arm-a/tier1-arm-b play for Generation 2's D/E ablation.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/gen3-l10-candidate.bin",
+        "archive_path": "weights/tier1-gen3-l10-candidate.bin",
+        "sha256": "2800bd3558a6a7a832bbb38e9481fd4b77e5d2c04b15e20eda19c33c83c577c6",
+        "weights_id": "211x128x4/5afaaed3",
+        "reachable_via": "mcts-value:weights=gen3-l10"
+      },
+      "corpus": {
+        "label": "tier1-gen3-explore",
+        "note": "Same corpus as tier1-gen3-l05 -- see that entry's manifest."
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/gen3-explore-features.bin",
+        "hidden": 128,
+        "epochs_ran": 13,
+        "best_epoch": 4,
+        "value_target_lambda": 1.0,
+        "metrics_archive": "generations/tier1-gen3-l10/gen3-l10-metrics.json",
+        "known_bug": "affected_by_gradient_bug: false (lambda=1.0 short-circuits the blended path entirely)"
+      },
+      "battery": {
+        "cells": [
+          {
+            "opponent": "mcts-value (v3)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": -10.8,
+            "elo_ci": [
+              -26.0,
+              4.5
+            ],
+            "sprt": "Continue",
+            "mechanism": "Pass",
+            "label": "gen3-l10-vs-v3-nodes2000"
+          },
+          {
+            "opponent": "mcts-value:weights=gen3-l05 (direct)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": -35.4,
+            "label": "mirror of gen3-l05-vs-gen3-l10-direct"
+          }
+        ],
+        "archive_dir": "generations/tier1-battery-results/gen3-l10-*"
+      },
+      "golden": {
+        "weights_id": "211x128x4/5afaaed3",
+        "pinned_in": null
+      }
     }
   ]
 }
