@@ -23,13 +23,6 @@
 //! a value function whose strength generalizes past the one opponent
 //! (`mcts-eval`) the original corpus ever saw.
 //!
-//! Everything below is otherwise identical to `value_corpus.rs`: same JSONL
-//! `GameLine`/`Decision` schema, same manifest sidecar, same `(seed, actions)`
-//! replay key, same `--verify`. `feature_dump.rs` reads this format
-//! agent-agnostically (it parses `GameLine`, not anything that names an
-//! agent), so a corpus from this file plugs into the existing training
-//! pipeline unmodified.
-//!
 //! ```text
 //! # a small sample, with the built-in consistency check
 //! cargo run --release -p duels-arena --example value_corpus_mv -- \
@@ -37,10 +30,17 @@
 //! cargo run --release -p duels-arena --example value_corpus_mv -- \
 //!     --verify arena/corpus/sample-mv.jsonl
 //!
-//! # a real run
+//! # a real run, format-v1 behaviour: plain argmax, no exploration, no
+//! # specialists -- the historical default, still the default here
 //! cargo run --release -p duels-arena --example value_corpus_mv -- \
 //!     --games 20000 --seed 1 --budget nodes:2000 \
 //!     --out arena/corpus/mcts-value-nodes2000.jsonl
+//!
+//! # format-v2 behaviour: temperature-sampled openings plus a specialist mix
+//! cargo run --release -p duels-arena --example value_corpus_mv -- \
+//!     --games 100000 --seed 1 --budget nodes:2000 \
+//!     --sample-plies 14 --tau 1.0 --specialist-frac 0.25 \
+//!     --out arena/corpus/mcts-value-nodes2000-v2.jsonl
 //! ```
 //!
 //! `arena/corpus/` is gitignored, following `arena/results/`: a corpus is a
@@ -74,53 +74,82 @@
 //! `value_corpus.rs`, `duels-server`'s `Room::new` and `duels-arena`'s
 //! `match_runner` all use.
 //!
-//! # The format
-//!
-//! Byte-for-byte the same schema as `value_corpus.rs` produces — see that
-//! file's module docs for the full field-by-field description of `GameLine`,
-//! `Decision` and the manifest. The only difference here is which agent's
-//! search produced `value`/`visits`/`policy`: `mcts-value`'s pure learned
-//! leaf (no rollout, no `duels-eval` blend) rather than `mcts-eval`'s
-//! half-playout-half-`duels-eval` leaf. That distinction matters for anyone
-//! fitting against this corpus:
-//!
 //! # What `value` contains here — read this before fitting anything
 //!
 //! At `mcts-value::Config::default`, the leaf **is** `duels_value`'s own
 //! learned four-way outcome model — there is no playout mixed in at all. So a
-//! net retrained against this corpus's root values is fitting **its own prior
-//! generation's opinion**, refined by 2000 nodes of tree search, rather than
-//! against a search whose leaf came from somewhere independent (as
-//! `mcts-eval`'s `duels-eval` blend was). This is exactly the
-//! self-referential-bootstrap concern the task that produced this file
-//! flagged as a reason to also keep a fresh `mcts-eval`-generated batch in
-//! the mix: a corpus generated *purely* by the model being retrained risks
-//! amplifying its own blind spots (a spot the old model never explored ends
-//! up with no representation in the new corpus either, since search steers
-//! away from what it already undervalues). The generated corpus's own
-//! provenance note (this run's manifest, and the PR body that reports on it)
-//! records whether a mixed batch was actually used and why.
+//! net retrained against a generalist row's root value is fitting **its own
+//! prior generation's opinion**, refined by 2000 nodes of tree search, rather
+//! than against a search whose leaf came from somewhere independent.
+//!
+//! # Format v2 — exploration and specialist mixing (roadmap Tier 1-D)
+//!
+//! Two changes from the original (still-default) generator, both **opt-in**
+//! per `docs/conventions.md`'s rule that a new capability stays off by
+//! default and the old behaviour stays bit-reachable:
+//!
+//! **Temperature-sampled openings** (`--sample-plies` / `--tau`, both `0`/`1.0`
+//! and inert at the default). For the first `--sample-plies` plies of a game,
+//! the move actually *played* is drawn from `visits^(1/tau)` over the legal
+//! actions (re-indexed from the root's own shuffled order into
+//! `engine::legal_actions` order — the one order a replay can reproduce),
+//! rather than the search's own argmax pick. This decouples corpus diversity
+//! from the deal alone, which is what let unconstrained self-play collapse
+//! toward one victory kind in the original corpus. `--sample-plies 0` (the
+//! default) never samples, which is exactly the historical behaviour:
+//! `tests::defaults_disable_both_v2_features` pins it.
+//!
+//! **Specialist mixing** (`--specialist-frac`, `0.0` and inert at the
+//! default). A `--specialist-frac` fraction of games assign one seat — chosen
+//! by a hash of the seed, never `seed % k` or seed parity (see
+//! `assign_role`'s docs for why: `train_value.py`'s train/val/test split is
+//! `seed % 10`, and a parity-based role rule would put every specialist game
+//! in one split bucket) — to one of the three specialist agents
+//! (`mcts-value:objective=science/military/civilian`), split evenly across
+//! the three. **Specialists always play argmax and are never
+//! temperature-sampled**, regardless of ply.
+//!
+//! Every decision records `role: u8` (`0` = generalist, `1`/`2`/`3` =
+//! military/science/civilian specialist — see `Role`) and `sampled: bool`.
+//!
+//! # What a specialist's recorded `value` means — read this before fitting
+//!
+//! For a generalist decision (`role == 0`), `value` is a **win probability**,
+//! Player-One-scale, exactly as the original generator recorded it.
+//!
+//! For a specialist decision (`role != 0`), `value` is **not** a win
+//! probability at all: `mcts-agent-value::Objective::TargetKind`'s reward is
+//! `1.0` iff *this decision's own mover* achieves exactly that specialist's
+//! victory kind, `0.0` otherwise, and — critically — that reward is already
+//! anchored to the mover at backpropagation time (`Tree::exploit`'s docs), not
+//! to a game-fixed `Player::One`. So a specialist row's `value` is already
+//! `P(mover wins by its own target kind)`, on the *mover's own* scale, with
+//! **no** Player-One/Player-Two flip to apply or undo. It is not
+//! complementary across seats (`P(One achieves kind K) + P(Two achieves kind
+//! K)` does not sum to 1), so it must never be mixed into a calibration table,
+//! a Pearson correlation, or a training target that assumes win-probability
+//! semantics — `verify` below reports it in its own bucket for exactly this
+//! reason, and `feature_dump.rs` writes `search_value = NaN` for every such
+//! row rather than let it leak downstream looking like an aggregate win
+//! probability.
 //!
 //! # Cost
 //!
 //! `mcts-value`'s leaf has no rollout (see its crate docs: "no playout at
-//! all"), so its per-simulation cost should differ from `mcts-eval`'s
-//! half-playout leaf — plausibly cheaper per node (no random playout to run
-//! to completion) but with a fixed per-leaf inference cost `mcts-eval`
-//! doesn't pay. Measure before committing to a games count; do not assume
-//! `value_corpus.rs`'s measured 8.2 games/s / 204.5 min-per-100k transfers
-//! unchanged. The manifest this tool writes after every batch records the
-//! actual wall time, exactly like the original.
+//! all"), so its per-simulation cost differs from `mcts-eval`'s half-playout
+//! leaf. Measure before committing to a games count; the manifest this tool
+//! writes after every batch records the actual wall time.
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use duels_agent_mcts_value::{Config as MctsValueConfig, MctsValueAgent};
+use duels_agent_mcts_value::{Config as MctsValueConfig, MctsValueAgent, Objective};
 use duels_agents_api::{Agent, AgentSpec, Budget};
 use duels_arena::agent_spec::parse_mcts_value_config;
 use duels_arena::match_runner::parse_budget;
+use duels_core::scoring::VictoryKind;
 use duels_core::{engine, Action, GameResult, Player};
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -136,9 +165,146 @@ const ENGINE_RNG_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 const SEAT_ONE_SALT: u64 = 0xA011_7A9E_5B21_0001;
 const SEAT_TWO_SALT: u64 = 0xB022_8C3F_6D42_0002;
 
+/// Default salt for [`assign_role`]'s seed hash. Not currently
+/// CLI-overridable — one run, one salt, recorded in the manifest so a replay
+/// or a `--verify` pass can recompute the same assignment rather than trust
+/// it.
+const ROLE_SALT: u64 = 0xC0DE_BA5E_15F0_0D01;
+/// A second, independent salt mixed in after [`ROLE_SALT`] to pick the
+/// specialist's objective. Deliberately a different constant, not a reuse of
+/// [`ROLE_SALT`]'s hash, so the "is this game a specialist game" bit and the
+/// "which objective" bit are drawn from independent hash chains.
+const OBJECTIVE_SALT: u64 = 0x0B1E_C715_0000_0001;
+/// A third, independent salt to pick which seat carries the specialist, for
+/// the same reason [`OBJECTIVE_SALT`] is independent of [`ROLE_SALT`].
+const SEAT_ROLE_SALT: u64 = 0x5EA7_0000_0000_0002;
+/// Salt for the RNG that draws temperature-sampled moves. Independent of
+/// every other salt in this file (the agents' own search RNGs, the engine's
+/// chance RNG, and the role-assignment hash chain) so turning sampling on or
+/// off changes nothing else about a replay.
+const SAMPLE_RNG_SALT: u64 = 0x5A3E_9F17_2C6B_0003;
+
 /// How many seeds one rayon batch covers. Bounds peak memory and gives the
 /// progress line something to report; has no effect on the output.
 const BATCH: usize = 256;
+
+/// What a decision's search was actually playing for. `Generalist` is
+/// `mcts-value`'s default (`Objective::WinProbability`); the rest name one of
+/// the three specialist agents (`mcts-value:objective=<kind>`).
+///
+/// Encoded as `u8` in the corpus (`Decision::role`) rather than as this enum
+/// directly, so the JSONL schema does not change shape if this enum's variant
+/// order ever does — `Role::code`/`Role::from_code` are the one place that
+/// mapping lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Generalist,
+    Military,
+    Science,
+    Civilian,
+}
+
+impl Role {
+    const fn code(self) -> u8 {
+        match self {
+            Role::Generalist => 0,
+            Role::Military => 1,
+            Role::Science => 2,
+            Role::Civilian => 3,
+        }
+    }
+
+    const fn from_code(code: u8) -> Option<Role> {
+        match code {
+            0 => Some(Role::Generalist),
+            1 => Some(Role::Military),
+            2 => Some(Role::Science),
+            3 => Some(Role::Civilian),
+            _ => None,
+        }
+    }
+
+    /// The [`VictoryKind`] this role specializes in, or `None` for
+    /// [`Role::Generalist`].
+    const fn target_kind(self) -> Option<VictoryKind> {
+        match self {
+            Role::Generalist => None,
+            Role::Military => Some(VictoryKind::MilitarySupremacy),
+            Role::Science => Some(VictoryKind::ScientificSupremacy),
+            Role::Civilian => Some(VictoryKind::CivilianVictory),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Role::Generalist => "generalist",
+            Role::Military => "military",
+            Role::Science => "science",
+            Role::Civilian => "civilian",
+        }
+    }
+}
+
+/// A fast, fixed, well-mixed 64-bit hash (Steele/Vigna's splitmix64 finalizer)
+/// — not a CSPRNG, but exactly what a deterministic, unbiased-looking
+/// role assignment needs: every output bit is a nonlinear function of every
+/// input bit, so nothing downstream can accidentally correlate with a
+/// property of the raw input, the way `seed % k` or seed parity would
+/// correlate with `train_value.py`'s `seed % 10` split.
+#[inline]
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Whether `seed`'s game gets a specialist seat, and if so which objective and
+/// which seat carries it.
+///
+/// # Why a hash of the seed, and not `seed % k` or seed parity
+///
+/// `tools/train_value.py`'s train/val/test split is `seed % 10`, with the test
+/// bucket being `seed % 10 == 9` (odd, among other things). A role rule based
+/// on `seed % k` for any `k` that shares a factor with 10, or on seed parity,
+/// would correlate with that split — in the worst case putting every
+/// specialist game in a single split bucket, which would silently corrupt the
+/// held-out evaluation (the very thing the split exists to protect). Chaining
+/// [`splitmix64`] over three independent salts avoids any such structural
+/// correlation: the "is this a specialist game" bit, the "which objective"
+/// value, and the "which seat" bit are three independent, well-mixed
+/// functions of `seed`, none of which shares periodicity with `seed % 10` or
+/// with each other.
+///
+/// Returns `None` if `specialist_frac <= 0.0` (format-v1 behaviour: every game
+/// is pure generalist self-play) or if this seed's hash falls outside the
+/// requested fraction.
+fn assign_role(seed: u64, specialist_frac: f64, role_salt: u64) -> Option<(Role, Player)> {
+    if specialist_frac <= 0.0 {
+        return None;
+    }
+    let h1 = splitmix64(seed ^ role_salt);
+    // The top 53 bits as a uniform float in `[0, 1)` -- the standard
+    // full-precision-`f64`-from-`u64` recipe.
+    let frac = (h1 >> 11) as f64 * (1.0 / (1u64 << 53) as f64);
+    if frac >= specialist_frac {
+        return None;
+    }
+    let h2 = splitmix64(h1 ^ OBJECTIVE_SALT);
+    let role = match h2 % 3 {
+        0 => Role::Military,
+        1 => Role::Science,
+        _ => Role::Civilian,
+    };
+    let h3 = splitmix64(h2 ^ SEAT_ROLE_SALT);
+    let seat = if h3.is_multiple_of(2) {
+        Player::One
+    } else {
+        Player::Two
+    };
+    Some((role, seat))
+}
 
 /// One searched decision: what the search concluded, and where it was.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,16 +314,35 @@ struct Decision {
     ply: u32,
     /// Whose decision it was.
     mover: Player,
-    /// The root's backed-up win probability, from `Player::One`'s perspective.
+    /// The root's backed-up value, from `Player::One`'s perspective **when
+    /// `role == 0`**. When `role != 0` this is a specialist's own
+    /// `P(mover wins by its own target kind)` — see this file's module docs,
+    /// "What a specialist's recorded `value` means", before touching this
+    /// field.
     value: f64,
     /// Root visits the search actually spent (close to, not exactly, the node
     /// budget).
     visits: u64,
     /// Index into `engine::legal_actions` at this ply of the action played.
+    /// The action actually applied — i.e. the *sampled* action when
+    /// `sampled == true`, not necessarily the search's own argmax pick.
     chosen: usize,
     /// Root visit count per legal action, in `engine::legal_actions` order.
     #[serde(skip_serializing_if = "Option::is_none")]
     policy: Option<Vec<u32>>,
+    /// `0` = generalist (`Objective::WinProbability`); `1`/`2`/`3` =
+    /// military/science/civilian specialist. `#[serde(default)]` so a
+    /// format-v1 corpus (written before this field existed) still parses as
+    /// all-generalist, which is exactly what it was.
+    #[serde(default)]
+    role: u8,
+    /// Whether the played action was drawn from `visits^(1/tau)` rather than
+    /// being the search's own argmax pick. Always `false` for a specialist
+    /// decision (`role != 0`) and always `false` under format-v1 defaults
+    /// (`--sample-plies 0`). `#[serde(default)]` for the same reason as
+    /// `role`.
+    #[serde(default)]
+    sampled: bool,
 }
 
 /// One self-play game: the replay key, the outcome, and the labels.
@@ -170,13 +355,42 @@ struct GameLine {
     decisions: Vec<Decision>,
 }
 
+/// The sampling configuration a generation run used, recorded so `--verify`
+/// (or anyone else) can recompute exactly what should have happened.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SamplingInfo {
+    /// Temperature. Only meaningful when `plies > 0`.
+    tau: f64,
+    /// First how-many plies of a game sample from `visits^(1/tau)` instead of
+    /// taking the search's own argmax; `0` disables sampling entirely
+    /// (format-v1 behaviour).
+    plies: u32,
+    /// [`SAMPLE_RNG_SALT`], hex-formatted, so a manifest is self-describing
+    /// even if this constant is ever revised.
+    salt: String,
+}
+
+/// The specialist-mixing configuration a generation run used.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RolesInfo {
+    /// Fraction of games assigned a specialist seat at all; `0.0` disables
+    /// specialist mixing entirely (format-v1 behaviour). Split evenly across
+    /// the three objectives (each gets `specialist_frac / 3`).
+    specialist_frac: f64,
+    /// [`ROLE_SALT`], hex-formatted.
+    role_salt: String,
+    /// The role names a nonzero `Decision::role` can take, in code order
+    /// (index 0 is never assigned to a real specialist; it is `generalist`).
+    role_names: [String; 4],
+}
+
 /// The sidecar that makes a corpus file self-describing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Manifest {
     kind: String,
     version: u32,
     generated_by: String,
-    /// The agent that played both seats, including the whole
+    /// The agent that played the generalist seat/seats, including the whole
     /// `duels-value`/weights configuration its leaves were scored against —
     /// `mcts-value` tracks `duels_value::default_weights_id()` live, so this
     /// string is the only thing that makes two corpora from either side of a
@@ -196,6 +410,24 @@ struct Manifest {
     engine_rng_salt: String,
     /// Regeneration needs these.
     seat_salts: [String; 2],
+    /// Format-v2 fields. `#[serde(default)]` so a format-v1 manifest (written
+    /// before this task) still parses; its `sampling.plies == 0` and
+    /// `roles.specialist_frac == 0.0` defaults are exactly what a format-v1
+    /// corpus actually did.
+    #[serde(default)]
+    sampling: SamplingInfo,
+    #[serde(default)]
+    roles: RolesInfo,
+    /// How many games actually got a specialist seat, and the split across
+    /// objectives — measured, not just the requested fraction, since the hash
+    /// assignment is probabilistic per seed.
+    #[serde(default)]
+    specialist_games: u64,
+    #[serde(default)]
+    specialist_games_by_role: [u64; 3],
+    /// How many decisions were temperature-sampled rather than argmax.
+    #[serde(default)]
+    sampled_decisions: u64,
     wall_time_s: f64,
 }
 
@@ -215,7 +447,12 @@ fn main() {
              \n\
              generate:  --out <path> [--games N] [--seed S] [--budget nodes:2000]\n\
              \x20          [--params <mcts-value spec params>] [--threads N] [--no-policy]\n\
-             verify:    --verify <path> [--sample N]\n"
+             \x20          [--sample-plies N] [--tau T] [--specialist-frac F]\n\
+             verify:    --verify <path> [--sample N]\n\
+             \n\
+             --sample-plies and --specialist-frac both default to 0 (off), which\n\
+             reproduces the original generator's behaviour exactly: plain argmax,\n\
+             no specialists. See the module docs for format v2.\n"
         );
         return;
     }
@@ -239,7 +476,21 @@ fn main() {
     let budget = parse_budget(&budget_str).expect("a valid --budget");
     let params = flag("--params").unwrap_or_default();
     let cfg = parse_mcts_value_config(&params).expect("valid mcts-value spec params");
-    let policy = !has("--no-policy");
+    let policy_flag = !has("--no-policy");
+    let sample_plies: u32 = flag("--sample-plies")
+        .map(|s| s.parse().expect("--sample-plies must be a number"))
+        .unwrap_or(0);
+    let tau: f64 = flag("--tau")
+        .map(|s| s.parse().expect("--tau must be a number"))
+        .unwrap_or(1.0);
+    let specialist_frac: f64 = flag("--specialist-frac")
+        .map(|s| s.parse().expect("--specialist-frac must be a number"))
+        .unwrap_or(0.0);
+    assert!(
+        (0.0..=1.0).contains(&specialist_frac),
+        "--specialist-frac must be in [0, 1]"
+    );
+    assert!(tau > 0.0, "--tau must be positive");
     if let Some(t) = flag("--threads") {
         rayon::ThreadPoolBuilder::new()
             .num_threads(t.parse().expect("--threads must be a number"))
@@ -247,15 +498,75 @@ fn main() {
             .expect("the rayon pool is configured once");
     }
 
-    generate(&out, games, seed0, budget, &budget_str, cfg, policy);
+    // Forcing a policy readout is what sampling needs to pick from; keep the
+    // generator honest about that rather than silently forcing it on.
+    if sample_plies > 0 {
+        assert!(
+            policy_flag,
+            "--sample-plies > 0 needs the policy readout; do not pass --no-policy with it"
+        );
+    }
+
+    let sampling = SamplingInfo {
+        tau,
+        plies: sample_plies,
+        salt: format!("{SAMPLE_RNG_SALT:#018x}"),
+    };
+    let roles = RolesInfo {
+        specialist_frac,
+        role_salt: format!("{ROLE_SALT:#018x}"),
+        role_names: [
+            Role::Generalist.name().to_string(),
+            Role::Military.name().to_string(),
+            Role::Science.name().to_string(),
+            Role::Civilian.name().to_string(),
+        ],
+    };
+
+    generate(
+        &out,
+        games,
+        seed0,
+        budget,
+        &budget_str,
+        cfg,
+        policy_flag,
+        sampling,
+        roles,
+    );
 }
 
 /// Play one self-play game and return its line.
-fn play(seed: u64, budget: Budget, cfg: MctsValueConfig, want_policy: bool) -> GameLine {
-    let mut one = MctsValueAgent::with_config(seed ^ SEAT_ONE_SALT, cfg);
-    let mut two = MctsValueAgent::with_config(seed ^ SEAT_TWO_SALT, cfg);
+#[allow(clippy::too_many_arguments)]
+fn play(
+    seed: u64,
+    budget: Budget,
+    cfg: MctsValueConfig,
+    want_policy: bool,
+    sampling: &SamplingInfo,
+    roles: &RolesInfo,
+) -> GameLine {
+    let assignment = assign_role(seed, roles.specialist_frac, ROLE_SALT);
+
+    let cfg_for = |seat: Player| -> MctsValueConfig {
+        match assignment {
+            Some((role, specialist_seat)) if specialist_seat == seat => {
+                let mut c = cfg;
+                c.objective = Objective::TargetKind(
+                    role.target_kind()
+                        .expect("assign_role never returns Role::Generalist"),
+                );
+                c
+            }
+            _ => cfg,
+        }
+    };
+
+    let mut one = MctsValueAgent::with_config(seed ^ SEAT_ONE_SALT, cfg_for(Player::One));
+    let mut two = MctsValueAgent::with_config(seed ^ SEAT_TWO_SALT, cfg_for(Player::Two));
     let mut state = engine::new_game(seed);
     let mut rng = StdRng::seed_from_u64(seed ^ ENGINE_RNG_SALT);
+    let mut sample_rng = StdRng::seed_from_u64(seed ^ SAMPLE_RNG_SALT);
 
     let mut actions: Vec<Action> = Vec::with_capacity(64);
     let mut decisions: Vec<Decision> = Vec::with_capacity(48);
@@ -272,49 +583,76 @@ fn play(seed: u64, budget: Budget, cfg: MctsValueConfig, want_policy: bool) -> G
         }
         let obs = state.observation();
         let mover = state.current_player();
+        let ply = actions.len() as u32;
+        let role = match assignment {
+            Some((role, seat)) if seat == mover => role,
+            _ => Role::Generalist,
+        };
         let agent: &mut MctsValueAgent = match mover {
             Player::One => &mut one,
             Player::Two => &mut two,
         };
-        let action = agent.choose(&obs, &legal, budget);
+        let searched_action = agent.choose(&obs, &legal, budget);
         assert!(
-            legal.contains(&action),
-            "seed {seed}: agent returned an action outside `legal`: {action:?}"
+            legal.contains(&searched_action),
+            "seed {seed}: agent returned an action outside `legal`: {searched_action:?}"
         );
 
         // `None` exactly when the move was forced; see `last_root`.
-        if let Some(root) = agent.last_root() {
-            let chosen = legal
-                .iter()
-                .position(|&a| a == action)
-                .expect("the played action is one of the legal ones");
-            let policy = want_policy.then(|| {
-                // The readout is in the tree's own shuffled order, so it is
-                // re-indexed into `legal_actions` order here — the one order a
-                // replay can reproduce.
-                legal
-                    .iter()
-                    .map(|&a| {
-                        root.policy
-                            .iter()
-                            .find(|&&(pa, _)| pa == a)
-                            .map(|&(_, n)| n)
-                            .unwrap_or(0)
-                    })
-                    .collect()
-            });
-            decisions.push(Decision {
-                ply: actions.len() as u32,
-                mover,
-                value: root.value,
-                visits: root.visits,
-                chosen,
-                policy,
-            });
-        }
+        let Some(root) = agent.last_root() else {
+            engine::apply(&mut state, searched_action, &mut rng).expect("a legal action applies");
+            actions.push(searched_action);
+            continue;
+        };
 
-        engine::apply(&mut state, action, &mut rng).expect("a legal action applies");
-        actions.push(action);
+        // Re-index the tree's own (shuffled) root order into
+        // `engine::legal_actions` order — the one order a replay can
+        // reproduce, and the order `chosen`/`policy` are recorded against.
+        let visits_by_legal: Vec<u32> = legal
+            .iter()
+            .map(|&a| {
+                root.policy
+                    .iter()
+                    .find(|&&(pa, _)| pa == a)
+                    .map(|&(_, n)| n)
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        // Specialists always play argmax; generalists sample from
+        // `visits^(1/tau)` for the first `sampling.plies` plies. Both read the
+        // same re-indexed visit counts, so `chosen` and `policy` always agree
+        // about which action index is which.
+        let should_sample = role == Role::Generalist && ply < sampling.plies;
+        let (played_action, sampled) = if should_sample {
+            (
+                sample_by_visits(&legal, &visits_by_legal, sampling.tau, &mut sample_rng),
+                true,
+            )
+        } else {
+            (searched_action, false)
+        };
+
+        let chosen = legal
+            .iter()
+            .position(|&a| a == played_action)
+            .expect("the played action is one of the legal ones");
+
+        let policy = want_policy.then(|| visits_by_legal.clone());
+
+        decisions.push(Decision {
+            ply,
+            mover,
+            value: root.value,
+            visits: root.visits,
+            chosen,
+            policy,
+            role: role.code(),
+            sampled,
+        });
+
+        engine::apply(&mut state, played_action, &mut rng).expect("a legal action applies");
+        actions.push(played_action);
     }
 
     GameLine {
@@ -326,6 +664,61 @@ fn play(seed: u64, budget: Budget, cfg: MctsValueConfig, want_policy: bool) -> G
     }
 }
 
+/// Draw one legal action's index from `visits[i]^(1/tau)`, ignoring
+/// zero-visit actions entirely (a zero-visit action was never actually
+/// explored by the search, so it must never be handed back as "what was
+/// played" — see the module docs and `--verify`'s point (b)).
+///
+/// `legal` and `visits` must be the same length and in the same order (both
+/// are, by construction, everywhere this is called).
+///
+/// Uses `libm::pow` rather than `f64::powf`, matching `tree.rs`'s
+/// `ucb1`/`resolve_chance`: this decides which action a game actually plays,
+/// which is exactly the kind of search-shaping decision
+/// `docs/conventions.md`'s cross-platform-determinism rule (Tier 0-C) covers
+/// — a corpus *regenerated* on a different architecture must reach the same
+/// games.
+fn sample_by_visits(legal: &[Action], visits: &[u32], tau: f64, rng: &mut StdRng) -> Action {
+    debug_assert_eq!(legal.len(), visits.len());
+    let weights: Vec<f64> = visits
+        .iter()
+        .map(|&v| {
+            if v == 0 {
+                0.0
+            } else {
+                libm::pow(f64::from(v), 1.0 / tau)
+            }
+        })
+        .collect();
+    let total: f64 = weights.iter().sum();
+    if total <= 0.0 {
+        // Every action had zero visits, which should not happen for a real
+        // (non-forced) decision, but fall back to the search's own argmax
+        // reasoning (the highest raw visit count) rather than panic on a
+        // training-data run that has already spent hours of compute.
+        let (i, _) = visits
+            .iter()
+            .enumerate()
+            .max_by_key(|&(_, &v)| v)
+            .expect("legal is non-empty");
+        return legal[i];
+    }
+    let mut r = rng.gen_range(0.0..total);
+    for (i, &w) in weights.iter().enumerate() {
+        if w <= 0.0 {
+            continue;
+        }
+        if r < w {
+            return legal[i];
+        }
+        r -= w;
+    }
+    // Floating-point rounding landed exactly on the boundary; hand back the
+    // last nonzero-weight action rather than fall through to nothing.
+    legal[weights.iter().rposition(|&w| w > 0.0).unwrap()]
+}
+
+#[allow(clippy::too_many_arguments)]
 fn generate(
     out: &Path,
     games: u64,
@@ -334,6 +727,8 @@ fn generate(
     budget_str: &str,
     cfg: MctsValueConfig,
     policy: bool,
+    sampling: SamplingInfo,
+    roles: RolesInfo,
 ) {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent).expect("the output directory is creatable");
@@ -346,6 +741,10 @@ fn generate(
     println!("params  {}", spec.params);
     println!("budget  {budget_str}");
     println!("seeds   {seed0}..{}", seed0 + games);
+    println!(
+        "sample  plies={} tau={:.2} specialist_frac={:.4}",
+        sampling.plies, sampling.tau, roles.specialist_frac
+    );
     println!("out     {}", out.display());
     println!();
 
@@ -353,6 +752,9 @@ fn generate(
     let start = std::time::Instant::now();
     let mut total_decisions = 0u64;
     let mut total_forced = 0u64;
+    let mut total_sampled = 0u64;
+    let mut specialist_games = 0u64;
+    let mut specialist_games_by_role = [0u64; 3];
     let mut done = 0u64;
 
     let mpath = manifest_path(out);
@@ -361,10 +763,16 @@ fn generate(
     // valid and still self-describing — the games already on disk, and a
     // manifest that counts exactly those. Flushing the writer in the same
     // place is what makes the two agree.
-    let write_manifest = |games_done: u64, decisions: u64, forced: u64, wall: f64| {
+    let write_manifest = |games_done: u64,
+                          decisions: u64,
+                          forced: u64,
+                          sampled: u64,
+                          spec_games: u64,
+                          spec_by_role: [u64; 3],
+                          wall: f64| {
         let manifest = Manifest {
             kind: "duels-value-corpus".to_string(),
-            version: 1,
+            version: 2,
             generated_by: "duels-arena examples/value_corpus_mv.rs".to_string(),
             agent: spec.clone(),
             budget: budget_str.to_string(),
@@ -379,6 +787,11 @@ fn generate(
                 format!("{SEAT_ONE_SALT:#018x}"),
                 format!("{SEAT_TWO_SALT:#018x}"),
             ],
+            sampling: sampling.clone(),
+            roles: roles.clone(),
+            specialist_games: spec_games,
+            specialist_games_by_role: spec_by_role,
+            sampled_decisions: sampled,
             wall_time_s: wall,
         };
         fs::write(
@@ -393,11 +806,16 @@ fn generate(
         let end = (seed + BATCH as u64).min(seed0 + games);
         let batch: Vec<GameLine> = (seed..end)
             .into_par_iter()
-            .map(|s| play(s, budget, cfg, policy))
+            .map(|s| play(s, budget, cfg, policy, &sampling, &roles))
             .collect();
         for line in &batch {
             total_decisions += line.decisions.len() as u64;
             total_forced += u64::from(line.moves) - line.decisions.len() as u64;
+            total_sampled += line.decisions.iter().filter(|d| d.sampled).count() as u64;
+            if let Some((role, _)) = assign_role(line.seed, roles.specialist_frac, ROLE_SALT) {
+                specialist_games += 1;
+                specialist_games_by_role[(role.code() - 1) as usize] += 1;
+            }
             serde_json::to_writer(&mut w, line).expect("a game line serializes");
             w.write_all(b"\n").expect("the corpus file is writable");
         }
@@ -405,7 +823,15 @@ fn generate(
         w.flush().expect("the corpus file flushes");
         #[allow(clippy::disallowed_methods)]
         let elapsed = start.elapsed().as_secs_f64();
-        write_manifest(done, total_decisions, total_forced, elapsed);
+        write_manifest(
+            done,
+            total_decisions,
+            total_forced,
+            total_sampled,
+            specialist_games,
+            specialist_games_by_role,
+            elapsed,
+        );
         let rate = done as f64 / elapsed.max(1e-9);
         let eta = (games - done) as f64 / rate.max(1e-9);
         println!(
@@ -418,13 +844,32 @@ fn generate(
 
     #[allow(clippy::disallowed_methods)]
     let wall = start.elapsed().as_secs_f64();
-    write_manifest(done, total_decisions, total_forced, wall);
+    write_manifest(
+        done,
+        total_decisions,
+        total_forced,
+        total_sampled,
+        specialist_games,
+        specialist_games_by_role,
+        wall,
+    );
 
     let bytes = fs::metadata(out).map(|m| m.len()).unwrap_or(0);
     println!();
     println!("wrote   {games} games, {total_decisions} decisions");
     println!("        {} ({:.1} MiB)", out.display(), bytes as f64 / 1e6);
     println!("        {}", mpath.display());
+    println!(
+        "specialist games {specialist_games} ({:.2}%) — military {} / science {} / civilian {}",
+        100.0 * specialist_games as f64 / games.max(1) as f64,
+        specialist_games_by_role[0],
+        specialist_games_by_role[1],
+        specialist_games_by_role[2],
+    );
+    println!(
+        "sampled decisions {total_sampled} of {total_decisions} ({:.2}%)",
+        100.0 * total_sampled as f64 / total_decisions.max(1) as f64
+    );
     println!(
         "took    {:.1} min wall ({:.2} s/game/core-equivalent aggregate)",
         wall / 60.0,
@@ -439,16 +884,17 @@ fn manifest_path(out: &Path) -> PathBuf {
 }
 
 /// Replay the corpus against the engine and check every claim it makes, then
-/// report whether the recorded values look like win probabilities of the games
-/// that actually happened.
+/// report whether the recorded values look like win probabilities of the
+/// games that actually happened — separately per [`Role`], since only the
+/// generalist's `value` is a win probability at all.
 ///
-/// This is the gate the roadmap's "sanity-check before the full run" asks for,
-/// and it is deliberately a *replay*: it re-derives every position from
+/// This is the gate the roadmap's "sanity-check before the full run" asks
+/// for, and it is deliberately a *replay*: it re-derives every position from
 /// `(seed, actions)` and would catch a corpus whose replay key does not
 /// reconstruct the game it labelled.
 fn verify(path: &Path, sample: usize) {
     let mpath = manifest_path(path);
-    match fs::read_to_string(&mpath) {
+    let manifest: Option<Manifest> = match fs::read_to_string(&mpath) {
         Ok(s) => {
             let m: Manifest = serde_json::from_str(&s).expect("the manifest parses");
             println!("manifest {} v{}", m.kind, m.version);
@@ -458,17 +904,36 @@ fn verify(path: &Path, sample: usize) {
                 "  games   {} ({} decisions, {} forced plies), policy={}",
                 m.games, m.decisions, m.forced_plies, m.policy_recorded
             );
+            println!(
+                "  sample  plies={} tau={:.2}   specialist_frac={:.4} (measured: {} games, \
+                 mil/sci/civ = {}/{}/{})",
+                m.sampling.plies,
+                m.sampling.tau,
+                m.roles.specialist_frac,
+                m.specialist_games,
+                m.specialist_games_by_role[0],
+                m.specialist_games_by_role[1],
+                m.specialist_games_by_role[2],
+            );
+            Some(m)
         }
-        Err(e) => println!("(no manifest at {}: {e})", mpath.display()),
-    }
+        Err(e) => {
+            println!("(no manifest at {}: {e})", mpath.display());
+            None
+        }
+    };
+    let specialist_frac = manifest.as_ref().map_or(0.0, |m| m.roles.specialist_frac);
+    let sample_plies = manifest.as_ref().map_or(0, |m| m.sampling.plies);
 
     let reader = BufReader::new(File::open(path).expect("the corpus file is readable"));
     let mut games = 0u64;
     let mut rows = 0u64;
-    // Paired (recorded value from the mover's view, actual outcome for the
-    // mover) for the correlation and the calibration table.
-    let mut xs: Vec<f64> = Vec::new();
-    let mut ys: Vec<f64> = Vec::new();
+    let mut sampled_rows = 0u64;
+    // Per-role paired (recorded value, outcome-for-the-mover). Index 0 is the
+    // generalist bucket (win-probability semantics); 1/2/3 are the specialist
+    // buckets (target-kind semantics) — see the module docs.
+    let mut xs: [Vec<f64>; 4] = Default::default();
+    let mut ys: [Vec<f64>; 4] = Default::default();
 
     for (i, line) in reader.lines().enumerate() {
         if games as usize >= sample {
@@ -487,6 +952,12 @@ fn verify(path: &Path, sample: usize) {
             "seed {}: moves disagrees with the action list",
             g.seed
         );
+
+        // (d) Recompute the hash-based role assignment and check that every
+        // specialist decision in this game really is on the assigned seat
+        // with the assigned objective, and that no decision claims a
+        // specialist role otherwise.
+        let assignment = assign_role(g.seed, specialist_frac, ROLE_SALT);
 
         // The replay, exactly as the module docs describe it.
         let mut state = engine::new_game(g.seed);
@@ -531,6 +1002,53 @@ fn verify(path: &Path, sample: usize) {
                     "seed {}: ply {ply}'s chosen index does not name the played action",
                     g.seed
                 );
+
+                let role = Role::from_code(d.role).unwrap_or_else(|| {
+                    panic!(
+                        "seed {}: ply {ply} has an unknown role code {}",
+                        g.seed, d.role
+                    )
+                });
+
+                // (c) Specialists never sample.
+                assert!(
+                    !(role != Role::Generalist && d.sampled),
+                    "seed {}: ply {ply} is a specialist decision (role={}) but is marked sampled",
+                    g.seed,
+                    role.name()
+                );
+
+                // (d) A specialist decision is really on the assigned seat,
+                // with the assigned objective; a non-specialist decision in a
+                // specialist game (the other seat, or before/after the
+                // window doesn't apply here — specialists hold their seat for
+                // the whole game) must stay generalist; and a game with no
+                // assignment at all must be all-generalist.
+                match assignment {
+                    Some((assigned_role, assigned_seat)) if d.mover == assigned_seat => {
+                        assert_eq!(
+                            role,
+                            assigned_role,
+                            "seed {}: ply {ply}'s specialist seat played role {} but the hash \
+                             assignment says {}",
+                            g.seed,
+                            role.name(),
+                            assigned_role.name()
+                        );
+                    }
+                    _ => {
+                        assert_eq!(
+                            role,
+                            Role::Generalist,
+                            "seed {}: ply {ply} has role {} but the hash assignment does not \
+                             put a specialist on seat {:?}",
+                            g.seed,
+                            role.name(),
+                            d.mover
+                        );
+                    }
+                }
+
                 if let Some(p) = &d.policy {
                     assert_eq!(
                         p.len(),
@@ -538,24 +1056,83 @@ fn verify(path: &Path, sample: usize) {
                         "seed {}: ply {ply}'s policy has the wrong width",
                         g.seed
                     );
-                    let top = p.iter().max().copied().unwrap_or(0);
-                    assert_eq!(
-                        p[d.chosen], top,
-                        "seed {}: ply {ply} played a non-argmax action",
-                        g.seed
+                    // (b) A sampled decision must never have picked a
+                    // zero-visit action.
+                    assert!(
+                        p[d.chosen] > 0,
+                        "seed {}: ply {ply} played a zero-visit action (visits={})",
+                        g.seed,
+                        p[d.chosen]
                     );
+                    if d.sampled {
+                        // (b) ...and must actually be inside the recorded
+                        // sampling window.
+                        assert!(
+                            (ply as u32) < sample_plies,
+                            "seed {}: ply {ply} is marked sampled but is outside the \
+                             manifest's sample-plies window ({sample_plies})",
+                            g.seed
+                        );
+                        sampled_rows += 1;
+                    } else {
+                        // (a) An unsampled decision is still argmax.
+                        let top = p.iter().max().copied().unwrap_or(0);
+                        assert_eq!(
+                            p[d.chosen], top,
+                            "seed {}: ply {ply} played a non-argmax action while unsampled",
+                            g.seed
+                        );
+                    }
                 }
+                assert!(
+                    d.visits > 0,
+                    "seed {}: ply {ply} recorded no visits",
+                    g.seed
+                );
+
+                // (e) Calibration is bucketed per role, since only the
+                // generalist bucket's `value` is a win probability.
+                let bucket = role.code() as usize;
+                let outcome_for_mover = match role {
+                    Role::Generalist => match g.result.winner() {
+                        None => 0.5,
+                        Some(w) if w == d.mover => 1.0,
+                        Some(_) => 0.0,
+                    },
+                    _ => {
+                        let target = role
+                            .target_kind()
+                            .expect("a non-generalist role always has a target kind");
+                        match g.result {
+                            GameResult::Win { winner, kind }
+                                if winner == d.mover && kind_matches_target(kind, target) =>
+                            {
+                                1.0
+                            }
+                            _ => 0.0,
+                        }
+                    }
+                };
+                let value = match role {
+                    // Only the generalist's `value` is on a fixed
+                    // Player-One scale that needs flipping to the mover's
+                    // perspective; a specialist's `value` is already on the
+                    // mover's own scale by construction (`Tree::exploit`'s
+                    // docs) — see this file's module docs.
+                    Role::Generalist => match d.mover {
+                        Player::One => d.value,
+                        Player::Two => 1.0 - d.value,
+                    },
+                    _ => d.value,
+                };
                 assert!(
                     (0.0..=1.0).contains(&d.value),
                     "seed {}: ply {ply}'s value {} is not a probability",
                     g.seed,
                     d.value
                 );
-                assert!(
-                    d.visits > 0,
-                    "seed {}: ply {ply} recorded no visits",
-                    g.seed
-                );
+                xs[bucket].push(value);
+                ys[bucket].push(outcome_for_mover);
                 rows += 1;
             } else {
                 assert_eq!(
@@ -591,54 +1168,67 @@ fn verify(path: &Path, sample: usize) {
             g.seed
         );
 
-        // Labels against what actually happened, from each mover's own view.
-        for d in &g.decisions {
-            let outcome = match g.result.winner() {
-                None => 0.5,
-                Some(w) if w == d.mover => 1.0,
-                Some(_) => 0.0,
-            };
-            let value = match d.mover {
-                Player::One => d.value,
-                Player::Two => 1.0 - d.value,
-            };
-            xs.push(value);
-            ys.push(outcome);
-        }
         games += 1;
     }
 
     println!();
-    println!("replayed {games} games, {rows} labelled decisions — every game reproduced");
-    if xs.is_empty() {
-        return;
-    }
     println!(
-        "pearson r(root value, eventual outcome) = {:.4}   brier = {:.4}",
-        pearson(&xs, &ys),
-        xs.iter()
-            .zip(&ys)
-            .map(|(x, y)| (x - y) * (x - y))
-            .sum::<f64>()
-            / xs.len() as f64
+        "replayed {games} games, {rows} labelled decisions ({sampled_rows} sampled) — every \
+         game reproduced"
     );
-    println!();
-    println!("  predicted        n     mean outcome");
-    for b in 0..10 {
-        let lo = b as f64 / 10.0;
-        let hi = lo + 0.1;
-        let picked: Vec<f64> = xs
-            .iter()
-            .zip(&ys)
-            .filter(|(x, _)| **x >= lo && (**x < hi || (b == 9 && **x <= 1.0)))
-            .map(|(_, y)| *y)
-            .collect();
-        if picked.is_empty() {
-            println!("  {lo:.1}-{hi:.1}          0            -");
+
+    for (bucket, name) in [
+        (0usize, "generalist (win probability)"),
+        (1, "military specialist (P(mover wins by military))"),
+        (2, "science specialist (P(mover wins by science))"),
+        (3, "civilian specialist (P(mover wins by civilian))"),
+    ] {
+        if xs[bucket].is_empty() {
             continue;
         }
-        let mean = picked.iter().sum::<f64>() / picked.len() as f64;
-        println!("  {lo:.1}-{hi:.1}   {:>8}          {mean:.3}", picked.len());
+        println!();
+        println!("-- {name}, n={} --", xs[bucket].len());
+        println!(
+            "pearson r(value, outcome) = {:.4}   brier = {:.4}",
+            pearson(&xs[bucket], &ys[bucket]),
+            xs[bucket]
+                .iter()
+                .zip(&ys[bucket])
+                .map(|(x, y)| (x - y) * (x - y))
+                .sum::<f64>()
+                / xs[bucket].len() as f64
+        );
+        println!("  predicted        n     mean outcome");
+        for b in 0..10 {
+            let lo = b as f64 / 10.0;
+            let hi = lo + 0.1;
+            let picked: Vec<f64> = xs[bucket]
+                .iter()
+                .zip(&ys[bucket])
+                .filter(|(x, _)| **x >= lo && (**x < hi || (b == 9 && **x <= 1.0)))
+                .map(|(_, y)| *y)
+                .collect();
+            if picked.is_empty() {
+                println!("  {lo:.1}-{hi:.1}          0            -");
+                continue;
+            }
+            let mean = picked.iter().sum::<f64>() / picked.len() as f64;
+            println!("  {lo:.1}-{hi:.1}   {:>8}          {mean:.3}", picked.len());
+        }
+    }
+}
+
+/// Whether a finished game's actual [`VictoryKind`] counts as an achievement
+/// of `target`, folding [`VictoryKind::CivilianVictory`] and
+/// [`VictoryKind::CivilianTiebreak`] together — matching
+/// `duels_agent_mcts_value::tree::kind_matches_target`'s rule exactly, so a
+/// specialist's own reward and this file's offline calibration agree about
+/// what counts as "achieved".
+fn kind_matches_target(actual: VictoryKind, target: VictoryKind) -> bool {
+    use VictoryKind::{CivilianTiebreak, CivilianVictory};
+    match (actual, target) {
+        (CivilianVictory | CivilianTiebreak, CivilianVictory | CivilianTiebreak) => true,
+        _ => actual == target,
     }
 }
 
@@ -658,4 +1248,125 @@ fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
         return f64::NAN;
     }
     sxy / (sxx * syy).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--sample-plies 0 --specialist-frac 0` (the defaults) must reproduce
+    /// the original generator bit-for-bit: no game ever gets a specialist,
+    /// and no decision is ever sampled rather than argmax.
+    #[test]
+    fn defaults_disable_both_v2_features() {
+        for seed in 0..2000u64 {
+            assert_eq!(assign_role(seed, 0.0, ROLE_SALT), None);
+        }
+    }
+
+    /// The role hash must not correlate with `seed % 10`
+    /// (`train_value.py`'s split) or with seed parity — a cheap regression
+    /// check for the failure mode `assign_role`'s docs warn against: this
+    /// samples across every `seed % 10` bucket, at a high enough
+    /// `specialist_frac` that a real correlation would show up as a lopsided
+    /// bucket count.
+    #[test]
+    fn specialist_assignment_does_not_correlate_with_the_train_value_split() {
+        let mut per_bucket = [0u64; 10];
+        let n = 200_000u64;
+        for seed in 1..=n {
+            if assign_role(seed, 0.25, ROLE_SALT).is_some() {
+                per_bucket[(seed % 10) as usize] += 1;
+            }
+        }
+        let total: u64 = per_bucket.iter().sum();
+        let expected_per_bucket = total as f64 / 10.0;
+        for (bucket, &count) in per_bucket.iter().enumerate() {
+            let ratio = count as f64 / expected_per_bucket;
+            assert!(
+                (0.9..1.1).contains(&ratio),
+                "seed%10 bucket {bucket} has {count} specialist games, expected close to \
+                 {expected_per_bucket:.0} (ratio {ratio:.3}) -- looks correlated with the split"
+            );
+        }
+    }
+
+    /// The measured specialist fraction and the three-way objective split
+    /// both land close to their requested values over a large sample.
+    #[test]
+    fn specialist_fraction_and_objective_split_are_roughly_uniform() {
+        let n = 400_000u64;
+        let mut specialists = 0u64;
+        let mut by_role = [0u64; 3];
+        for seed in 1..=n {
+            if let Some((role, _)) = assign_role(seed, 0.25, ROLE_SALT) {
+                specialists += 1;
+                by_role[(role.code() - 1) as usize] += 1;
+            }
+        }
+        let frac = specialists as f64 / n as f64;
+        assert!((0.24..0.26).contains(&frac), "specialist frac {frac:.4}");
+        for (i, &c) in by_role.iter().enumerate() {
+            let share = c as f64 / specialists as f64;
+            assert!(
+                (0.30..0.36).contains(&share),
+                "role {i} share {share:.4} of specialist games"
+            );
+        }
+    }
+
+    /// Both seats are assigned the specialist role at roughly equal rates.
+    #[test]
+    fn specialist_seat_is_roughly_balanced() {
+        let n = 400_000u64;
+        let mut one = 0u64;
+        let mut two = 0u64;
+        for seed in 1..=n {
+            match assign_role(seed, 0.25, ROLE_SALT) {
+                Some((_, Player::One)) => one += 1,
+                Some((_, Player::Two)) => two += 1,
+                None => {}
+            }
+        }
+        let ratio = one as f64 / two as f64;
+        assert!((0.9..1.1).contains(&ratio), "seat ratio {ratio:.3}");
+    }
+
+    /// `sample_by_visits` never returns a zero-visit action, and always
+    /// returns *some* legal action, across a spread of visit distributions.
+    #[test]
+    fn sample_by_visits_never_picks_a_zero_visit_action() {
+        let legal = vec![
+            Action::Discard { slot: 0 },
+            Action::Discard { slot: 1 },
+            Action::Discard { slot: 2 },
+            Action::Discard { slot: 3 },
+        ];
+        let visits = [50u32, 0, 30, 0];
+        let mut rng = StdRng::seed_from_u64(1);
+        for _ in 0..2000 {
+            let a_idx = {
+                let picked = sample_by_visits(&legal, &visits, 1.0, &mut rng);
+                legal.iter().position(|&a| a == picked).unwrap()
+            };
+            assert!(
+                visits[a_idx] > 0,
+                "picked a zero-visit action at index {a_idx}"
+            );
+        }
+    }
+
+    /// `Role` round-trips through its `u8` code.
+    #[test]
+    fn role_code_round_trips() {
+        for role in [
+            Role::Generalist,
+            Role::Military,
+            Role::Science,
+            Role::Civilian,
+        ] {
+            assert_eq!(Role::from_code(role.code()), Some(role));
+        }
+        assert_eq!(Role::from_code(4), None);
+    }
 }

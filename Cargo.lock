@@ -466,6 +466,7 @@ dependencies = [
  "duels-eval",
  "duels-strategy",
  "duels-value",
+ "libm",
  "rand 0.8.8",
  "rayon",
  "serde",

@@ -867,10 +867,17 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                 cfg.value_weights_override = match v {
                     "default" | "live" | "current" => None,
                     "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
+                    // Unpromoted Tier 1-D/E experiment candidates -- see
+                    // `duels_agent_mcts_value::WEIGHTS_ARM_A`'s docs for what
+                    // each arm actually is. None of these is the default.
+                    "arm-a" => Some(duels_agent_mcts_value::WEIGHTS_ARM_A),
+                    "arm-b" => Some(duels_agent_mcts_value::WEIGHTS_ARM_B),
+                    "arm-c" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C),
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
-                             \"default\" or \"v1\")"
+                             \"default\", \"v1\", or \"arm-a\"/\"arm-b\"/\"arm-c\" for the \
+                             Tier 1-D/E experiment candidates)"
                         ))
                     }
                 };
