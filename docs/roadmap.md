@@ -530,6 +530,170 @@ generation count, whether stage 3 should ever gate rather than only veto,
 and the fleet's actual timing are judgment calls left for the project
 owner.
 
+## Recipe calibration day (2026-09-11): results
+
+The attended, one-shot calibration pass the previous section's "Recommended
+next step" called for, run before any unattended multi-generation loop. Not
+the autonomous loop itself — that is still unbuilt. Four things, in the
+order the recommendation named them; every number below is backed by a real
+`duels-arena experiment`/`train_value.py --metrics` output archived at
+`/Volumes/storage/duels/generations/` and indexed in
+`crates/duels-value/weights/generations.json` (`tier1-gen3-l05-fixedrecipe`,
+`tier1-nb2000`, `tier1-nb8000`).
+
+**1. The training-recipe fix, isolated.** `tools/train_value.py` gained
+`--lr-floor`/`--warmup-epochs` (a schedule that actually anneals, instead of
+the original's floor of 0.1x the base LR), `--no-patience` (run the full
+fixed schedule), `--swa-tail-frac` (weight-average the low-LR tail, shipped
+only if it beats the best single epoch), and per-epoch training-loss
+logging (new; only validation loss was ever logged before) — all opt-in and
+bit-identical to the pre-existing script when unset. Retrained Generation
+3's already-sealed `tier1-gen3-explore` corpus (zero new corpus generation)
+with `--epochs 30 --warmup-epochs 2 --lr-floor 2e-5 --no-patience
+--swa-tail-frac 0.333 --value-target-lambda 0.5`, identical to
+`tier1-gen3-l05` except for the recipe.
+
+Train-loss logging immediately confirms the diagnosis: train loss falls
+smoothly through all 30 epochs (0.510 → 0.483) while validation loss
+plateaus by roughly epoch 10 (0.519 → 0.507, essentially flat 0.5066–0.5070
+from there on) — patience was firing on early-epoch noise, not real
+convergence, exactly as predicted. But the schedule actually reaching its
+floor bought only a marginal offline gain: SWA over the final 10 epochs
+shipped at val win-log-loss 0.50650 (barely beating the best single epoch's
+0.50656), a **0.00044** improvement over `tier1-gen3-l05`'s own 0.50694 —
+smaller than the 0.0011 training-seed-replicate noise floor this project has
+measured, so not even clearly a real *offline* gain.
+
+**Gated, and the arena result matches that marginal offline read.** Pooled
+vs `v3` (4,000 games, `elo1=10`): **+14.9 Elo [+4.1, +25.6], AcceptH1**,
+mechanism Pass — a real win over `v3`, but statistically indistinguishable
+from `tier1-gen3-l05`'s own +17.2 Elo in the identical comparison (heavily
+overlapping CIs). The clean, direct isolation — this candidate vs
+`tier1-gen3-l05` head-to-head, recipe-only difference, nothing else changed
+— reads **-6.4 Elo [-17.2, +4.3], AcceptH0** (rejects a positive effect at
+`elo1=10`), mechanism Pass. The frozen panel reads the same direction:
+weaker or even on 3 of 4 cells against `tier1-gen3-l05`'s own panel numbers
+(`v2@32000`: -16.1 vs -1.7; `v2@2000`: +75.4 vs +81.3; `mcts-eval@8000`:
++125.8 vs +142.4; `mcts-uct@8000`: +230.4 vs +229.8, about even).
+
+**Verdict: the recipe fix does not move the needle, in either direction,**
+at least not detectably on this one corpus/trial. It is still worth
+shipping going forward — it replaces an undiagnosed noise-selection
+mechanism (patience stopping on early-epoch flukes) with an honest,
+reproducible one, and the train-loss logging is a real, first-time
+diagnostic capability — but it should not be sold as an Elo win, because
+this test found none.
+
+**2. The four offline diagnostics**, all from already-archived corpora
+(`tier1-gen3-explore`, plus `tier1-arm-bc-explore` for the 200k point), same
+recipe as above unless noted, val win-log-loss reported (lower is better):
+
+| Diagnostic | Result | Verdict |
+| --- | --- | --- |
+| (a) fixed/no-patience vs patience | 0.50650 vs 0.50694 | Confirms the diagnosis (train loss keeps falling past where patience stops); the fix itself is near-noise-floor, see item 1 |
+| (b) data scaling: 50k / 100k / 200k games | 0.51823 / 0.50650 / 0.50335 | **Monotonic, clear improvement, no plateau yet at 200k** — the single best-supported result of the four |
+| (c) capacity: hidden 64 / 128 / 256 | 0.50637 / 0.50650 / 0.50819 | Bigger is not better — 256 reads worse despite a lower training loss (0.469 vs 0.483), a mild overfitting signature. 64 matches 128 |
+| (d) regularization: weight decay 1e-5 / 1e-4 / 1e-3 | 0.50650 / 0.50629 / 0.52354 | 1e-4 is a lateral move (within noise); 1e-3 clearly underfits (both train and val loss rise) |
+
+Of the roadmap's own candidate mechanisms — {label-noise/overfitting,
+under-regularization, data-starvation, capacity-limited} — **the evidence
+points most clearly at data-starvation.** Validation loss keeps falling with
+more data at every step measured, with no sign of plateauing, while capacity
+and regularization changes in either direction do not help (and often
+hurt). A mild overfitting signature is present (train loss keeps improving
+past where validation loss flattens, worse at 50k games and at hidden=256),
+but it reads as *downstream of* data-starvation — the train/validation gap
+shrinks, not grows, going from 100k to 200k games — rather than an
+independent capacity or regularization problem. These are not mutually
+exclusive per the roadmap's own framing, and this is the honest read: one
+mechanism (data) dominates, the others are present but secondary or already
+correctly tuned.
+
+**3. The higher-generation-node-budget idea, tested as a paired ablation.**
+Full 100k-game generation at `nodes:8000` was not affordable in this
+session's time budget (measured: `nodes:2000` generation for 20k games took
+22.0 min wall; `nodes:8000` for the same 20k games took 81.5 min — a ~3.7x
+scaling, close to the roadmap's predicted ~4x, which implies a full
+100k-game `nodes:8000` corpus would cost on the order of 6-7 hours). Ran the
+smaller matched-size pair explicitly sanctioned as an acceptable first read:
+two 20k-game corpora self-played by `v3` with the identical
+exploration/specialist config (`--sample-plies 14 --tau 1.0
+--specialist-frac 0.25`), disjoint seed ranges, differing only in generating
+node budget (`nodes:2000` vs `nodes:8000`). Both replay-verified cleanly,
+sealed to `/Volumes/storage/duels/corpus/tier1-nodebudget-nb2000`/
+`tier1-nodebudget-nb8000`. Trained from each with the same recipe as item 1.
+
+Both corpora are small enough that both trained candidates overfit hard
+(best epoch 2-3 of 30) and both lose heavily to `v3` (`nb2000`: -84.3 Elo
+[-95.4, -73.2]; `nb8000`: -77.8 Elo [-88.8, -66.7] — both `AcceptH0`,
+expected, since 20k games is far short of `v3`'s 100k-game training corpus).
+The clean test is the two candidates **directly against each other**, which
+holds corpus size fixed and isolates the node-budget variable alone: **`nb8000`
+vs `nb2000`, pooled: -14.2 Elo [-25.0, -3.5], AcceptH0** — the higher
+generating node budget did **not** produce a stronger net at matched corpus
+size; both individual seed ranges lean the same (non-significant-to-mildly-
+significant) negative direction.
+
+**Verdict: no evidence found that a higher generating node budget helps, at
+the (small) scale this was actually tested at.** This does not cleanly
+settle the question the project owner's idea raised, because the test ran
+at a scale (20k games) where item 2's own data-scaling diagnostic says
+data-starvation dominates everything else — any `q_root`-quality benefit
+from a deeper generating search could easily be swamped by both corpora
+being far too small to train well in the first place, and the roadmap's own
+caveat (a stronger generator could shift the position distribution in ways
+that don't transfer to production's `nodes:2000` budget) was never
+distinguished from "no effect" by this test. Read this as **inconclusive at
+this scale, leaning negative** — not as a settled "the idea doesn't work."
+A full 100k-game version of this exact pair (affordable on the Raspberry Pi
+fleet's always-on background time, per this document's own fleet-sizing
+section, rather than a single interactive session) is the next thing that
+would actually answer it.
+
+**4. Recommendation for the actual autonomous loop's launch recipe.**
+
+*Well-supported by what was measured today:*
+- **Grow the replay window across generations (≥ 2), do not regenerate a
+  fresh window=1 corpus every time.** This is the diagnostic (2b) result
+  applied directly: validation loss kept falling from 100k to 200k games
+  with no plateau, so a design that accumulates data across generations
+  (exactly what the "Autonomous self-play loop design" section above already
+  recommends) is the single highest-confidence lever available, clearly
+  better-supported by today's evidence than either the recipe fix or the
+  node-budget idea.
+- **Keep hidden=128, weight_decay=1e-5** (today's production values) — both
+  diagnostics (2c, 2d) found nothing better in either direction, and 2d
+  found real evidence that *more* regularization (1e-3) actively hurts.
+- **Ship the fixed-epoch/no-patience/SWA recipe for reproducibility, not for
+  an expected Elo gain.** It removes an actual bug-shaped behavior (patience
+  selecting among noise before the schedule ever reached a real floor) and
+  adds train-loss logging with no measured downside — but do not budget any
+  Elo for it in planning the loop's expected gain per generation.
+
+*Genuinely still uncertain after today:*
+- **The higher-node-budget idea remains untested at a scale that could
+  actually confirm or rule it out.** Today's result leans negative but was
+  run at 1/5th the corpus size everything else in this project is measured
+  at, in a regime item 2 itself says is dominated by a different, larger
+  effect. Recommend leaving `nodes:2000` as the launch default and treating
+  a full-scale node-budget test as a follow-up experiment on the fleet, not
+  a blocking question for the loop's first run.
+- **Whether SWA's marginal gain generalizes past this one corpus** — one
+  trial is not enough to say the tail-averaging mechanism itself is
+  worthless, only that it did not pay off measurably this time.
+- **The exact replay-window size** (2 vs. more) was not itself ablated
+  today — only the underlying premise (more data keeps helping) was
+  confirmed. A window-size sweep is a natural early act for the loop once
+  it exists, not something this calibration day could size in one pass.
+
+*Concrete launch configuration recommended for the loop's first run:*
+`--hidden 128 --weight-decay 1e-5 --epochs 30 --warmup-epochs 2 --lr-floor
+2e-5 --no-patience --swa-tail-frac 0.333 --value-target-lambda 0.5`,
+replay window starting at 2 generations and growing by one per hold (per
+the loop design's own rule), generation node budget `nodes:2000` pending a
+full-scale ablation, five-stage gate as already designed, 100k games per
+generation.
+
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
 **H. Per-card inputs.** `crates/duels-value/src/features.rs` deliberately excludes

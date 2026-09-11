@@ -226,6 +226,25 @@ mod tests {
                 crate::WEIGHTS_GEN3_L10,
                 "211x128x4/5afaaed3",
             ),
+            (
+                "gen3-l05-fixedrecipe (recipe-calibration retest: annealed LR, no \
+                 patience, SWA tail -- no detectable gain over gen3-l05, see \
+                 docs/roadmap.md's \"Recipe calibration day\" section)",
+                crate::WEIGHTS_GEN3_L05_FIXEDRECIPE,
+                "211x128x4/d1627cfa",
+            ),
+            (
+                "nb2000 (recipe-calibration node-budget ablation, generator at \
+                 nodes:2000, matched-size control)",
+                crate::WEIGHTS_NB2000,
+                "211x128x4/ae81ec4e",
+            ),
+            (
+                "nb8000 (recipe-calibration node-budget ablation, generator at \
+                 nodes:8000 -- no benefit found, see docs/roadmap.md)",
+                crate::WEIGHTS_NB8000,
+                "211x128x4/4e324c56",
+            ),
         ];
         for (name, bytes, want) in frozen {
             let got = duels_value::weights_id(bytes);

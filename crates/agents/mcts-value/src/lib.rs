@@ -819,13 +819,56 @@ pub const WEIGHTS_ARM_D_PRIME: &[u8] =
 /// sibling both stay reachable (`mcts-value:weights=gen3-l05`/`weights=gen3
 /// -l10`) as a fully measured, archived, held result -- not a promotion,
 /// but not a discarded one either. See `duels_value`'s crate docs,
-/// "Generation 3", for the full write-up.
+/// "Generation 3", for the full write-up. Both were trained with the
+/// *pre-recipe-calibration* recipe (patience-based early stopping, never
+/// actually annealing below ~1.17e-3) -- see [`WEIGHTS_GEN3_L05_FIXEDRECIPE`]
+/// for the same corpus retrained with the fixed recipe, the direct isolation
+/// this crate's docs call for.
 pub const WEIGHTS_GEN3_L05: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
 /// See [`WEIGHTS_GEN3_L05`]'s docs. The `--value-target-lambda 1.0` control
 /// sibling, same corpus.
 pub const WEIGHTS_GEN3_L10: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
+
+/// The recipe-calibration-day retrain (docs/roadmap.md's "Autonomous
+/// self-play loop design", "Recommended next step"): **the identical
+/// `tier1-gen3-explore` corpus and `--value-target-lambda 0.5`** as
+/// [`WEIGHTS_GEN3_L05`], retrained with the fixed recipe only --
+/// fixed-epoch (30) schedule that actually anneals (2-epoch linear warm-up,
+/// cosine decay to a `2e-5` floor), no patience-based early stopping, and
+/// SWA weight-averaging over the final third of epochs (shipped only
+/// because it beat the single best epoch's validation log loss: 0.50650 vs
+/// 0.50656). Zero other variables changed from `gen3-l05`, so a head-to-head
+/// against it isolates the recipe fix's effect on its own. **Measured: no
+/// detectable gain** (-6.4 Elo vs `gen3-l05` directly, `AcceptH0`) -- see
+/// `docs/roadmap.md`'s "Recipe calibration day" section for the full
+/// write-up. Not promoted; not the default.
+pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l05-fixedrecipe-candidate.bin");
+
+/// The recipe-calibration-day node-budget ablation (docs/roadmap.md's
+/// "Future consideration, flagged by the project owner ... generate future
+/// corpora at a higher node budget than production's `nodes:2000`"): a
+/// matched pair of small (20k-game, not the full 100k) corpora, self-played
+/// by the current champion (`v3`) with the identical exploration/specialist
+/// config as every Tier 1 corpus, differing *only* in the generating search's
+/// node budget -- `nodes:2000` (matching production) for [`WEIGHTS_NB2000`],
+/// `nodes:8000` for [`WEIGHTS_NB8000`]. Both trained with the identical
+/// (recipe-calibration-day) recipe and `--value-target-lambda 0.5` from
+/// their own matched-size corpus. **Measured: no benefit found** --
+/// `nb8000` lost to `nb2000` directly (-14.2 Elo, `AcceptH0`), though
+/// flagged as inconclusive-leaning-negative rather than settled, since both
+/// were tested in the same data-starved regime the calibration day's own
+/// diagnostics identified as the dominant issue at this corpus size. Neither
+/// is promoted or the default -- reachable purely for this ablation's own
+/// gating comparison.
+pub const WEIGHTS_NB2000: &[u8] =
+    include_bytes!("../../../duels-value/weights/nb2000-candidate.bin");
+/// See [`WEIGHTS_NB2000`]'s docs -- the `nodes:8000` half of the same paired
+/// ablation.
+pub const WEIGHTS_NB8000: &[u8] =
+    include_bytes!("../../../duels-value/weights/nb8000-candidate.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
