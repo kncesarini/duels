@@ -298,7 +298,11 @@ fn assign_role(seed: u64, specialist_frac: f64, role_salt: u64) -> Option<(Role,
         _ => Role::Civilian,
     };
     let h3 = splitmix64(h2 ^ SEAT_ROLE_SALT);
-    let seat = if h3.is_multiple_of(2) { Player::One } else { Player::Two };
+    let seat = if h3.is_multiple_of(2) {
+        Player::One
+    } else {
+        Player::Two
+    };
     Some((role, seat))
 }
 
@@ -678,7 +682,13 @@ fn sample_by_visits(legal: &[Action], visits: &[u32], tau: f64, rng: &mut StdRng
     debug_assert_eq!(legal.len(), visits.len());
     let weights: Vec<f64> = visits
         .iter()
-        .map(|&v| if v == 0 { 0.0 } else { libm::pow(f64::from(v), 1.0 / tau) })
+        .map(|&v| {
+            if v == 0 {
+                0.0
+            } else {
+                libm::pow(f64::from(v), 1.0 / tau)
+            }
+        })
         .collect();
     let total: f64 = weights.iter().sum();
     if total <= 0.0 {
@@ -993,8 +1003,12 @@ fn verify(path: &Path, sample: usize) {
                     g.seed
                 );
 
-                let role = Role::from_code(d.role)
-                    .unwrap_or_else(|| panic!("seed {}: ply {ply} has an unknown role code {}", g.seed, d.role));
+                let role = Role::from_code(d.role).unwrap_or_else(|| {
+                    panic!(
+                        "seed {}: ply {ply} has an unknown role code {}",
+                        g.seed, d.role
+                    )
+                });
 
                 // (c) Specialists never sample.
                 assert!(
@@ -1013,7 +1027,8 @@ fn verify(path: &Path, sample: usize) {
                 match assignment {
                     Some((assigned_role, assigned_seat)) if d.mover == assigned_seat => {
                         assert_eq!(
-                            role, assigned_role,
+                            role,
+                            assigned_role,
                             "seed {}: ply {ply}'s specialist seat played role {} but the hash \
                              assignment says {}",
                             g.seed,
@@ -1334,14 +1349,22 @@ mod tests {
                 let picked = sample_by_visits(&legal, &visits, 1.0, &mut rng);
                 legal.iter().position(|&a| a == picked).unwrap()
             };
-            assert!(visits[a_idx] > 0, "picked a zero-visit action at index {a_idx}");
+            assert!(
+                visits[a_idx] > 0,
+                "picked a zero-visit action at index {a_idx}"
+            );
         }
     }
 
     /// `Role` round-trips through its `u8` code.
     #[test]
     fn role_code_round_trips() {
-        for role in [Role::Generalist, Role::Military, Role::Science, Role::Civilian] {
+        for role in [
+            Role::Generalist,
+            Role::Military,
+            Role::Science,
+            Role::Civilian,
+        ] {
             assert_eq!(Role::from_code(role.code()), Some(role));
         }
         assert_eq!(Role::from_code(4), None);

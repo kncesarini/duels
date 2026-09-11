@@ -331,7 +331,14 @@ fn rows_for(g: &GameLine, stride: usize) -> (Vec<u8>, [u64; NUM_OUTCOMES]) {
                             Player::Two => 1.0 - d.value,
                         }) as f32
                     };
-                    write_record(&mut buf, g.seed, label, value, ply as u32, &features(&state, me));
+                    write_record(
+                        &mut buf,
+                        g.seed,
+                        label,
+                        value,
+                        ply as u32,
+                        &features(&state, me),
+                    );
                 }
             }
             kept += 1;
