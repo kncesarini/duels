@@ -64,8 +64,14 @@ LOSS = 3
 # ---------------------------------------------------------------------------
 
 
-def load_matrix(path):
-    """Memory-map a feature matrix, returning (seed, label, search_value, x).
+def load_matrix(path, max_rows=0):
+    """Read a feature matrix, returning (seed, label, search_value, x).
+
+    `max_rows` (0 = all) is read here, at the `fromfile(count=...)` level,
+    not by slicing after an unconditional full read -- otherwise `--max-rows`
+    stops doing what its own `--help` text promises (a cheap smoke run) the
+    moment the full read is no longer lazy. See the "One sequential
+    `fromfile` read" note below for why it isn't lazy any more.
 
     Reads both matrix format versions `examples/feature_dump.rs` has ever
     written: **version 1** (`u32` seed; no `ply` column — every matrix that
@@ -75,6 +81,20 @@ def load_matrix(path):
     that file's module docs, "Specialist rows: `search_value` is `NaN`").
     Existing v1 corpora must keep training exactly as before, which is why
     this stays a version dispatch rather than a single reshaped dtype.
+
+    **One sequential `fromfile` read, not `mmap`.** This used to
+    `np.memmap` the file and let `main`'s unconditional `np.asarray(m["x"])`
+    page it in on demand. That is the wrong access pattern for a matrix that
+    lives on a network filesystem (this project's `/Volumes/storage/duels/`
+    archive, in particular): pulling one *field* out of an interleaved
+    `(seed, label, sv, ply, x)` record forces the kernel to fault in
+    thousands of small, non-contiguous ranges (one per row) instead of
+    reading the file in the large sequential runs NFS read-ahead is good at
+    -- measured over the archive mount, over 10x slower than a plain
+    sequential read of the same bytes. `main` already materialises every
+    row unconditionally (there is no lazy/partial read to preserve), so a
+    single upfront sequential `fromfile` costs the same total I/O and is
+    simply the fast order to do it in.
     """
     with open(path, "rb") as f:
         head = f.read(HEADER_BYTES)
@@ -98,9 +118,12 @@ def load_matrix(path):
         )
     else:
         raise SystemExit(f"{path} is version {version}, this tool reads 1 or 2")
-    m = np.memmap(path, dtype=dt, mode="r", offset=HEADER_BYTES)
-    if len(m) != rows:
-        raise SystemExit(f"{path} header claims {rows} rows, file holds {len(m)}")
+    read_rows = min(rows, max_rows) if max_rows else rows
+    with open(path, "rb") as f:
+        f.seek(HEADER_BYTES)
+        m = np.fromfile(f, dtype=dt, count=read_rows)
+    if len(m) != read_rows:
+        raise SystemExit(f"{path} header claims {rows} rows, file holds only {len(m)}")
     print(f"matrix   {path}")
     print(f"         {rows:,} rows from {games:,} games, {n_in} features, {n_out} outcomes")
     print(f"         matrix format v{version}")
@@ -117,6 +140,52 @@ def split_by_game(seeds):
 # The network. Plain numpy: one hidden ReLU layer, then either a four-way
 # softmax or a single sigmoid, trained with Adam on minibatches.
 # ---------------------------------------------------------------------------
+
+
+def blended_dz(p, target, q, lam):
+    """d(loss)/dz (the pre-softmax logits), summed over the batch (not yet
+    divided by `n`), for `--value-target-lambda`'s two-term loss:
+
+        lam * CE4(p, onehot(z)) + (1 - lam) * BCE(1 - p_loss, q)
+
+    `q is None` or `lam >= 1.0` is the exact original path (no blend to
+    compute, nothing to mask) -- bit-identical to training before this option
+    existed. Otherwise:
+
+    `BCE(1 - p_loss, q)` is algebraically `BCE(p_loss, 1 - q)` (the standard
+    symmetric identity `BCE(1-x, q) = BCE(x, 1-q)`), which is why this only
+    ever needs the softmax's own `LOSS` column. Write `s = p[:, LOSS]`,
+    `t = 1 - q`, so the second term is `L = -[q*log(1-s) + (1-q)*log(s)]`.
+    Using the softmax Jacobian `ds/dz_LOSS = s(1-s)`, `ds/dz_k = -s*p_k`
+    (k != LOSS):
+
+        dL/dz_LOSS = (dL/ds) * s(1-s) = s - t                    (exact)
+        dL/dz_k    = (dL/ds) * (-s*p_k) = -[(s - t)/(1-s)] * p_k   (k != LOSS)
+
+    `g = (s - t) / (1 - s)` is therefore only the right gradient for the
+    *other* logits, not for `LOSS` itself -- dividing the `LOSS` column by
+    `(1 - s)` too (an earlier version of this code did exactly that)
+    amplifies it without bound as `s -> 1` and breaks softmax
+    shift-invariance: the four per-example logit gradients must sum to
+    exactly zero (the loss depends on `z` only through `p`, which is
+    invariant to adding a constant to every logit), and `(s - t)` plus
+    `sum_{k != LOSS} -g*p_k = -g*(1-s) = -(s - t)` is the only split that
+    sums to zero. Checked by finite difference in
+    `tools/test_train_value_grad.py`.
+    """
+    if q is None or lam >= 1.0:
+        return p - target
+    ce = p - target
+    valid = ~np.isnan(q)
+    q_safe = np.where(valid, q, 0.5)
+    t = 1.0 - q_safe
+    s = np.clip(p[:, LOSS], 1e-7, 1 - 1e-7)
+    g = (s - t) / (1.0 - s)
+    bce = np.empty_like(p)
+    bce[:, LOSS] = s - t
+    bce[:, :LOSS] = -g[:, None] * p[:, :LOSS]
+    bce *= valid[:, None]
+    return lam * ce + (1.0 - lam) * bce
 
 
 class Mlp:
@@ -174,30 +243,7 @@ class Mlp:
         """
         n = len(x)
         h, p = self.forward(x)
-        if q is None or lam >= 1.0:
-            # The exact original path: no blend to compute, nothing to mask.
-            dz = (p - target) / n
-        else:
-            ce = p - target
-            valid = ~np.isnan(q)
-            # `BCE(1 - p_loss, q)` is algebraically `BCE(p_loss, 1 - q)` (the
-            # standard symmetric identity `BCE(1-x, q) = BCE(x, 1-q)`), which
-            # is why this only ever needs the softmax's own `LOSS` column:
-            # `q_safe`'s value is thrown away by the `valid` mask below for
-            # every row it would otherwise touch.
-            q_safe = np.where(valid, q, 0.5)
-            t = 1.0 - q_safe
-            s = np.clip(p[:, LOSS], 1e-7, 1 - 1e-7)
-            # d/dz of BCE(s, t) composed with the softmax that produced `s`:
-            # `g = (s - t) / (1 - s)` on the `LOSS` logit, `-g * p_k` on every
-            # other logit (derived from the softmax Jacobian; see the PR
-            # description for the algebra).
-            g = (s - t) / (1.0 - s)
-            bce = np.empty_like(p)
-            bce[:, LOSS] = g
-            bce[:, :LOSS] = -g[:, None] * p[:, :LOSS]
-            bce *= valid[:, None]
-            dz = (lam * ce + (1.0 - lam) * bce) / n
+        dz = blended_dz(p, target, q, lam) / n
         gw2 = h.T @ dz
         gb2 = dz.sum(axis=0)
         dh = dz @ self.w2.T
@@ -391,12 +437,12 @@ def main():
     ap.add_argument("--matrix", required=True)
     ap.add_argument("--out", required=True, help="the DVW1 weights file to write")
     ap.add_argument("--metrics", default=None, help="where to write the metrics JSON")
-    ap.add_argument("--hidden", type=int, default=96)
+    ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-3)
-    ap.add_argument("--weight-decay", type=float, default=1e-6)
-    ap.add_argument("--patience", type=int, default=5)
+    ap.add_argument("--weight-decay", type=float, default=1e-5)
+    ap.add_argument("--patience", type=int, default=8)
     ap.add_argument("--seed", type=int, default=20260909)
     ap.add_argument(
         "--also-scalar",
@@ -422,9 +468,7 @@ def main():
     if not (0.0 <= args.value_target_lambda <= 1.0):
         raise SystemExit("--value-target-lambda must be in [0, 1]")
 
-    m, n_in, n_out, games = load_matrix(args.matrix)
-    if args.max_rows:
-        m = m[: args.max_rows]
+    m, n_in, n_out, games = load_matrix(args.matrix, max_rows=args.max_rows)
 
     seeds = np.asarray(m["seed"])
     labels = np.asarray(m["label"]).astype(np.int64)

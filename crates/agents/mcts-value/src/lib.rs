@@ -717,6 +717,16 @@ pub use tree::{Config, Objective, PriorMode, RootStats};
 /// away in one process, rather than requiring two separately-built binaries.
 pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
 
+/// `v2`, the generation `v3` replaced (`duels_value`'s crate docs, "Follow-up
+/// round three"). Kept reachable and frozen the same way [`WEIGHTS_V1`] is
+/// -- and additionally, per `docs/roadmap.md`'s Tier 1-G, as a member of the
+/// **frozen reference panel** every future generation's promotion battery
+/// measures against (at both `nodes:32000` and `nodes:2000`; see
+/// `crates/duels-arena/examples/reference_panel.rs`), since it is the direct
+/// ancestor at equal budget and a stable, non-moving yardstick across
+/// however many further generations follow `v3`.
+pub const WEIGHTS_V2: &[u8] = include_bytes!("../../../duels-value/weights/v2.bin");
+
 /// Unpromoted candidate `duels-value` weights from the roadmap's Tier 1-D/E
 /// experiment (`docs/roadmap.md`, "Tier 1 design"): three generations trained
 /// from matched-conditions ~100k-game corpora to isolate the exploration/
@@ -742,7 +752,32 @@ pub const WEIGHTS_ARM_A: &[u8] = include_bytes!("../../../duels-value/weights/ar
 /// See [`WEIGHTS_ARM_A`]'s docs for what all three arms are.
 pub const WEIGHTS_ARM_B: &[u8] = include_bytes!("../../../duels-value/weights/arm-b-candidate.bin");
 /// See [`WEIGHTS_ARM_A`]'s docs for what all three arms are.
+///
+/// **Trained with a known-buggy gradient, see `tools/train_value.py`'s git
+/// history.** `--value-target-lambda 0.5`'s two-term loss had a wrong
+/// gradient for the `LOSS` logit (amplified without bound as the model got
+/// confident, instead of the correct `s - t`); it only fires when
+/// `lambda < 1.0`, so this is the one arm it corrupted (`arm-a`/`arm-b` use
+/// `lambda = 1.0` and are unaffected). Kept reachable for the historical
+/// record, not as a trustworthy reading on the value-target-blend idea --
+/// see [`WEIGHTS_ARM_C_PRIME`] for the corrected retest from the same
+/// corpus.
 pub const WEIGHTS_ARM_C: &[u8] = include_bytes!("../../../duels-value/weights/arm-c-candidate.bin");
+
+/// The corrected retest of `arm-c`'s idea, after `tools/train_value.py`'s
+/// blended-loss gradient bug (see [`WEIGHTS_ARM_C`]'s docs) was found and
+/// fixed: same `arm-b`/`arm-c` corpus, same `--value-target-lambda 0.5`,
+/// trained with the fixed gradient. Not promoted merely by existing here;
+/// see the promotion write-up (`crates/duels-value/weights/generations.json`,
+/// id `tier1-arm-c-prime`) for the actual gating result.
+pub const WEIGHTS_ARM_C_PRIME: &[u8] =
+    include_bytes!("../../../duels-value/weights/arm-c-prime-candidate.bin");
+/// The same corrected-gradient retest as [`WEIGHTS_ARM_C_PRIME`], at
+/// `--value-target-lambda 0.75` instead of `0.5` -- a hedge in case the
+/// blend's optimum isn't at the originally-proposed 0.5. See
+/// `crates/duels-value/weights/generations.json`, id `tier1-arm-d-prime`.
+pub const WEIGHTS_ARM_D_PRIME: &[u8] =
+    include_bytes!("../../../duels-value/weights/arm-d-prime-candidate.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.

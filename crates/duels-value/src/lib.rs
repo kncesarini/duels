@@ -655,6 +655,86 @@
 //! (`docs/roadmap.md`'s Tier 2-J) remains the real fix, and remains a
 //! separate, larger, future retrain.
 //!
+//! # Follow-up round three: the Tier 1 loop (`v3.bin`), promoted
+//!
+//! `docs/roadmap.md`'s Tier 1 ran the generate-explore-train loop for real:
+//! put exploration (`visits^(1/tau)`, tau=1, 14 plies) and 25% specialist-seat
+//! mixing into the corpus generator (D), added a `--value-target-lambda`
+//! blended training target (E), and ablated them separately. Three arms from
+//! matched-conditions ~100k-game corpora: `arm-a` (pure argmax, lambda=1.0,
+//! isolates neither D nor E), `arm-b` (D applied, lambda=1.0, isolates D),
+//! `arm-c` (arm-b's corpus, lambda=0.5, isolates E on top of D). `arm-b` won
+//! clean: **+32.0 Elo vs `v2` at 2,000 games (`elo1=10`), reproduced at
+//! +26.8 Elo on a disjoint seed range**, mechanism gate `Pass`.
+//!
+//! `arm-c` read **-17.2 Elo** and was initially rejected -- but a second
+//! review found `tools/train_value.py`'s two-term loss
+//! (`lam * CE4 + (1-lam) * BCE(aggregate_win_mass, q_root)`) had a wrong
+//! gradient for the `LOSS` logit: `(s - t) / (1 - s)` instead of the correct
+//! `s - t` (re-derived from the softmax Jacobian and confirmed by finite
+//! difference, `tools/test_train_value_grad.py`). The bug amplifies the
+//! gradient without bound as the model gets confident and only fires when
+//! `lambda < 1.0`, so `arm-a`/`arm-b` (lambda=1.0) are unaffected but `arm-c`
+//! is corrupted by it -- its own training log shows divide-by-zero/overflow/
+//! invalid-value warnings and a validation loss that never improved past
+//! epoch 0, unlike every lambda=1.0 run. **`arm-c`'s -17.2 Elo is therefore
+//! not a trustworthy reading on the value-target-blend idea.**
+//!
+//! Retrained from the *same*, already-archived `arm-b`/`arm-c` corpus (not
+//! regenerated) with the fixed gradient, at this project's documented
+//! production hyperparameters (`--hidden 128 --epochs 60 --lr 2e-3
+//! --weight-decay 1e-5 --patience 8`): `arm-c2` (`lambda=0.5`, the corrected
+//! retest) and `arm-d2` (`lambda=0.75`, a hedge). Both trained cleanly this
+//! time -- no numeric warnings, validation loss declining smoothly to a best
+//! epoch well past `arm-a`/`arm-b`'s (epoch 17 for `arm-c2` at a validation
+//! win log-loss of 0.51266, better than `arm-b`'s own 0.51899). Gated the
+//! same way as `arm-b`, plus a direct match against `arm-b` to isolate the
+//! gradient fix's own effect:
+//!
+//! | Candidate (`lambda`) | vs `v2`@2000 | vs `v2`@2000 (confirm) | vs `arm-b` (direct) | vs `v2`@32000 (panel) | vs `mcts-eval`@8000 | vs `mcts-uct`@8000 |
+//! | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+//! | `arm-b` (1.0) | +32.0 | +26.8 | -- | -55.1 | +91.9 | +153.2 |
+//! | `arm-c2` (0.5) | **+61.0** | **+53.9** | **+27.0** | **-34.4** | **+196.4** | **+260.0** |
+//! | `arm-d2` (0.75) | +43.5 | -- | +37.7 | -46.2 | +169.8 | +231.1 |
+//!
+//! `arm-c2` wins every single comparison measured, with confidence intervals
+//! excluding zero throughout (including the direct `arm-b` match), and its
+//! mechanism gate (`civilian_share>=0.5x,science_share>=0.5x,
+//! military_share<=2x`) passes on every cell. It is the strongest generation
+//! measured in this project to date, and the corrected E-ablation reads
+//! clearly positive: the value-target blend genuinely helps once its
+//! gradient is right, on top of D's own real gain.
+//!
+//! **Promoted.** `arm-c2`'s weights are `v3.bin`, now [`DEFAULT_WEIGHTS`].
+//! `v2.bin` is retired to a frozen reference-panel slot
+//! (`mcts-value:weights=v2`, `duels_agent_mcts_value::WEIGHTS_V2`) rather than
+//! deleted, per `docs/roadmap.md`'s Tier 1-G -- it is the direct ancestor at
+//! equal budget and stays the panel's own yardstick across whatever
+//! generations follow `v3`. Every generation measured in this round (`v1`,
+//! `v2`, `arm-a`, `arm-b`, `arm-c`, `arm-c2`/`v3`, `arm-d2`) is recorded in
+//! `crates/duels-value/weights/generations.json`, per Tier 1-F, with its
+//! corpus manifest, training args, full battery result and golden-table
+//! reference -- the mechanism `golden.rs` is now re-pointed at (a hash check
+//! on every frozen generation, the full twenty-position table on whichever
+//! one is live) rather than a single hand-pinned hash.
+//!
+//! One honest side effect of the retrain, not a bug: `tests/
+//! probability_coherence.rs`'s opening-mass bound flipped sign.
+//! `v2` was systematically *under*-confident at the opening (mean mass
+//! 0.9396); `v3` is systematically *over*-confident instead (mean mass
+//! 1.0666) -- a comparable-sized coherence defect, just in the other
+//! direction, not a fix and not (on this number alone) a regression. The
+//! architectural fix (`docs/roadmap.md`'s Tier 2-J, a joint 7-outcome softmax
+//! with shared weights) remains the real answer to that defect; this retrain
+//! did not touch the output head's shape.
+//!
+//! **The `c` re-sweep this project's history says to run after any leaf/value
+//! change**: `duels_agent_mcts_value::Config::exploration` (the UCB1
+//! constant) at `0.10`, `0.20` and `0.25` against the shipped default `0.15`,
+//! 1,000 games each at `nodes:2000`. All three read **Inconclusive** (`+2.4`,
+//! `+0.7`, `+1.0` Elo, every CI crossing zero) -- `0.15` is still fine for
+//! `v3`; no change made.
+//!
 //! # Usage
 //!
 //! ```
@@ -683,22 +763,25 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// `v2.bin`, a corpus-generalization retrain — a mix of `mcts-value`
-/// self-play and a fresh `mcts-eval` batch — promoted over `v1.bin` after a
-/// disk-verified confirmation run; see the crate docs' "Follow-up round two"
-/// section for the full arena validation and the reasoning. Embedding it
-/// rather than loading a file at run time keeps this crate a pure function of
-/// its inputs and keeps an agent that uses it reproducible from its binary
-/// alone.
+/// `v3.bin`, the Tier 1 generate-explore-train loop's winning generation
+/// (`crates/duels-value/weights/generations.json`, id `tier1-arm-c-prime`) —
+/// a retrain on the same exploration+specialist-mixing corpus `v2.bin`'s
+/// successor experiment used, at a corrected `--value-target-lambda 0.5`
+/// blended loss — promoted over `v2.bin` after a 2,000-game confirmation
+/// run, reproduced on a disjoint seed range; see the crate docs' "Follow-up
+/// round three" section for the full arena validation and the reasoning.
+/// Embedding it rather than loading a file at run time keeps this crate a
+/// pure function of its inputs and keeps an agent that uses it reproducible
+/// from its binary alone.
 ///
-/// **`v1.bin` sits alongside it in the same directory and is not this
-/// constant.** It is the prior default, produced by `tools/train_value.py`
-/// from a feature dump of `arena/corpus/mcts-eval-nodes2000.jsonl` (the crate
-/// docs record the exact commands, seed split and held-out metrics for it).
-/// It is kept in the repository, reachable via `mcts-value:weights=v1`
-/// (`duels_agent_mcts_value::WEIGHTS_V1`), as the generation this one
-/// replaces and the comparison baseline for whatever is tried next.
-const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v2.bin");
+/// **`v1.bin` and `v2.bin` sit alongside it in the same directory and are
+/// not this constant.** `v1.bin` is reachable via `mcts-value:weights=v1`
+/// (`duels_agent_mcts_value::WEIGHTS_V1`); `v2.bin`, the generation this one
+/// replaces, is reachable via `mcts-value:weights=v2`
+/// (`duels_agent_mcts_value::WEIGHTS_V2`) and stays in the frozen reference
+/// panel (`docs/roadmap.md`'s Tier 1-G) at both `nodes:32000` and
+/// `nodes:2000`.
+const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v3.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
 /// the player a position is being evaluated for**.
