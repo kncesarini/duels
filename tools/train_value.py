@@ -414,12 +414,12 @@ def main():
     ap.add_argument("--matrix", required=True)
     ap.add_argument("--out", required=True, help="the DVW1 weights file to write")
     ap.add_argument("--metrics", default=None, help="where to write the metrics JSON")
-    ap.add_argument("--hidden", type=int, default=96)
+    ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--lr", type=float, default=2e-3)
-    ap.add_argument("--weight-decay", type=float, default=1e-6)
-    ap.add_argument("--patience", type=int, default=5)
+    ap.add_argument("--weight-decay", type=float, default=1e-5)
+    ap.add_argument("--patience", type=int, default=8)
     ap.add_argument("--seed", type=int, default=20260909)
     ap.add_argument(
         "--also-scalar",
