@@ -873,11 +873,17 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                     "arm-a" => Some(duels_agent_mcts_value::WEIGHTS_ARM_A),
                     "arm-b" => Some(duels_agent_mcts_value::WEIGHTS_ARM_B),
                     "arm-c" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C),
+                    // Corrected retest of arm-c's idea (the blended-loss
+                    // gradient bug fix) -- see
+                    // `duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME`'s docs.
+                    "arm-c2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME),
+                    "arm-d2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_D_PRIME),
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
-                             \"default\", \"v1\", or \"arm-a\"/\"arm-b\"/\"arm-c\" for the \
-                             Tier 1-D/E experiment candidates)"
+                             \"default\", \"v1\", \"arm-a\"/\"arm-b\"/\"arm-c\" for the Tier \
+                             1-D/E experiment candidates, or \"arm-c2\"/\"arm-d2\" for the \
+                             corrected-gradient retest)"
                         ))
                     }
                 };
