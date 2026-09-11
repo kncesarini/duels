@@ -959,6 +959,166 @@
         "weights_id": "211x128x4/d1627cfa",
         "pinned_in": "crates/agents/mcts-value/src/golden.rs"
       }
+    },
+    {
+      "id": "tier1-nb2000",
+      "status": "rejected",
+      "notes": "Recipe-calibration-day node-budget ablation (docs/roadmap.md's 'Future consideration, flagged by the project owner'), the nodes:2000 (production-matching) half of a matched pair. A small (20k-game, NOT the full 100k -- not affordable in this session's time budget, see the roadmap write-up) corpus self-played by v3 (the current champion) with the identical exploration/specialist config as every Tier 1 corpus (--sample-plies 14 --tau 1.0 --specialist-frac 0.25), replay-verified cleanly, sealed to /Volumes/storage/duels/corpus/tier1-nodebudget-nb2000/. Trained with the recipe-calibration recipe (--epochs 30 --warmup-epochs 2 --lr-floor 2e-5 --no-patience --swa-tail-frac 0.333 --value-target-lambda 0.5). Overfits hard at this small size (best epoch 2 of 30, SWA did not beat it) -- consistent with the data-scaling diagnostic run alongside this generation. Loses heavily to v3 (-84.3 Elo [-95.4,-73.2], AcceptH0, pooled across two disjoint seed ranges), as expected given only 20k training games vs v3's own 100k-game corpus. Exists purely as the size-matched control for tier1-nb8000's direct comparison, which is the ablation's actual question -- see that entry.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/nb2000-candidate.bin",
+        "archive_path": "weights/tier1-nb2000-candidate.bin",
+        "sha256": "a0731a3a39eaf6ecc6d7e075d9f30f3a6ce21ef04b1389f289361dfe6ff4048e",
+        "weights_id": "211x128x4/ae81ec4e",
+        "reachable_via": "mcts-value:weights=nb2000"
+      },
+      "corpus": {
+        "label": "tier1-nodebudget-nb2000",
+        "archive_manifest": "corpus/tier1-nodebudget-nb2000/nb2000.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
+        "generating_agent": "mcts-value (v3, the then-and-still champion)",
+        "budget": "nodes:2000",
+        "seed_range": [
+          3000001,
+          3020000
+        ],
+        "games": 20000,
+        "decisions": 1328102,
+        "sampling": {
+          "tau": 1.0,
+          "plies": 14,
+          "specialist_frac": 0.25
+        },
+        "verify": "clean -- every game reproduced (value_corpus_mv --verify)"
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "/tmp/node-budget-ablation/nb2000-features.bin (not archived -- regenerable from the sealed corpus)",
+        "hidden": 128,
+        "recipe": {
+          "epochs": 30,
+          "warmup_epochs": 2,
+          "lr_floor": 2e-05,
+          "patience": null,
+          "swa_tail_frac": 0.333
+        },
+        "best_epoch": 3,
+        "swa": {
+          "swa_count": 10,
+          "shipped": "best_epoch",
+          "swa_val_log_loss": 0.5331831988932023,
+          "best_epoch_val_log_loss": 0.5239705851830218
+        },
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-nodebudget-ablation/nb2000-metrics.json"
+      },
+      "battery": {
+        "cells": [
+          {
+            "opponent": "mcts-value (v3)",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": -84.3,
+            "elo_ci": [
+              -95.4,
+              -73.2
+            ],
+            "sprt": "AcceptH0",
+            "label": "nb2000-vs-v3-pooled"
+          }
+        ],
+        "see_also": "tier1-nb8000's own battery entry for the direct node-budget-isolation cell (nb8000 vs nb2000, pooled -14.2 Elo) -- not duplicated here to avoid asserting an un-computed mirrored SPRT verdict.",
+        "archive_dir": "generations/tier1-nodebudget-ablation/*"
+      },
+      "golden": {
+        "weights_id": "211x128x4/ae81ec4e",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs"
+      }
+    },
+    {
+      "id": "tier1-nb8000",
+      "status": "rejected",
+      "notes": "Recipe-calibration-day node-budget ablation, the nodes:8000 half of the same matched pair as tier1-nb2000 -- IDENTICAL corpus size (20k games), seed range, exploration/specialist config, generating agent (v3) and training recipe; differs ONLY in the generating search's node budget. Measured cost: 81.5 min wall for 20k games at nodes:8000 vs nb2000's 22.0 min at nodes:2000 (~3.7x, close to the roadmap's predicted ~4x scaling). Also overfits hard (best epoch 2 of 30) and loses heavily to v3 (-77.8 Elo [-88.8,-66.7], AcceptH0), expected given only 20k training games. THE ACTUAL ABLATION RESULT: gated directly against tier1-nb2000 (same corpus size, only node budget differs) -- pooled **-14.2 Elo [-25.0, -3.5], AcceptH0** -- the higher generating node budget did NOT produce a stronger net at matched corpus size; both individual seed ranges lean the same negative direction. Read as inconclusive-leaning-negative at this (small, 20k-game) scale rather than a settled verdict: this test ran in a regime the data-scaling diagnostic (run alongside this, docs/roadmap.md's recipe- calibration-day section) says is dominated by data-starvation, which could swamp whatever q_root-quality benefit a deeper generating search provides. A full 100k-game version of this exact pair is the next thing that would actually answer the project owner's question; see the roadmap write-up for the full reasoning and recommendation.",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/nb8000-candidate.bin",
+        "archive_path": "weights/tier1-nb8000-candidate.bin",
+        "sha256": "36643b3bfe526f9da3cede7c12f1a2116daf481217953f576e2b5957c8791504",
+        "weights_id": "211x128x4/4e324c56",
+        "reachable_via": "mcts-value:weights=nb8000"
+      },
+      "corpus": {
+        "label": "tier1-nodebudget-nb8000",
+        "archive_manifest": "corpus/tier1-nodebudget-nb8000/nb8000.jsonl.manifest.json",
+        "generator": "duels-arena examples/value_corpus_mv.rs (format v2)",
+        "generating_agent": "mcts-value (v3, the then-and-still champion)",
+        "budget": "nodes:8000",
+        "seed_range": [
+          3100001,
+          3120000
+        ],
+        "games": 20000,
+        "decisions": 1331203,
+        "sampling": {
+          "tau": 1.0,
+          "plies": 14,
+          "specialist_frac": 0.25
+        },
+        "verify": "clean -- every game reproduced (value_corpus_mv --verify)",
+        "wall_time_s": 4890
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "/tmp/node-budget-ablation/nb8000-features.bin (not archived -- regenerable from the sealed corpus)",
+        "hidden": 128,
+        "recipe": {
+          "epochs": 30,
+          "warmup_epochs": 2,
+          "lr_floor": 2e-05,
+          "patience": null,
+          "swa_tail_frac": 0.333
+        },
+        "best_epoch": 2,
+        "swa": {
+          "swa_count": 10,
+          "shipped": "best_epoch",
+          "swa_val_log_loss": 0.5368489926818473,
+          "best_epoch_val_log_loss": 0.5275267720810582
+        },
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-nodebudget-ablation/nb8000-metrics.json"
+      },
+      "battery": {
+        "cells": [
+          {
+            "opponent": "mcts-value (v3)",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": -77.8,
+            "elo_ci": [
+              -88.8,
+              -66.7
+            ],
+            "sprt": "AcceptH0",
+            "label": "nb8000-vs-v3-pooled"
+          },
+          {
+            "opponent": "mcts-value:weights=nb2000, pooled across two disjoint ranges (direct node-budget isolation)",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": -14.2,
+            "elo_ci": [
+              -25.0,
+              -3.5
+            ],
+            "sprt": "AcceptH0",
+            "label": "nb8000-vs-nb2000-pooled (the ablation's actual result)"
+          }
+        ],
+        "archive_dir": "generations/tier1-nodebudget-ablation/*"
+      },
+      "golden": {
+        "weights_id": "211x128x4/4e324c56",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs"
+      }
     }
   ]
 }
