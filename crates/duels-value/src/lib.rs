@@ -735,7 +735,7 @@
 //! `+0.7`, `+1.0` Elo, every CI crossing zero) -- `0.15` is still fine for
 //! `v3`; no change made.
 //!
-//! # Generation 3 (`v4.bin`), promoted -- the gain-decay question, answered
+//! # Generation 3 (`gen3-l05`), held -- the gain-decay question, answered
 //!
 //! `docs/roadmap.md`'s own plan asked, after Tier 1: "three generations is
 //! enough to see whether the gain per generation is holding ... or decaying
@@ -794,26 +794,45 @@
 //! `-12.8` (`AcceptH0`, worse), `-26.8` (`AcceptH0`, worse) -- `0.15` stays
 //! the default.
 //!
-//! **Promoted.** `gen3-l05`'s weights are `v4.bin`, now [`DEFAULT_WEIGHTS`],
-//! on the strength of the mechanism-clean pooled head-to-head and the clean
-//! lambda-effect isolation against its own control sibling. `v3.bin` is
-//! retired to a frozen reference-panel slot (`mcts-value:weights=v3`,
-//! `duels_agent_mcts_value::WEIGHTS_V3`) and joins the panel at
-//! `nodes:2000`, alongside `v2`'s existing two cells. Every generation
-//! measured in this round (`gen3-l05`/`v4`, `gen3-l10`) is recorded in
-//! `crates/duels-value/weights/generations.json` per Tier 1-F, with the
-//! same corpus-manifest/training-args/battery/golden-reference shape every
-//! prior generation used.
+//! **Held, not promoted — a second, independent review reached the same
+//! call.** A head-to-head win against the immediate parent alone, even a
+//! reproduced and mechanism-clean one, is not sufficient evidence to
+//! promote once a frozen reference panel exists: this generation's
+//! non-ancestor panel readings are *weaker* than `v3`'s own (see the panel
+//! paragraph above; a pooled z-score against `mcts-eval`/`mcts-uct` of
+//! roughly -3, a statistically real regression against opponents `v3` was
+//! not tuned against). An architect review commissioned specifically to
+//! design a safe autonomous promotion gate (`docs/roadmap.md`'s
+//! "autonomous loop" design) independently proposed a panel
+//! non-regression check as a required gate stage, then applied it to this
+//! exact generation as a worked test case and reached the identical
+//! conclusion: hold, don't promote, keep the corpus (the champion is
+//! unchanged, so nothing about the data is invalidated), and let a future
+//! generation's larger data window try again from `v3`. `v3.bin` stays
+//! [`DEFAULT_WEIGHTS`]. Every generation measured in this round
+//! (`gen3-l05`, `gen3-l10`) is recorded in
+//! `crates/duels-value/weights/generations.json` per Tier 1-F, marked
+//! `held`, with the same corpus-manifest/training-args/battery/golden-
+//! reference shape every prior generation used — reachable via
+//! `mcts-value:weights=gen3-l05`/`weights=gen3-l10` for anyone who wants to
+//! build on the data or the finding rather than the weights.
 //!
 //! **Read this as this project's own predicted plateau largely bearing
-//! out.** `docs/roadmap.md`'s evaluation-discipline section already warned
+//! out, and as the moment the promotion gate itself needed to grow up.**
+//! `docs/roadmap.md`'s evaluation-discipline section already warned
 //! "expected effects from here on are +20 to +50 Elo per step, not the
-//! larger jumps this project's early rounds saw" — Generation 3 landed
-//! *below* even that lowered range. Whether a further generation would
-//! clear even a ±10 Elo bar, or whether this is the point to stop iterating
-//! this specific corpus-and-retrain loop and invest in Tier 2/3 instead
-//! (per-card features, a score-margin head, a learned policy prior), is an
-//! open question this generation's data does not resolve alone.
+//! larger jumps this project's early rounds saw" — Generation 3's
+//! head-to-head landed *below* even that lowered range, and the panel
+//! regression is the sharper, more diagnostic signal: this generation
+//! likely over-fit to beating `v3` specifically (the same `q_root` distilled
+//! from the same parent, gated only against that parent) rather than
+//! becoming more generally correct. `docs/roadmap.md`'s "autonomous loop"
+//! design section lays out the fix this motivates: a data window spanning
+//! more than one generation, a fixed-epoch annealed training schedule
+//! (this project's training runs have never actually reached a low
+//! learning rate — early stopping has fired before the schedule's tail
+//! every time so far), and the panel-regression check itself as a standing
+//! gate, not a one-off review.
 //!
 //! # Usage
 //!
@@ -843,39 +862,41 @@ use duels_core::{GameState, Player};
 
 /// The trained weights, baked into the binary.
 ///
-/// `v4.bin`, Generation 3 of the Tier 1 generate-explore-train loop
-/// (`crates/duels-value/weights/generations.json`, id `tier1-gen3-l05`) — a
-/// fresh ~100k-game corpus self-played by the previous champion (`v3`) with
-/// the same exploration+specialist-mixing generator config that produced
-/// `v2`'s successor, trained at `--value-target-lambda 0.5` (this project's
-/// post-Tier-1 baseline, confirmed rather than merely repeated: a `lambda
-/// =1.0` control sibling from the *identical* corpus does not clear the same
-/// bar). Promoted after a 2,000-game gating cell reproduced on a disjoint
-/// seed range (pooled: **+17.2 Elo** over `v3`, 95% CI `[+6.4, +28.0]`,
-/// `AcceptH1`, mechanism gate Pass) — smaller than `v2` -> `v3`'s own
-/// +61.0/+53.9 Elo jump, consistent with this project's own expectation that
-/// single-iteration gains shrink as the ladder strengthens, not evidence of
-/// a broken measurement. See the crate docs' "Generation 3" section for the
-/// full arena validation, including the frozen-panel caveat (this
-/// generation reads *weaker* than `v3`'s own numbers against two of the
-/// panel's three non-ancestor members, even though still decisively
-/// positive against both in absolute terms) that a human should weigh
-/// before treating this as an unambiguous win. Embedding it rather than
-/// loading a file at run time keeps this crate a pure function of its
-/// inputs and keeps an agent that uses it reproducible from its binary
-/// alone.
+/// `v3.bin` — **still the champion.** Generation 3 of the Tier 1
+/// generate-explore-train loop (`crates/duels-value/weights/generations.json`,
+/// id `tier1-gen3-l05`, embedded here as [`duels_agent_mcts_value::WEIGHTS_GEN3_L05`])
+/// was trained and fully gated, and is a real, mechanism-clean, reproduced
+/// gain over `v3` head-to-head (pooled **+17.2 Elo**, 95% CI `[+6.4, +28.0]`,
+/// `AcceptH1`) — but **was not promoted**. The frozen reference panel
+/// (`docs/roadmap.md`'s Tier 1-G) reads it as measurably *weaker* than `v3`
+/// against two of the panel's three non-ancestor members (`mcts-eval`,
+/// `mcts-uct` at `nodes:8000`) — still decisively positive against both in
+/// absolute terms, but a real, statistically-supported regression relative
+/// to `v3`'s own numbers there, and exactly the kind of non-transitive,
+/// beats-its-own-parent-but-not-generally-stronger pattern this project has
+/// hit before (`v1`'s original promotion, `v2`'s). See the crate docs'
+/// "Generation 3" section for the full write-up, including the honest
+/// framing that a head-to-head win against the immediate parent alone is
+/// not sufficient evidence to promote once a generation is being checked
+/// against a panel that predates it. `tier1-gen3-l05` and its
+/// `lambda=1.0` control sibling `tier1-gen3-l10` stay in the registry as
+/// **held** — measured, reproducible, fully archived — should a future
+/// round want to build on the data rather than the weights. Embedding
+/// `v3.bin` rather than loading a file at run time keeps this crate a pure
+/// function of its inputs and keeps an agent that uses it reproducible
+/// from its binary alone.
 ///
-/// **`v1.bin`, `v2.bin` and `v3.bin` sit alongside it in the same directory
-/// and are not this constant.** `v1.bin` is reachable via
-/// `mcts-value:weights=v1` (`duels_agent_mcts_value::WEIGHTS_V1`); `v2.bin`
-/// via `mcts-value:weights=v2` (`duels_agent_mcts_value::WEIGHTS_V2`) and
-/// stays in the frozen reference panel (`docs/roadmap.md`'s Tier 1-G) at
-/// both `nodes:32000` and `nodes:2000`; `v3.bin`, the generation this one
-/// replaces, is reachable via `mcts-value:weights=v3`
-/// (`duels_agent_mcts_value::WEIGHTS_V3`) and joins the frozen reference
-/// panel too, at `nodes:2000` (the new "cumulative gain since the immediate
-/// predecessor" cell, the same role `v2`'s equal-budget cell plays).
-const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v4.bin");
+/// **`v1.bin`, `v2.bin`, and the held Generation 3 candidates sit alongside
+/// it in the same directory and are not this constant.** `v1.bin` is
+/// reachable via `mcts-value:weights=v1`
+/// (`duels_agent_mcts_value::WEIGHTS_V1`); `v2.bin` via
+/// `mcts-value:weights=v2` (`duels_agent_mcts_value::WEIGHTS_V2`) and stays
+/// in the frozen reference panel at both `nodes:32000` and `nodes:2000`;
+/// `gen3-l05`/`gen3-l10` are reachable via `mcts-value:weights=gen3-l05`
+/// (`duels_agent_mcts_value::WEIGHTS_GEN3_L05`) and `weights=gen3-l10`
+/// (`WEIGHTS_GEN3_L10`) for anyone who wants to reproduce or build on the
+/// held result.
+const DEFAULT_WEIGHTS: &[u8] = include_bytes!("../weights/v3.bin");
 
 /// The four mutually-exclusive outcomes of a game, **from the perspective of
 /// the player a position is being evaluated for**.

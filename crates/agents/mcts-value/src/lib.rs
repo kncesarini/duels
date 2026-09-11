@@ -809,16 +809,17 @@ pub const WEIGHTS_ARM_D_PRIME: &[u8] =
 /// gating bar against `v3`, `gen3-l05` did, and `gen3-l05` beats `gen3-l10`
 /// directly by +35.4 Elo from the identical corpus).
 ///
-/// **`gen3-l05` was promoted** -- it is now `duels-value`'s
-/// `DEFAULT_WEIGHTS` (`v4.bin`), reachable both as the live default and,
-/// identically, as `mcts-value:weights=gen3-l05`. `gen3-l10` was not
-/// promoted and stays reachable purely as the ablation control that isolates
-/// the lambda effect on this generation's corpus. See `duels_value`'s crate
-/// docs, "Generation 3", for the full write-up, including the honest
-/// caveat that this generation's margin (+17.2 Elo pooled over `v3`) is much
-/// smaller than `v2` -> `v3`'s own (+61.0/+53.9), and that it reads weaker
-/// than `v3`'s own numbers against two of the three non-ancestor frozen
-/// panel members.
+/// **`gen3-l05` was held, not promoted.** It beats `v3` head-to-head, real
+/// and reproduced (+17.2 Elo pooled, `AcceptH1`) -- but reads *weaker* than
+/// `v3`'s own numbers against two of the three non-ancestor frozen panel
+/// members, a statistically real regression an independent gate-design
+/// review flagged as disqualifying on its own, regardless of the clean
+/// head-to-head win. `v3.bin` stays `duels-value`'s `DEFAULT_WEIGHTS`.
+/// `gen3-l05` and its `gen3-l10` (`--value-target-lambda 1.0`) control
+/// sibling both stay reachable (`mcts-value:weights=gen3-l05`/`weights=gen3
+/// -l10`) as a fully measured, archived, held result -- not a promotion,
+/// but not a discarded one either. See `duels_value`'s crate docs,
+/// "Generation 3", for the full write-up.
 pub const WEIGHTS_GEN3_L05: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
 /// See [`WEIGHTS_GEN3_L05`]'s docs. The `--value-target-lambda 1.0` control

@@ -303,7 +303,7 @@ Not yet done from this tier's plan at the time: a fresh from-`v3` generation
 first is Generation 3, immediately below; the second is still left for a
 future round, not blocked on anything above.
 
-### Generation 3 (2026-09-11): the gain-decay question, answered
+### Generation 3 (2026-09-11): the gain-decay question, answered — held, not promoted
 
 Ran the "three generations, see whether the gain per generation holds or
 decays" experiment this tier's plan called for. A fresh ~100k-game corpus
@@ -344,22 +344,35 @@ this is a flagged caveat, not a contradiction of the direct win over `v3` —
 but it is exactly the kind of drift signal Tier 1-G's frozen panel exists to
 surface, and a promotion PR should not bury it.
 
-Promoted as `v4.bin` on the strength of the mechanism-clean pooled
-head-to-head and the clean lambda-effect isolation against its own control
-sibling — see `crates/duels-value/weights/generations.json`'s
-`tier1-gen3-l05`/`tier1-gen3-l10` entries for the complete record (corpus
-manifest, training metrics, every battery cell, the re-run `c`-sweep, which
-again found no change from `c=0.15`). `v3` is retired to a frozen
-`mcts-value:weights=v3` slot and joins the reference panel at `nodes:2000`,
-alongside `v2`'s existing two cells. **Read this as this project's own
-predicted plateau largely bearing out** — "expected effects from here on
-are +20 to +50 Elo per step, not the larger jumps this project's early
-rounds saw" undersold even this: Generation 3 landed *below* that range.
-Whether a Generation 4 would clear the ±10 Elo bar at all, or whether this
-is the point to stop iterating this specific loop and invest in Tier 2/3
-instead (per-card features, a score-margin head, a learned policy prior),
-is an open, real question this generation's data does not resolve on its
-own — one more generation's reading would.
+**Initially promoted as `v4.bin`, then reverted to held.** The first pass
+promoted it on the strength of the mechanism-clean pooled head-to-head and
+the clean lambda-effect isolation against its own control sibling. A
+second, independent architect review — commissioned to design a safe
+autonomous multi-generation promotion gate (see "Autonomous self-play loop
+design" below) — argued, and this project agrees, that a head-to-head win
+against the immediate parent alone is not sufficient evidence to promote
+once a frozen reference panel predating that parent exists: it proposed a
+panel non-regression check as a required gate stage, applied it to this
+exact generation as a worked test case, and found the pooled regression
+against the two non-ancestor panel members statistically real (pooled z ≈
+-3.0) — disqualifying under that stage even though the direct `v3`
+head-to-head is a clean `AcceptH1`. **`v3.bin` remains `DEFAULT_WEIGHTS`.**
+`tier1-gen3-l05`/`tier1-gen3-l10` stay fully recorded in
+`crates/duels-value/weights/generations.json`, status `held`, reachable via
+`mcts-value:weights=gen3-l05`/`weights=gen3-l10` — the champion is
+unchanged, so nothing about the corpus or the measurement is invalidated,
+and a future generation's larger data window can build on it rather than
+starting over. **Read this as this project's own predicted plateau largely
+bearing out, and as the moment the promotion gate itself needed to grow
+up**: "expected effects from here on are +20 to +50 Elo per step, not the
+larger jumps this project's early rounds saw" undersold even the raw
+head-to-head number, and the panel regression is the sharper diagnostic —
+this generation likely over-fit to beating `v3` specifically (trained
+partly on `v3`'s own `q_root`, gated only against `v3`) rather than
+becoming more generally correct. See "Autonomous self-play loop design"
+below for the fix this motivates: a data window spanning more than one
+generation, a training schedule that actually anneals, and a panel
+non-regression check as a standing gate rather than a one-off review.
 
 **Future consideration, flagged by the project owner (2026-09-11), not yet
 tried:** generate future corpora at a higher node budget than production's
@@ -380,6 +393,142 @@ to the champion's own `nodes:2000`/`TimeMs(1000)` production budget. Given
 Generation 3's own decaying-returns finding just above, this is now a
 reasonable next thing to try before running a plain Generation 4 at the
 same node budget again.
+
+## Autonomous self-play loop design (resolved 2026-09-11)
+
+The project owner asked for a fully autonomous, self-training and
+self-promoting loop able to run for many generations before anyone looks
+deeply at the data again — designed thoughtfully enough to generate
+sufficient high-quality data per generation, train without overfitting,
+and take real inspiration from comparable published systems (KataGo, Leela
+Zero/LC0, AlphaZero/AlphaGo Zero), which are a much closer scale match for
+this project (one workstation plus a small Raspberry Pi fleet) than a
+datacenter self-play system would be. An architect pass researched those
+systems directly and re-verified this project's own training history
+(archived metrics, corpus manifests, per-game costs) before designing the
+following. Generation 3's ambiguous result (above) was used as the design's
+own test case throughout, not an afterthought.
+
+**Verified facts that shaped the design**, not assumptions: generation cost
+is now ~0.64 core-s/game post-Tier-0-A (a 100k-game corpus is ~77 min wall
+on the workstation's 14 cores, not hours); a 100k-game corpus is ~11.5 GB as
+a training matrix, and the workstation's 48 GiB RAM bounds a same-machine
+replay window to about 2 corpora at full row density; training is
+~13 minutes for 30 epochs — cheap enough that training from scratch every
+generation costs nothing worth optimizing away; **the learning-rate
+schedule has never actually annealed** — every training run so far hit
+early stopping (patience-based) at epoch 10-29 of a 60-epoch cosine
+schedule, so the LR has never dropped below ~1.17e-3, and "best epoch"
+selection has been noise-selection among near-identical, still-high-LR
+checkpoints (confirmed against 3 training-seed replicates, whose val
+log-loss spread of 0.0011 is far tighter than the epoch-to-epoch noise);
+a 2,000-game gating cell at `nodes:2000` costs about 1.5 minutes wall, not
+minutes-per-hundred — this project's 2,000-game convention was calibrated
+for CI-runner cost, not for what the workstation can actually afford, and
+gating cells can be far larger for the same wall-clock budget; and
+Generation 3's own frozen-panel numbers, read as paired deltas against `v3`'s
+own panel readings rather than in isolation, show a statistically real
+regression (pooled z ≈ -3.0) that the existing gate design never actually
+computed or decided on — it only reported the panel, it didn't gate on it.
+
+**Data generation policy.** Keep 100k games per generation fixed; grow the
+*replay window* across generations instead of the per-generation count
+(the KataGo/LC0 pattern — same-size data units, growing lookback). Use a
+window of **at least 2 generations**, not the window=1 every generation so
+far has used — window=1 is the outlier among every reference system, and it
+is the specific mechanism Generation 3's own panel regression points at
+(training half the target on one parent's own `q_root`, then gating only
+against that same parent, rewards fitting that parent specifically).
+A generation that's held rather than promoted keeps its corpus rather than
+discarding it, so the window grows automatically after a hold — this
+converts "the loop plateaued" into "accumulate more data and try again"
+without any special-casing. Exploration parameters
+(`--sample-plies 14 --tau 1.0 --specialist-frac 0.25`) stay fixed for an
+entire run so generations stay comparable; do not auto-tune them, but do
+log the sampled-ply visit-distribution entropy per corpus as a monitored
+quantity. The project owner's higher-generation-node-budget idea (above)
+belongs in the design as a **single ablation to test once, then fix** —
+not an adaptive per-generation control (an adaptive budget would make
+`q_root`'s meaning drift within a replay window).
+
+**Training recipe fixes.** Fixed-epoch cosine schedule that actually
+reaches a low floor (e.g. 30 epochs, warm-up then cosine to ~2e-5), **no
+patience-based early stopping** once the schedule is fixed-length (patience
+was selecting checkpoint noise, not real convergence, per the seed-variance
+data); **weight averaging (SWA/EMA) over the schedule's low-LR tail**,
+shipped only if it beats the best single epoch on validation log loss —
+the standard KataGo/LC0 fix for exactly the noise-selection problem above.
+Train from scratch every generation, not warm-started — training is cheap
+enough here that the reproducibility benefit (every champion a pure
+function of its window, recipe, and seed) outweighs any efficiency argument
+for continuing from the previous checkpoint. Four small offline experiments
+(fixed-epoch vs patience; 50k/100k/200k games; hidden 64/128/256; weight
+decay 1e-4/1e-3), each ~15 minutes on already-archived data, are designed to
+separate label-noise overfitting from under-regularization from
+data-starvation before assuming any one explanation.
+
+**The promotion gate — a five-stage decision, not a single Elo check.**
+(0) offline sanity (no NaN, candidate beats its own parent on the parent's
+val split); (1) head-to-head vs the parent, sequential up to ~12,000 games
+at `elo1=10` (this is now recognized as nearly free — the 2,000-game
+default undersells what the workstation can afford); (2) **a frozen-panel
+non-regression check** — the stage this project's gate has never had —
+comparing the candidate's panel cells to the parent's own paired readings
+and holding (not promoting) on a statistically real pooled regression, even
+given a clean head-to-head win; (3) a `TimeMs(1000)` cross-check, veto-only
+(same net shape means it should agree with stage 1, so it can only
+disqualify, never itself promote); (4) the `c`-sweep, moved from every
+generation to periodic audits only (it has read "no change" twice running).
+Applied retroactively to Generation 3 as the design's own worked test case,
+this gate holds it — the same conclusion reached above, independently.
+A periodic **audit** (every 3rd promotion or 5th generation: the current
+champion vs. the champion 3 promotions back, plus the full panel) is the
+design's answer to multiple-comparisons risk across a long unattended run —
+tightening the per-generation significance threshold was considered and
+rejected (Leela Zero's own gating simulations found a *looser* threshold
+outperforms a stricter one, because rejected real small gains cost more
+than occasional weak promotions); the panel check plus the periodic audit
+is the actual defense against silent drift.
+
+**Autonomy and safety.** Recommended design: the loop is
+**archive-authoritative**, not `main`-authoritative — a champion pointer and
+full generation history live on the archive drive, every promotion is a
+pointer update and a 110 KB file copy, and `main` is untouched for the
+whole run. At the end of a run (or whenever a stop condition fires), the
+loop drafts **one consolidated PR** covering every generation's full record
+(promoted, held, and stopped alike) for a single human review of the whole
+lineage — not one PR per generation, and not silent auto-merge to `main`
+either. Concrete stop conditions: two consecutive holds; a candidate that
+measurably loses to its own parent; any gate-stage failure past the
+defined thresholds; a corpus verification or checksum failure; a training
+crash or NaN; low disk space on the archive or the workstation; the
+run's target generation count reached. A single hold, or an inconclusive
+`TimeMs` cross-check, does not stop the run — those are expected, not
+pathological.
+
+**Orchestration.** A supervisor script on the workstation (not GitHub
+Actions — a corpus generation run exceeds typical runner job limits and
+has no LAN path to the archive; not the Raspberry Pi fleet yet either —
+no cross-compilation toolchain is set up for it, and its throughput
+relative to the workstation has never actually been measured, so it's
+explicitly out of scope for a first run and left as a later phase once
+measured). Each generation is a small state machine (generate → verify →
+seal → build training matrix → train → gate stages 0-3 → record →
+promote-or-hold → periodic audit → stop-check), every step idempotent so
+the loop can resume cleanly after an interruption.
+
+**Recommended next step, before launching a full unattended run:** an
+attended "recipe calibration" pass — retrain Generation 3's already-sealed
+corpus with the fixed (annealed, no-patience, SWA) recipe to isolate that
+fix with zero other variables changed; generate one corpus at the current
+`nodes:2000` budget and one at a higher node budget as a direct paired
+test of the project owner's idea above; train and gate a small matrix of
+arms (window=1 vs window=2, `nodes:2000` vs higher) through the new
+five-stage gate; only then launch a full multi-generation run with a
+validated recipe. This is a firm recommendation; the run's target
+generation count, whether stage 3 should ever gate rather than only veto,
+and the fleet's actual timing are judgment calls left for the project
+owner.
 
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
