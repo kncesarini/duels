@@ -717,6 +717,33 @@ pub use tree::{Config, Objective, PriorMode, RootStats};
 /// away in one process, rather than requiring two separately-built binaries.
 pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bin");
 
+/// Unpromoted candidate `duels-value` weights from the roadmap's Tier 1-D/E
+/// experiment (`docs/roadmap.md`, "Tier 1 design"): three generations trained
+/// from matched-conditions ~100k-game corpora to isolate the exploration/
+/// specialist-mixing generator change (D) from the training-target blend (E).
+///
+/// **None of these is the default and none is promoted** — `duels-value`'s
+/// `DEFAULT_WEIGHTS` is untouched, still `v2.bin`. These exist purely as the
+/// same kind of A/B-testing device [`WEIGHTS_V1`] is: measuring an
+/// unpromoted candidate against the live default in one binary, one process
+/// (`mcts-value:weights=arm-a` etc.), rather than building three separate
+/// binaries. The promotion-battery write-up (the PR that adds this) names
+/// which arm, if any, is worth a human promoting; this crate takes no
+/// position on that by merely making the candidates reachable.
+///
+/// * `arm-a` — control: corpus generated with plain argmax, no exploration,
+///   no specialists (today's pre-Tier-1 generator behaviour), trained at
+///   `--value-target-lambda 1.0` (today's exact training target).
+/// * `arm-b` — corpus generated *with* exploration + specialist mixing
+///   (format v2), trained at `--value-target-lambda 1.0`.
+/// * `arm-c` — the *same* corpus as `arm-b`, retrained at
+///   `--value-target-lambda 0.5`, to isolate E's effect from D's.
+pub const WEIGHTS_ARM_A: &[u8] = include_bytes!("../../../duels-value/weights/arm-a-candidate.bin");
+/// See [`WEIGHTS_ARM_A`]'s docs for what all three arms are.
+pub const WEIGHTS_ARM_B: &[u8] = include_bytes!("../../../duels-value/weights/arm-b-candidate.bin");
+/// See [`WEIGHTS_ARM_A`]'s docs for what all three arms are.
+pub const WEIGHTS_ARM_C: &[u8] = include_bytes!("../../../duels-value/weights/arm-c-candidate.bin");
+
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
 ///
