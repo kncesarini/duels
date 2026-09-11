@@ -61,6 +61,9 @@ jobs:
       - name: Finite-difference check of the blended-loss gradient
         working-directory: tools
         run: python3 test_train_value_grad.py
+      - name: Record-size regression check for merge_feature_matrices.py
+        working-directory: tools
+        run: python3 test_merge_feature_matrices.py
 
   web:
     name: web
