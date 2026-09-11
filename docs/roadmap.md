@@ -274,6 +274,34 @@ already done): `value_corpus_mv.rs` format v2 (the D/E changes above) and
 update — this is the long pole everything else in Tier 1 depends on having
 real data to work with.
 
+### Tier 1 outcome (2026-09-11)
+
+D, E and F landed and ran for real. Three arms from matched-conditions
+~100k-game corpora: `arm-a` (control, no exploration, `lambda=1.0`), `arm-b`
+(D applied, `lambda=1.0`), `arm-c` (`arm-b`'s corpus, `lambda=0.5`, isolating
+E). **`arm-b` won clean — +32.0 Elo vs `v2` at 2,000 games, reproduced at
++26.8 on a disjoint seed range.** `arm-c` read -17.2 Elo and was initially
+rejected, but a second review found `tools/train_value.py`'s blended-loss
+gradient was wrong for the `LOSS` logit (fixed; finite-difference-checked in
+`tools/test_train_value_grad.py`) — `arm-c`'s reading is not trustworthy on
+the value-target-blend idea because of it. Retrained from the same corpus
+with the fixed gradient: `arm-c2` (`lambda=0.5`) reads **+61.0 Elo vs `v2`**
+(reproduced +53.9), beats `arm-b` directly by +27.0 Elo, and wins every panel
+cell measured; `arm-d2` (`lambda=0.75`, a hedge) also beats `v2` and `arm-b`
+but loses to `arm-c2` on every comparison. **`arm-c2`'s weights are now
+`v3.bin`, `duels-value`'s promoted `DEFAULT_WEIGHTS`** — see
+`crates/duels-value/src/lib.rs`'s "Follow-up round three" for the full
+write-up and comparison table, and
+`crates/duels-value/weights/generations.json` (F, resolved) for every
+generation's corpus manifest, training args, battery result and golden
+reference. `v2` is retired to a frozen `mcts-value:weights=v2` slot (G) and
+stays in the frozen reference panel rather than being deleted.
+
+Not yet done from this tier's plan: a fresh from-`v3` generation (the
+"three generations, see if the gain decays" question) and the `duels-eval`
+`CODEOWNERS`-style discipline for `duels-value` itself — both left for a
+future round, not blocked on anything above.
+
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
 **H. Per-card inputs.** `crates/duels-value/src/features.rs` deliberately excludes
