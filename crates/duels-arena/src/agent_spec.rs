@@ -890,13 +890,18 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
                     "gen3-l05-fixedrecipe" => {
                         Some(duels_agent_mcts_value::WEIGHTS_GEN3_L05_FIXEDRECIPE)
                     }
+                    // Recipe-calibration-day node-budget ablation -- see
+                    // `duels_agent_mcts_value::WEIGHTS_NB2000`'s docs.
+                    "nb2000" => Some(duels_agent_mcts_value::WEIGHTS_NB2000),
+                    "nb8000" => Some(duels_agent_mcts_value::WEIGHTS_NB8000),
                     other => {
                         return Err(format!(
                             "mcts-value: unknown weights generation \"{other}\" (expected \
                              \"default\", \"v1\", \"v2\", \"arm-a\"/\"arm-b\"/\"arm-c\" for the \
                              Tier 1-D/E experiment candidates, \"arm-c2\"/\"arm-d2\" for the \
-                             corrected-gradient retest, or \"gen3-l05\"/\"gen3-l10\"/\
-                             \"gen3-l05-fixedrecipe\" for Generation 3 and its recipe-fix retest)"
+                             corrected-gradient retest, \"gen3-l05\"/\"gen3-l10\"/\
+                             \"gen3-l05-fixedrecipe\" for Generation 3 and its recipe-fix retest, \
+                             or \"nb2000\"/\"nb8000\" for the node-budget ablation)"
                         ))
                     }
                 };

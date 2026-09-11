@@ -814,6 +814,26 @@ pub const WEIGHTS_GEN3_L10: &[u8] = include_bytes!("../../../duels-value/weights
 pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
     include_bytes!("../../../duels-value/weights/gen3-l05-fixedrecipe-candidate.bin");
 
+/// The recipe-calibration-day node-budget ablation (docs/roadmap.md's
+/// "Future consideration, flagged by the project owner ... generate future
+/// corpora at a higher node budget than production's `nodes:2000`"): a
+/// matched pair of small (20k-game, not the full 100k) corpora, self-played
+/// by the current champion (`v3`) with the identical exploration/specialist
+/// config as every Tier 1 corpus, differing *only* in the generating search's
+/// node budget -- `nodes:2000` (matching production) for [`WEIGHTS_NB2000`],
+/// `nodes:8000` for [`WEIGHTS_NB8000`]. Both trained with the identical
+/// (recipe-calibration-day) recipe and `--value-target-lambda 0.5` from
+/// their own matched-size corpus. Neither is promoted or the default --
+/// reachable purely for this ablation's own gating comparison (each vs `v3`,
+/// and directly against each other) to test whether a deeper generating
+/// search's less noisy `q_root` (the mechanism the project owner's idea
+/// rests on, since `v3`/`gen3-l05-fixedrecipe` blend the training target
+/// toward `q_root` at `lambda=0.5`) actually shows up in arena strength.
+pub const WEIGHTS_NB2000: &[u8] = include_bytes!("../../../duels-value/weights/nb2000-candidate.bin");
+/// See [`WEIGHTS_NB2000`]'s docs -- the `nodes:8000` half of the same paired
+/// ablation.
+pub const WEIGHTS_NB8000: &[u8] = include_bytes!("../../../duels-value/weights/nb8000-candidate.bin");
+
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
 ///

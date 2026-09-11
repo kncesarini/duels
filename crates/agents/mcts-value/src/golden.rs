@@ -218,6 +218,8 @@ mod tests {
                 crate::WEIGHTS_GEN3_L05_FIXEDRECIPE,
                 "211x128x4/d1627cfa",
             ),
+            ("nb2000", crate::WEIGHTS_NB2000, "211x128x4/ae81ec4e"),
+            ("nb8000", crate::WEIGHTS_NB8000, "211x128x4/4e324c56"),
         ];
         for (name, bytes, want) in frozen {
             let got = duels_value::weights_id(bytes);
