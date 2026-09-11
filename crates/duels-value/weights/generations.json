@@ -215,7 +215,7 @@
           { "opponent": "mcts-value:weights=v2 (frozen)", "budget": "nodes:32000", "games": 800, "elo": -34.4, "elo_ci": [-58.6, -10.2] },
           { "opponent": "mcts-eval", "budget": "nodes:8000", "games": 800, "elo": 196.4, "elo_ci": [168.4, 224.4] },
           { "opponent": "mcts-uct", "budget": "nodes:8000", "games": 800, "elo": 260.0, "elo_ci": [228.9, 291.1] },
-          { "opponent": "mcts-value (v2), TimeMs", "budget": "time_ms:1000", "games": 1000, "note": "see promotion commit for the number and the machine-quietness caveat" }
+          { "opponent": "mcts-value (v2), TimeMs (production's actual search budget)", "budget": "time_ms:1000", "games": 1000, "elo": 58.2, "elo_ci": [36.3, 80.0], "sprt": "AcceptH1", "mechanism": "Pass", "label": "arm-c2-vs-v2-timems1000", "caveat": "machine was not quiet during this run (other concurrent processes; load averages in the hundreds) -- see docs/conventions.md's warning that load-average is not a valid proxy here (duels-arena parallelises seeds). The actual process list was checked (no other duels-arena/training process running concurrently), and the effect size (+58 Elo) is far larger than this project's documented TimeMs load-noise (~15+ Elo swings), so it is trusted, but a rerun on a genuinely idle machine would be worth doing if one becomes available." }
         ],
         "archive_dir": "generations/tier1-battery-results/arm-c2-*"
       },
