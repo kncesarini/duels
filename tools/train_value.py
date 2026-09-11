@@ -373,8 +373,49 @@ def print_calibration(rows):
 # ---------------------------------------------------------------------------
 
 
+def lr_at(epoch, args):
+    """The learning rate for `epoch`.
+
+    Two schedules live here side by side, selected by whether `--lr-floor`
+    was passed, so every pre-existing invocation (nothing sets `--lr-floor`)
+    stays on the **original** formula, bit-identical -- this is deliberate,
+    matching this file's existing convention (see `blended_dz`'s "bit-
+    identical to training before this option existed") of never silently
+    changing a result nobody asked to change.
+
+    The original formula decays from `lr` to a *tenth* of it over the whole
+    run and has no warm-up. That floor turns out to matter: every generation
+    trained so far (`v1` through Generation 3, see `docs/roadmap.md`'s
+    "Autonomous self-play loop design") hit patience-based early stopping at
+    epoch 10-29 of a fixed schedule, so the learning rate has *never* actually
+    reached that floor, let alone a lower one -- "best epoch" selection has
+    been picking among near-identical, still-high-LR checkpoints (confirmed:
+    3 same-recipe training-seed replicates land within 0.0011 val log loss of
+    each other, far tighter than the epoch-to-epoch swings early stopping is
+    reacting to). `--lr-floor` opts into a schedule designed to actually
+    anneal: a short linear warm-up (`--warmup-epochs`, default 0 -- most
+    fits here are already well-conditioned enough not to need one, per the
+    small He-initialised last layer in `Mlp.__init__`) followed by cosine
+    decay from `lr` down to `lr_floor` over the remaining epochs. Pair this
+    with `--no-patience` (below) -- an annealing schedule and patience-based
+    early stopping are in tension: patience will happily fire while the LR is
+    still high and val loss is flat-noisy, before the schedule's own tail
+    ever gets a chance to matter.
+    """
+    if args.lr_floor is None:
+        return args.lr * (0.1 + 0.9 * 0.5 * (1 + np.cos(np.pi * epoch / max(1, args.epochs - 1))))
+    if args.warmup_epochs > 0 and epoch < args.warmup_epochs:
+        return args.lr * (epoch + 1) / args.warmup_epochs
+    decay_epochs = max(1, args.epochs - args.warmup_epochs - 1)
+    e = epoch - args.warmup_epochs
+    cos_term = 0.5 * (1 + np.cos(np.pi * e / decay_epochs))
+    return args.lr_floor + (args.lr - args.lr_floor) * cos_term
+
+
 def train(net, xtr, ttr, xva, yva_win, args, tag, qtr=None, lam=1.0):
-    """Minibatch Adam with validation-log-loss early stopping.
+    """Minibatch Adam with validation-log-loss early stopping (unless
+    `--no-patience`), optional tail-window weight averaging (`--swa-tail-
+    frac`), and per-epoch training-loss logging alongside validation loss.
 
     Selection is on the *aggregate win probability's log loss against the
     real outcome* (`yva_win`, derived from `z`) for both model kinds and
@@ -384,41 +425,100 @@ def train(net, xtr, ttr, xva, yva_win, args, tag, qtr=None, lam=1.0):
     values comparable to each other and to `lam = 1.0` on one common,
     training-loss-independent yardstick, exactly as `docs/roadmap.md`'s Tier
     1-E calls for ("ablate lam by arena result / a shared offline yardstick,
-    not by each arm's own training objective")."""
+    not by each arm's own training objective").
+
+    **Training-loss logging.** Every prior run here logged only validation
+    loss, which cannot distinguish overfitting (train loss still falling,
+    val loss flat or rising) from underfitting or label-noise saturation
+    (both flat). Tracked on a fixed random subsample of the training rows
+    (200k, or all of them if fewer) drawn from an RNG seeded independently of
+    the minibatch-order RNG below, specifically so turning this logging on
+    or off cannot perturb the minibatch permutation sequence and change a
+    default (`--lr-floor` unset) run's result even by float-noise.
+
+    **Weight averaging (SWA).** `--swa-tail-frac > 0` accumulates a running
+    mean of every epoch's parameters over the schedule's final fraction of
+    epochs (its low-LR tail, once `--lr-floor` makes that tail meaningful).
+    The averaged weights are only shipped if they beat the single best
+    epoch's validation log loss; otherwise the best single epoch ships,
+    exactly as before -- this check is automatic and both numbers are always
+    reported, never just the one that "won"."""
     n = len(xtr)
     rng = np.random.default_rng(args.seed + 1)
+    diag_rng = np.random.default_rng(args.seed + 12345)
+    sample_n = min(n, 200_000)
+    train_sample = diag_rng.choice(n, size=sample_n, replace=False) if n else np.array([], int)
+    ytr_win_full = (1.0 - ttr[:, LOSS]) if ttr.shape[1] > 1 else ttr[:, 0]
+    ytr_win_sample = ytr_win_full[train_sample]
+
+    swa_tail_start = None
+    if args.swa_tail_frac > 0:
+        swa_tail_start = args.epochs - int(round(args.epochs * args.swa_tail_frac))
+    swa_sum, swa_count = None, 0
+
     best = (float("inf"), None, -1)
     history = []
     for epoch in range(args.epochs):
-        # Cosine decay from `lr` to a tenth of it, which needs no schedule
-        # tuning and behaves well for a fit this small.
-        lr = args.lr * (0.1 + 0.9 * 0.5 * (1 + np.cos(np.pi * epoch / max(1, args.epochs - 1))))
+        lr = lr_at(epoch, args)
         order = rng.permutation(n)
         t0 = time.time()
         for i in range(0, n, args.batch):
             idx = order[i : i + args.batch]
             q_batch = qtr[idx] if qtr is not None else None
             net.step(xtr[idx], ttr[idx], lr, args.weight_decay, q=q_batch, lam=lam)
+
+        if swa_tail_start is not None and epoch >= swa_tail_start:
+            if swa_sum is None:
+                swa_sum = [p.astype(np.float64).copy() for p in net.params]
+            else:
+                for s, p in zip(swa_sum, net.params):
+                    s += p
+            swa_count += 1
+
         p = net.predict(xva)
         pw = win_prob(p)
         ll = log_loss(pw, yva_win)
-        history.append({"epoch": epoch, "lr": float(lr), "val_win_log_loss": ll})
+        train_ll = log_loss(win_prob(net.predict(xtr[train_sample])), ytr_win_sample) if sample_n else float("nan")
+        history.append(
+            {"epoch": epoch, "lr": float(lr), "train_win_log_loss": train_ll, "val_win_log_loss": ll}
+        )
         flag = ""
         if ll < best[0]:
             best = (ll, [p.copy() for p in net.params], epoch)
             flag = " *"
         print(
-            f"  [{tag}] epoch {epoch:>3}  lr {lr:.5f}  val win logloss {ll:.5f}"
-            f"  ({time.time() - t0:.1f}s){flag}"
+            f"  [{tag}] epoch {epoch:>3}  lr {lr:.5f}  train logloss {train_ll:.5f}"
+            f"  val win logloss {ll:.5f}  ({time.time() - t0:.1f}s){flag}"
         )
-        if epoch - best[2] >= args.patience:
+        if not args.no_patience and epoch - best[2] >= args.patience:
             print(f"  [{tag}] no improvement for {args.patience} epochs, stopping")
             break
+    swa_info = {"swa_count": swa_count, "shipped": "best_epoch"}
     if best[1] is not None:
         for p, b in zip(net.params, best[1]):
             p[...] = b
     print(f"  [{tag}] best epoch {best[2]}, val win logloss {best[0]:.5f}")
-    return history, best[2]
+    if swa_count > 0:
+        swa_params = [(s / swa_count).astype(np.float32) for s in swa_sum]
+        best_params = [p.copy() for p in net.params]
+        for p, s in zip(net.params, swa_params):
+            p[...] = s
+        swa_ll = log_loss(win_prob(net.predict(xva)), yva_win)
+        swa_info.update({"swa_val_log_loss": swa_ll, "best_epoch_val_log_loss": best[0]})
+        if swa_ll <= best[0]:
+            swa_info["shipped"] = "swa"
+            print(
+                f"  [{tag}] SWA tail-average over last {swa_count} epochs: "
+                f"val win logloss {swa_ll:.5f} <= best single epoch {best[0]:.5f} -- shipping SWA"
+            )
+        else:
+            for p, b in zip(net.params, best_params):
+                p[...] = b
+            print(
+                f"  [{tag}] SWA tail-average over last {swa_count} epochs: "
+                f"val win logloss {swa_ll:.5f} > best single epoch {best[0]:.5f} -- shipping best epoch, not SWA"
+            )
+    return history, best[2], swa_info
 
 
 def win_prob(p):
@@ -443,6 +543,48 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--patience", type=int, default=8)
+    ap.add_argument(
+        "--no-patience",
+        action="store_true",
+        help=(
+            "disable patience-based early stopping and run the full --epochs schedule. "
+            "Intended to pair with --lr-floor: a fixed, fully-annealing schedule and "
+            "patience are redundant/in-tension (patience fires on early-epoch noise "
+            "before the schedule's low-LR tail ever runs) -- see docs/roadmap.md's "
+            "'Autonomous self-play loop design'."
+        ),
+    )
+    ap.add_argument(
+        "--lr-floor",
+        type=float,
+        default=None,
+        help=(
+            "opt into a fixed-epoch schedule that actually anneals to this LR by the "
+            "final epoch (with --warmup-epochs of linear warm-up first), instead of the "
+            "original schedule's floor of 0.1x --lr. Unset (default) reproduces the "
+            "original schedule bit-identically. e.g. --lr-floor 2e-5 --epochs 30."
+        ),
+    )
+    ap.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=0,
+        help="linear LR warm-up epochs before cosine decay begins. Only used with --lr-floor.",
+    )
+    ap.add_argument(
+        "--swa-tail-frac",
+        type=float,
+        default=0.0,
+        help=(
+            "average weights over the final this-fraction of --epochs (the schedule's "
+            "low-LR tail) and ship the average instead of the single best epoch, but "
+            "only if the average's validation log loss is at or below the best single "
+            "epoch's -- otherwise the best single epoch ships, exactly as before. "
+            "0 (default) disables SWA entirely, bit-identical to before this option "
+            "existed. Most useful with --no-patience --lr-floor, so the tail is a real "
+            "low-LR region rather than a schedule that was never allowed to finish."
+        ),
+    )
     ap.add_argument("--seed", type=int, default=20260909)
     ap.add_argument(
         "--also-scalar",
@@ -467,6 +609,12 @@ def main():
     args = ap.parse_args()
     if not (0.0 <= args.value_target_lambda <= 1.0):
         raise SystemExit("--value-target-lambda must be in [0, 1]")
+    if not (0.0 <= args.swa_tail_frac < 1.0):
+        raise SystemExit("--swa-tail-frac must be in [0, 1)")
+    if args.lr_floor is not None and not (0.0 < args.lr_floor < args.lr):
+        raise SystemExit("--lr-floor must be in (0, --lr)")
+    if args.warmup_epochs and args.lr_floor is None:
+        raise SystemExit("--warmup-epochs only makes sense with --lr-floor")
 
     m, n_in, n_out, games = load_matrix(args.matrix, max_rows=args.max_rows)
 
@@ -515,6 +663,15 @@ def main():
         "hidden": args.hidden,
         "features": int(n_in),
         "value_target_lambda": lam,
+        "recipe": {
+            "epochs": args.epochs,
+            "patience": None if args.no_patience else args.patience,
+            "lr": args.lr,
+            "lr_floor": args.lr_floor,
+            "warmup_epochs": args.warmup_epochs,
+            "weight_decay": args.weight_decay,
+            "swa_tail_frac": args.swa_tail_frac,
+        },
         "split": "seed % 10: 0-6 train, 7-8 validation, 9 test",
         "rows": {"train": int(tr.sum()), "val": int(va.sum()), "test": int(te.sum())},
         "games_in_split": {
@@ -531,7 +688,11 @@ def main():
     onehot = np.zeros((len(ytr), n_out), np.float32)
     onehot[np.arange(len(ytr)), ytr] = 1.0
     net = Mlp(n_in, args.hidden, n_out, args.seed, softmax=True)
-    results["decomposed_history"], results["decomposed_best_epoch"] = train(
+    (
+        results["decomposed_history"],
+        results["decomposed_best_epoch"],
+        results["decomposed_swa"],
+    ) = train(
         net,
         xtr,
         onehot,
@@ -562,7 +723,7 @@ def main():
         print("training the single-scalar control of identical shape")
         scalar_target = (ytr != LOSS).astype(np.float32).reshape(-1, 1)
         snet = Mlp(n_in, args.hidden, 1, args.seed, softmax=False)
-        results["scalar_history"], results["scalar_best_epoch"] = train(
+        results["scalar_history"], results["scalar_best_epoch"], results["scalar_swa"] = train(
             snet, xtr, scalar_target, xva, yva_win, args, "1way"
         )
         print()
