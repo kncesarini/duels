@@ -119,6 +119,52 @@ def split_by_game(seeds):
 # ---------------------------------------------------------------------------
 
 
+def blended_dz(p, target, q, lam):
+    """d(loss)/dz (the pre-softmax logits), summed over the batch (not yet
+    divided by `n`), for `--value-target-lambda`'s two-term loss:
+
+        lam * CE4(p, onehot(z)) + (1 - lam) * BCE(1 - p_loss, q)
+
+    `q is None` or `lam >= 1.0` is the exact original path (no blend to
+    compute, nothing to mask) -- bit-identical to training before this option
+    existed. Otherwise:
+
+    `BCE(1 - p_loss, q)` is algebraically `BCE(p_loss, 1 - q)` (the standard
+    symmetric identity `BCE(1-x, q) = BCE(x, 1-q)`), which is why this only
+    ever needs the softmax's own `LOSS` column. Write `s = p[:, LOSS]`,
+    `t = 1 - q`, so the second term is `L = -[q*log(1-s) + (1-q)*log(s)]`.
+    Using the softmax Jacobian `ds/dz_LOSS = s(1-s)`, `ds/dz_k = -s*p_k`
+    (k != LOSS):
+
+        dL/dz_LOSS = (dL/ds) * s(1-s) = s - t                    (exact)
+        dL/dz_k    = (dL/ds) * (-s*p_k) = -[(s - t)/(1-s)] * p_k   (k != LOSS)
+
+    `g = (s - t) / (1 - s)` is therefore only the right gradient for the
+    *other* logits, not for `LOSS` itself -- dividing the `LOSS` column by
+    `(1 - s)` too (an earlier version of this code did exactly that)
+    amplifies it without bound as `s -> 1` and breaks softmax
+    shift-invariance: the four per-example logit gradients must sum to
+    exactly zero (the loss depends on `z` only through `p`, which is
+    invariant to adding a constant to every logit), and `(s - t)` plus
+    `sum_{k != LOSS} -g*p_k = -g*(1-s) = -(s - t)` is the only split that
+    sums to zero. Checked by finite difference in
+    `tools/test_train_value_grad.py`.
+    """
+    if q is None or lam >= 1.0:
+        return p - target
+    ce = p - target
+    valid = ~np.isnan(q)
+    q_safe = np.where(valid, q, 0.5)
+    t = 1.0 - q_safe
+    s = np.clip(p[:, LOSS], 1e-7, 1 - 1e-7)
+    g = (s - t) / (1.0 - s)
+    bce = np.empty_like(p)
+    bce[:, LOSS] = s - t
+    bce[:, :LOSS] = -g[:, None] * p[:, :LOSS]
+    bce *= valid[:, None]
+    return lam * ce + (1.0 - lam) * bce
+
+
 class Mlp:
     def __init__(self, n_in, hidden, n_out, seed, softmax):
         rng = np.random.default_rng(seed)
@@ -174,30 +220,7 @@ class Mlp:
         """
         n = len(x)
         h, p = self.forward(x)
-        if q is None or lam >= 1.0:
-            # The exact original path: no blend to compute, nothing to mask.
-            dz = (p - target) / n
-        else:
-            ce = p - target
-            valid = ~np.isnan(q)
-            # `BCE(1 - p_loss, q)` is algebraically `BCE(p_loss, 1 - q)` (the
-            # standard symmetric identity `BCE(1-x, q) = BCE(x, 1-q)`), which
-            # is why this only ever needs the softmax's own `LOSS` column:
-            # `q_safe`'s value is thrown away by the `valid` mask below for
-            # every row it would otherwise touch.
-            q_safe = np.where(valid, q, 0.5)
-            t = 1.0 - q_safe
-            s = np.clip(p[:, LOSS], 1e-7, 1 - 1e-7)
-            # d/dz of BCE(s, t) composed with the softmax that produced `s`:
-            # `g = (s - t) / (1 - s)` on the `LOSS` logit, `-g * p_k` on every
-            # other logit (derived from the softmax Jacobian; see the PR
-            # description for the algebra).
-            g = (s - t) / (1.0 - s)
-            bce = np.empty_like(p)
-            bce[:, LOSS] = g
-            bce[:, :LOSS] = -g[:, None] * p[:, :LOSS]
-            bce *= valid[:, None]
-            dz = (lam * ce + (1.0 - lam) * bce) / n
+        dz = blended_dz(p, target, q, lam) / n
         gw2 = h.T @ dz
         gb2 = dz.sum(axis=0)
         dh = dz @ self.w2.T
