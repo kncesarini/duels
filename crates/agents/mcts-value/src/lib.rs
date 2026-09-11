@@ -779,6 +779,41 @@ pub const WEIGHTS_ARM_C_PRIME: &[u8] =
 pub const WEIGHTS_ARM_D_PRIME: &[u8] =
     include_bytes!("../../../duels-value/weights/arm-d-prime-candidate.bin");
 
+/// Generation 3 (`docs/roadmap.md`'s "Generation 3 (2026-09-11): the
+/// gain-decay question, answered — held, not promoted"): a fresh ~100k-game
+/// corpus (`tier1-gen3-explore`) self-played by `v3`, the same
+/// exploration+specialist-mixing config as the `arm-b`/`arm-c` corpus.
+/// `gen3-l05` (`--value-target-lambda 0.5`) read a real, mechanism-clean
+/// +17.2 Elo pooled gain over `v3` at 2,000 games, but was held rather than
+/// promoted after a frozen-panel non-regression check (a gate stage this
+/// project's promotion gate did not previously have) found a statistically
+/// real regression against two non-ancestor panel members. `gen3-l10`
+/// (`--value-target-lambda 1.0`) is its lambda=1.0 control sibling from the
+/// identical corpus. **`v3.bin` remains `DEFAULT_WEIGHTS`.** Both trained
+/// with the *pre-recipe-calibration* recipe (patience-based early stopping,
+/// never actually annealing below ~1.17e-3) -- see [`WEIGHTS_GEN3_L05_FIXEDRECIPE`]
+/// for the same corpus retrained with the fixed recipe, the direct isolation
+/// this crate's docs call for.
+pub const WEIGHTS_GEN3_L05: &[u8] = include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
+/// See [`WEIGHTS_GEN3_L05`]'s docs.
+pub const WEIGHTS_GEN3_L10: &[u8] = include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
+
+/// The recipe-calibration-day retrain (docs/roadmap.md's "Autonomous
+/// self-play loop design", "Recommended next step"): **the identical
+/// `tier1-gen3-explore` corpus and `--value-target-lambda 0.5`** as
+/// [`WEIGHTS_GEN3_L05`], retrained with the fixed recipe only --
+/// fixed-epoch (30) schedule that actually anneals (2-epoch linear warm-up,
+/// cosine decay to a `2e-5` floor), no patience-based early stopping, and
+/// SWA weight-averaging over the final third of epochs (shipped only
+/// because it beat the single best epoch's validation log loss: 0.50650 vs
+/// 0.50656). Zero other variables changed from `gen3-l05`, so a head-to-head
+/// against it isolates the recipe fix's effect on its own. Not promoted
+/// merely by existing here -- see
+/// `crates/duels-value/weights/generations.json`'s corresponding entry (once
+/// recorded) and the calibration write-up for the actual gating result.
+pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l05-fixedrecipe-candidate.bin");
+
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
 ///
