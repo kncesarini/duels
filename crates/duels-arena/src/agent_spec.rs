@@ -675,6 +675,39 @@ pub fn parse_mcts_eval_config(params: &str) -> Result<MctsEvalConfig, String> {
 /// asserts directly. `value_sum=serial`, conversely, *is* on this agent's
 /// default path: it selects `duels_value::Summation::Serial`, the accumulation
 /// order that predates the four-way unroll.
+/// Read a `weights=file:<path>` candidate's bytes once per unique path and
+/// leak them to `'static`, so [`duels_agent_mcts_value::Config::value_weights_override`]
+/// (which requires `&'static [u8]`, the same convention every named
+/// `WEIGHTS_*` constant already uses) can point at a not-yet-promoted weights
+/// file without adding a new constant, `agent_spec` match arm and
+/// `golden.rs` entry -- and a rebuild -- for every candidate.
+///
+/// A process that gates one candidate plays many thousands of games, and
+/// this function is called once per game (agent specs are parsed fresh per
+/// game, not cached by the caller) -- so leaking unconditionally would leak
+/// megabytes per game. The cache below leaks each distinct path's bytes at
+/// most once per process instead, which is the same bounded, one-time cost
+/// every compiled-in `WEIGHTS_*` constant already pays (its bytes live for
+/// the process's whole lifetime too, just baked in at compile time rather
+/// than read at first use).
+fn load_weights_file(path: &str) -> Result<&'static [u8], String> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, &'static [u8]>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&bytes) = guard.get(path) {
+        return Ok(bytes);
+    }
+    let data = std::fs::read(path)
+        .map_err(|e| format!("mcts-value: failed to read weights file \"{path}\": {e}"))?;
+    let leaked: &'static [u8] = Box::leak(data.into_boxed_slice());
+    guard.insert(path.to_string(), leaked);
+    Ok(leaked)
+}
+
 pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> {
     let mut cfg = MctsValueConfig::default();
     for (k, v) in parse_params(params)? {
@@ -866,45 +899,62 @@ pub fn parse_mcts_value_config(params: &str) -> Result<MctsValueConfig, String> 
             // reachable as frozen generations -- `v2` and `v3` additionally
             // as frozen reference-panel members (`docs/roadmap.md` Tier 1-G).
             "weights" => {
-                cfg.value_weights_override = match v {
-                    "default" | "live" | "current" => None,
-                    "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
-                    "v2" => Some(duels_agent_mcts_value::WEIGHTS_V2),
-                    "v3" => Some(duels_agent_mcts_value::WEIGHTS_V3),
-                    // Unpromoted Tier 1-D/E experiment candidates -- see
-                    // `duels_agent_mcts_value::WEIGHTS_ARM_A`'s docs for what
-                    // each arm actually is. None of these is the default.
-                    "arm-a" => Some(duels_agent_mcts_value::WEIGHTS_ARM_A),
-                    "arm-b" => Some(duels_agent_mcts_value::WEIGHTS_ARM_B),
-                    "arm-c" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C),
-                    // Corrected retest of arm-c's idea (the blended-loss
-                    // gradient bug fix) -- see
-                    // `duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME`'s docs.
-                    "arm-c2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME),
-                    "arm-d2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_D_PRIME),
-                    // Generation 3 (held, not promoted -- v3 remains
-                    // DEFAULT_WEIGHTS) and the recipe-calibration-day retrain
-                    // from its identical corpus -- see
-                    // `duels_agent_mcts_value::WEIGHTS_GEN3_L05`'s docs.
-                    "gen3-l05" => Some(duels_agent_mcts_value::WEIGHTS_GEN3_L05),
-                    "gen3-l10" => Some(duels_agent_mcts_value::WEIGHTS_GEN3_L10),
-                    "gen3-l05-fixedrecipe" => {
-                        Some(duels_agent_mcts_value::WEIGHTS_GEN3_L05_FIXEDRECIPE)
-                    }
-                    // Recipe-calibration-day node-budget ablation -- see
-                    // `duels_agent_mcts_value::WEIGHTS_NB2000`'s docs.
-                    "nb2000" => Some(duels_agent_mcts_value::WEIGHTS_NB2000),
-                    "nb8000" => Some(duels_agent_mcts_value::WEIGHTS_NB8000),
-                    other => {
-                        return Err(format!(
-                            "mcts-value: unknown weights generation \"{other}\" (expected \
+                cfg.value_weights_override = if let Some(path) = v.strip_prefix("file:") {
+                    // An ad hoc, not-yet-promoted weights file, read from disk
+                    // at runtime rather than compiled in -- for the autonomous
+                    // self-play loop's own gating (`docs/roadmap.md`'s
+                    // "Autonomous self-play loop design"), which needs to
+                    // measure a fresh candidate every generation without
+                    // adding a new `WEIGHTS_*` constant, `agent_spec` match
+                    // arm and `golden.rs` entry -- and a rebuild -- each time.
+                    // Every other `weights=` value stays a compiled-in
+                    // `&'static [u8]`; promoting a generation to the live
+                    // default, or pinning it as a permanently reachable named
+                    // generation, still goes through that same reviewed path.
+                    Some(load_weights_file(path)?)
+                } else {
+                    match v {
+                        "default" | "live" | "current" => None,
+                        "v1" => Some(duels_agent_mcts_value::WEIGHTS_V1),
+                        "v2" => Some(duels_agent_mcts_value::WEIGHTS_V2),
+                        "v3" => Some(duels_agent_mcts_value::WEIGHTS_V3),
+                        // Unpromoted Tier 1-D/E experiment candidates -- see
+                        // `duels_agent_mcts_value::WEIGHTS_ARM_A`'s docs for what
+                        // each arm actually is. None of these is the default.
+                        "arm-a" => Some(duels_agent_mcts_value::WEIGHTS_ARM_A),
+                        "arm-b" => Some(duels_agent_mcts_value::WEIGHTS_ARM_B),
+                        "arm-c" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C),
+                        // Corrected retest of arm-c's idea (the blended-loss
+                        // gradient bug fix) -- see
+                        // `duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME`'s docs.
+                        "arm-c2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_C_PRIME),
+                        "arm-d2" => Some(duels_agent_mcts_value::WEIGHTS_ARM_D_PRIME),
+                        // Generation 3 (held, not promoted -- v3 remains
+                        // DEFAULT_WEIGHTS) and the recipe-calibration-day retrain
+                        // from its identical corpus -- see
+                        // `duels_agent_mcts_value::WEIGHTS_GEN3_L05`'s docs.
+                        "gen3-l05" => Some(duels_agent_mcts_value::WEIGHTS_GEN3_L05),
+                        "gen3-l10" => Some(duels_agent_mcts_value::WEIGHTS_GEN3_L10),
+                        "gen3-l05-fixedrecipe" => {
+                            Some(duels_agent_mcts_value::WEIGHTS_GEN3_L05_FIXEDRECIPE)
+                        }
+                        // Recipe-calibration-day node-budget ablation -- see
+                        // `duels_agent_mcts_value::WEIGHTS_NB2000`'s docs.
+                        "nb2000" => Some(duels_agent_mcts_value::WEIGHTS_NB2000),
+                        "nb8000" => Some(duels_agent_mcts_value::WEIGHTS_NB8000),
+                        other => {
+                            return Err(format!(
+                                "mcts-value: unknown weights generation \"{other}\" (expected \
                              \"default\", \"v1\", \"v2\", \"v3\", \"arm-a\"/\"arm-b\"/\"arm-c\" \
                              for the Tier 1-D/E experiment candidates, \"arm-c2\"/\"arm-d2\" for \
                              the corrected-gradient retest, \"gen3-l05\"/\"gen3-l10\"/\
                              \"gen3-l05-fixedrecipe\" for Generation 3 and its recipe-fix retest \
-                             (v3 remains DEFAULT_WEIGHTS -- gen3-l05 was held, not promoted), or \
-                             \"nb2000\"/\"nb8000\" for the node-budget ablation)"
-                        ))
+                             (v3 remains DEFAULT_WEIGHTS -- gen3-l05 was held, not promoted), \
+                             \"nb2000\"/\"nb8000\" for the node-budget ablation, or \
+                             \"file:<path>\" to load an ad hoc, not-yet-promoted weights file \
+                             from disk at runtime)"
+                            ))
+                        }
                     }
                 };
             }
@@ -1730,6 +1780,47 @@ mod tests {
                 assert!(!params.contains(reject), "{spec} has {reject}: {params}");
             }
         }
+    }
+
+    /// `weights=file:<path>` loads a not-yet-promoted candidate's bytes from
+    /// disk at runtime instead of requiring a new compiled-in `WEIGHTS_*`
+    /// constant and `agent_spec` match arm per candidate -- the autonomous
+    /// self-play loop's own gating needs exactly this (`docs/roadmap.md`'s
+    /// "Autonomous self-play loop design").
+    #[test]
+    fn weights_file_loads_a_candidate_from_disk_by_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "duels-agent-spec-weights-file-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("candidate.bin");
+        std::fs::write(&path, duels_agent_mcts_value::WEIGHTS_V2).unwrap();
+        let path_str = path.to_str().unwrap();
+
+        let cfg = parse_mcts_value_config(&format!("weights=file:{path_str}")).unwrap();
+        assert_eq!(
+            cfg.value_weights_override,
+            Some(duels_agent_mcts_value::WEIGHTS_V2)
+        );
+
+        // A second load of the same path is served from the cache (and
+        // returns the identical bytes) rather than leaking a fresh
+        // allocation per call -- this function is called once per game, so
+        // an experiment of any real size calls it thousands of times.
+        let cfg_again = parse_mcts_value_config(&format!("weights=file:{path_str}")).unwrap();
+        assert_eq!(
+            cfg_again.value_weights_override.unwrap().as_ptr(),
+            cfg.value_weights_override.unwrap().as_ptr(),
+            "the second load of the same path should reuse the cached allocation"
+        );
+
+        // A missing path is a normal, catchable error, not a panic.
+        let err =
+            parse_mcts_value_config("weights=file:/definitely/not/a/real/path.bin").unwrap_err();
+        assert!(err.contains("failed to read weights file"), "{err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `leaf=learned_symmetric` (and its `lsym` alias) reach
