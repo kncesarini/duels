@@ -788,6 +788,177 @@
         "weights_id": "211x128x4/5afaaed3",
         "pinned_in": null
       }
+    },
+    {
+      "id": "tier1-gen3-l05-fixedrecipe",
+      "status": "held",
+      "notes": "Recipe-calibration-day retrain (docs/roadmap.md's 'Autonomous self-play loop design', 'Recommended next step'): the IDENTICAL tier1-gen3-explore corpus and --value-target-lambda 0.5 as tier1-gen3-l05, retrained with tools/train_value.py's new fixed recipe -- 30 epochs, 2-epoch linear warm-up then cosine decay to a 2e-5 LR floor (--lr-floor 2e-5 --warmup-epochs 2), no patience-based early stopping (--no-patience), and SWA weight-averaging over the final third of epochs (--swa-tail-frac 0.333). Zero other variables changed from tier1-gen3-l05, so this isolates the recipe fix's own effect. Per-epoch training-loss logging (new in this recipe) shows train loss falling smoothly through all 30 epochs (0.510 -> 0.483) while validation loss plateaus after roughly epoch 10 (0.519 -> 0.507, essentially flat 0.5066-0.5070 from epoch 10 on) -- confirms the roadmap's diagnosis that patience was stopping on early-epoch noise, not real convergence, but the schedule actually reaching its floor bought only a marginal offline gain: best single epoch (27) read 0.50656, SWA over the last 10 epochs read 0.50650 (marginally lower, so SWA shipped per this recipe's automatic rule) -- a 0.00044 improvement over tier1-gen3-l05's own 0.50694, smaller than the 0.0011 training-seed-replicate noise floor documented in docs/roadmap.md, so not even clearly a real offline gain, let alone a guaranteed arena one. HONEST HEADLINE: gated head-to-head against the actual current champion (v3) at nodes:2000, pooled across two disjoint seed ranges (4,000 games, elo1=10): +14.9 Elo [+4.1, +25.6], AcceptH1, mechanism Pass -- a real win over v3, but NOT distinguishably better than tier1-gen3-l05's own +17.2 Elo reading in the identical comparison (heavily overlapping CIs). The clean, direct test -- this candidate vs tier1-gen3-l05 head-to-head, isolating the recipe change with literally nothing else different -- reads -6.4 Elo [-17.2, +4.3], AcceptH0 (rejects a positive effect at elo1=10), mechanism Pass: the recipe fix does NOT measurably improve arena strength over the old patience-based recipe on this corpus, and the point estimate leans (not significantly) slightly negative. Frozen reference panel reads in the same direction: vs frozen v2@nodes:32000 -16.1 Elo [-40.1,+8.0] (AcceptH0, vs tier1-gen3-l05's own -1.7), vs frozen v2@nodes:2000 +75.4 [+53.4,+97.5] (vs gen3-l05's +81.3), vs mcts-eval@nodes:8000 +125.8 [+100.2,+151.5] (vs gen3-l05's +142.4), vs mcts-uct@nodes:8000 +230.4 [+200.9,+260.0] (vs gen3-l05's +229.8, about even) -- weaker or even on 3 of 4 panel cells, matching the direct head-to-head's slightly-negative-but-inconclusive read rather than contradicting it. CONCLUSION: the training-recipe fix (annealing schedule reaching a real floor, no patience, SWA tail-averaging, train-loss logging) is a real hygiene/reproducibility improvement -- it removes reliance on patience's noise-selection and gives an honest overfitting/underfitting signal for the first time -- but on this one isolated trial it produced NO detectable arena-Elo gain over the old recipe, and the offline log-loss 'improvement' it shipped on is itself smaller than the measured training-seed noise floor. This is a genuine, useful negative result for the recipe-calibration exercise, not a failure to hide: see docs/roadmap.md's recipe-calibration-day write-up for the full reasoning and recommendation (ship the fixed recipe going forward for reproducibility, but do not expect it alone to move Elo; the data-scaling diagnostic run alongside this -- 50k/100k/200k games, val win-logloss 0.51823/0.50650/0.50335 -- points at a growing replay window, not the recipe, as the lever actually worth pursuing next).",
+      "weights": {
+        "repo_path": "crates/duels-value/weights/gen3-l05-fixedrecipe-candidate.bin",
+        "archive_path": "weights/tier1-gen3-l05-fixedrecipe-candidate.bin",
+        "sha256": "5d7a4b1e5c81eacf65c54bea0ee12530f0c1fae4718890677d3f19b181258cbe",
+        "weights_id": "211x128x4/d1627cfa",
+        "reachable_via": "mcts-value:weights=gen3-l05-fixedrecipe (held, never promoted to the live default)"
+      },
+      "corpus": {
+        "label": "tier1-gen3-explore",
+        "note": "Identical corpus as tier1-gen3-l05/tier1-gen3-l10 -- see that entry's manifest. No new corpus generation for this retrain, per the recipe-calibration-day design."
+      },
+      "training": {
+        "script": "tools/train_value.py",
+        "matrix": "arena/corpus/gen3-explore-features.bin",
+        "hidden": 128,
+        "recipe": {
+          "epochs": 30,
+          "warmup_epochs": 2,
+          "lr_floor": 2e-05,
+          "patience": null,
+          "swa_tail_frac": 0.333,
+          "note": "New recipe added by this calibration round -- see tools/train_value.py's --lr-floor/--warmup-epochs/--no-patience/--swa-tail-frac. Default (unset) path is bit-identical to the pre-existing script."
+        },
+        "best_epoch": 27,
+        "swa": {
+          "swa_count": 10,
+          "shipped": "swa",
+          "swa_val_log_loss": 0.5065013376507763,
+          "best_epoch_val_log_loss": 0.5065594819779414
+        },
+        "value_target_lambda": 0.5,
+        "metrics_archive": "generations/tier1-gen3-l05-fixedrecipe/gen3-l05-fixedrecipe-metrics.json"
+      },
+      "battery": {
+        "gate_note": "Gated identically to tier1-gen3-l05: pooled across two disjoint seed ranges vs v3 at elo1=10, plus a direct head-to-head against tier1-gen3-l05 (same corpus, same lambda, recipe-only difference) and the full frozen reference panel.",
+        "cells": [
+          {
+            "opponent": "mcts-value (v3)",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 24.2,
+            "elo_ci": [
+              8.9,
+              39.4
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "fixedrecipe-vs-v3 (range 1 of 2)"
+          },
+          {
+            "opponent": "mcts-value (v3), disjoint seed range",
+            "budget": "nodes:2000",
+            "games": 2000,
+            "elo": 5.6,
+            "elo_ci": [
+              -9.7,
+              20.8
+            ],
+            "sprt": "Continue",
+            "mechanism": "Pass",
+            "label": "fixedrecipe-vs-v3 (range 2 of 2)"
+          },
+          {
+            "opponent": "mcts-value (v3), pooled across both ranges",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": 14.9,
+            "elo_ci": [
+              4.1,
+              25.6
+            ],
+            "sprt": "AcceptH1",
+            "mechanism": "Pass",
+            "label": "fixedrecipe-vs-v3-pooled (gating result)"
+          },
+          {
+            "opponent": "mcts-value:weights=gen3-l05, pooled across two disjoint ranges (direct recipe-only isolation)",
+            "budget": "nodes:2000",
+            "games": 4000,
+            "elo": -6.4,
+            "elo_ci": [
+              -17.2,
+              4.3
+            ],
+            "sprt": "AcceptH0",
+            "mechanism": "Pass",
+            "label": "fixedrecipe-vs-gen3l05-pooled"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:32000",
+            "games": 800,
+            "elo": -16.1,
+            "elo_ci": [
+              -40.1,
+              8.0
+            ],
+            "sprt": "AcceptH0"
+          },
+          {
+            "opponent": "mcts-value:weights=v2 (frozen)",
+            "budget": "nodes:2000",
+            "games": 1000,
+            "elo": 75.4,
+            "elo_ci": [
+              53.4,
+              97.5
+            ],
+            "sprt": "AcceptH1"
+          },
+          {
+            "opponent": "mcts-eval",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 125.8,
+            "elo_ci": [
+              100.2,
+              151.5
+            ],
+            "sprt": "AcceptH1"
+          },
+          {
+            "opponent": "mcts-uct",
+            "budget": "nodes:8000",
+            "games": 800,
+            "elo": 230.4,
+            "elo_ci": [
+              200.9,
+              260.0
+            ],
+            "sprt": "AcceptH1"
+          }
+        ],
+        "archive_dir": "generations/tier1-battery-results/gen3-l05-fixedrecipe-*"
+      },
+      "diagnostics": {
+        "note": "Four offline diagnostics run alongside this retrain, all from tier1-gen3-explore (and tier1-arm-bc-explore for the 200k data point), same recipe as this entry unless noted, val win-log-loss reported (lower is better):",
+        "a_patience_vs_fixed_schedule": {
+          "patience_based_old_recipe_gen3_l05": 0.50694,
+          "fixed_no_patience_swa_this_entry": 0.5065,
+          "verdict": "Marginal offline improvement (0.00044), smaller than the 0.0011 training-seed-replicate noise floor -- not clearly a real offline gain, and the gating battery above found no detectable arena-Elo gain either."
+        },
+        "b_data_scaling": {
+          "50k_games_row_truncated": 0.51823,
+          "100k_games": 0.5065,
+          "200k_games_gen3_plus_armbc": 0.50335,
+          "verdict": "Monotonic, clear improvement with more data at every step measured, with no sign of plateauing by 200k -- the single clearest, best-supported diagnostic result. Points at data-starvation (a replay window > 1 generation) as the most promising lever, not the training recipe."
+        },
+        "c_capacity": {
+          "hidden_64": 0.50637,
+          "hidden_128_default": 0.5065,
+          "hidden_256": 0.50819,
+          "verdict": "Bigger is not better -- hidden=256 reads worse on validation despite a lower training loss (0.469 vs 0.483 for 128), a mild overfitting signature. hidden=64 matches hidden=128. Not capacity-limited."
+        },
+        "d_regularization": {
+          "weight_decay_1e-5_default": 0.5065,
+          "weight_decay_1e-4": 0.50629,
+          "weight_decay_1e-3": 0.52354,
+          "verdict": "1e-4 is a lateral move (within noise); 1e-3 is clearly worse on both train and val loss (underfitting). Not under-regularized at the current 1e-5."
+        },
+        "overall_verdict": "Of {label-noise/overfitting, under-regularization, data-starvation, capacity-limited}, the evidence points most clearly at data-starvation: val loss keeps falling with more data and shows no plateau yet at 200k games, while capacity and regularization changes in either direction do not help (and often hurt). A mild overfitting signature is present (train loss keeps falling past where val loss flattens, worse at 50k games and at hidden=256) but it reads as downstream of data-starvation (the train/val gap shrinks, not grows, going from 100k to 200k games) rather than an independent capacity or regularization problem."
+      },
+      "golden": {
+        "weights_id": "211x128x4/d1627cfa",
+        "pinned_in": "crates/agents/mcts-value/src/golden.rs"
+      }
     }
   ]
 }
