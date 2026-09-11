@@ -26,6 +26,18 @@ match (mixing features from different `duels_value::features` layouts would
 silently corrupt the training input), and writes a `<out>.json` sidecar that
 lists the sources and sums their label/game-kind histograms, the same
 provenance discipline `feature_dump.rs`'s own sidecar follows.
+
+**Record size depends on the matrix version.** Version 1 (`u32` seed, no
+`ply` column: `seed(4) + label(4) + sv(4) + x(4*n_in)` = `12 + 4*n_in` bytes)
+predates `value_corpus_mv.rs`'s format-v2 corpora. Version 2 (`u64` seed,
+plus a `ply` column: `seed(8) + label(4) + sv(4) + ply(4) + x(4*n_in)` =
+`20 + 4*n_in` bytes) is what every format-v2 corpus (`--sample-plies > 0`)
+produces -- see `tools/train_value.py`'s `load_matrix` for the identical
+version dispatch. Getting this wrong does not fail loudly: it silently reads
+the wrong byte boundaries per row, which happened to sum to the declared
+total row count in the one case that surfaced it (two format-v2 matrices
+merged for the autonomous loop's own training window) and produced a merged
+file `tools/train_value.py`'s own row-count check caught as truncated.
 """
 
 import argparse
@@ -36,6 +48,16 @@ from pathlib import Path
 
 MAGIC = b"DVFD"
 HEADER_BYTES = 32
+
+
+def record_bytes_for(version, n_in):
+    """Bytes per row, by matrix version -- see the module docs. Must track
+    `tools/train_value.py`'s `load_matrix` version dispatch exactly."""
+    if version == 1:
+        return 12 + 4 * n_in  # seed(u32) + label(u32) + sv(f32) + x
+    if version == 2:
+        return 20 + 4 * n_in  # seed(u64) + label(u32) + sv(f32) + ply(u32) + x
+    raise SystemExit(f"unknown matrix version {version} (this tool knows versions 1 and 2)")
 
 
 def read_header(path):
@@ -69,7 +91,7 @@ def main():
 
     total_rows = sum(h[3] for h in headers)
     total_games = sum(h[4] for h in headers)
-    record_bytes = 12 + 4 * n_in0
+    record_bytes = record_bytes_for(version0, n_in0)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
