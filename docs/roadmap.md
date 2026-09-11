@@ -302,6 +302,23 @@ Not yet done from this tier's plan: a fresh from-`v3` generation (the
 `CODEOWNERS`-style discipline for `duels-value` itself — both left for a
 future round, not blocked on anything above.
 
+**Future consideration, flagged by the project owner (2026-09-11), not yet
+tried:** generate future corpora at a higher node budget than production's
+`nodes:2000`. This isn't just "better game trajectories" — since `v3`'s own
+promotion came from blending the training target toward `q_root` (the
+generating search's own root value estimate, at `lambda=0.5`), `q_root`'s
+own quality is now directly load-bearing, and a deeper generating search
+gives a materially less noisy `q_root` to blend toward. The cost scales
+roughly linearly with node budget (a 100k-game corpus that takes ~35
+minutes post-Tier-0-A at `nodes:2000` would take roughly 4x/16x longer at
+`nodes:8000`/`32000`), which is exactly the kind of always-on background
+cost the Raspberry Pi fleet exists to absorb rather than something that
+has to fit inside a single interactive session. Worth an isolated ablation
+(same corpus size and D/E settings, only the generating node budget
+changed) before assuming it's a clean win — a stronger generator could
+also shift the corpus's position distribution in ways that don't transfer
+to the champion's own `nodes:2000`/`TimeMs(1000)` production budget.
+
 ## Tier 2 — the value net itself (concrete, not "try a bigger net")
 
 **H. Per-card inputs.** `crates/duels-value/src/features.rs` deliberately excludes
