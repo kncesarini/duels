@@ -82,7 +82,10 @@ mod tests {
     const TOLERANCE: f64 = 1e-6;
 
     /// The shape and content hash of the weights every number in this file was
-    /// taken against — `duels-value`'s `weights/v3.bin`.
+    /// taken against — `duels-value`'s `weights/v3.bin`. (Generation 3's
+    /// `gen3-l05` was measured and found to regress against the frozen
+    /// reference panel; it was held, not promoted, so `v3` remains
+    /// `DEFAULT_WEIGHTS` — see `duels_value`'s crate docs, "Generation 3".)
     ///
     /// Checked on its own as well as through the values, so that a retrain
     /// fails with "the weights changed" rather than with twenty confusing
@@ -198,11 +201,12 @@ mod tests {
         let frozen: &[(&str, &[u8], &str)] = &[
             ("v1", crate::WEIGHTS_V1, "211x128x4/036d2b5e"),
             ("v2", crate::WEIGHTS_V2, "211x128x4/17fee9ab"),
+            ("v3", crate::WEIGHTS_V3, "211x128x4/3e1dd480"),
             ("arm-a", crate::WEIGHTS_ARM_A, "211x128x4/21061eaa"),
             ("arm-b", crate::WEIGHTS_ARM_B, "211x128x4/81d06b58"),
             ("arm-c", crate::WEIGHTS_ARM_C, "211x128x4/3b584273"),
             (
-                "arm-c2 (tier1-arm-c-prime; identical to the live v3 default)",
+                "arm-c2 (tier1-arm-c-prime; identical to the frozen v3, not the live default)",
                 crate::WEIGHTS_ARM_C_PRIME,
                 "211x128x4/3e1dd480",
             ),
@@ -210,6 +214,17 @@ mod tests {
                 "arm-d2 (tier1-arm-d-prime)",
                 crate::WEIGHTS_ARM_D_PRIME,
                 "211x128x4/6ec85ab3",
+            ),
+            (
+                "gen3-l05 (tier1-gen3-l05; held, not promoted -- see duels_value's \
+                 crate docs, \"Generation 3\", for why)",
+                crate::WEIGHTS_GEN3_L05,
+                "211x128x4/7b93dbf0",
+            ),
+            (
+                "gen3-l10 (tier1-gen3, value-target-lambda=1.0 control sibling)",
+                crate::WEIGHTS_GEN3_L10,
+                "211x128x4/5afaaed3",
             ),
         ];
         for (name, bytes, want) in frozen {

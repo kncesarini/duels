@@ -727,6 +727,17 @@ pub const WEIGHTS_V1: &[u8] = include_bytes!("../../../duels-value/weights/v1.bi
 /// however many further generations follow `v3`.
 pub const WEIGHTS_V2: &[u8] = include_bytes!("../../../duels-value/weights/v2.bin");
 
+/// `v3`, the generation `v4` (Generation 3 of the loop, `gen3-l05`) replaced
+/// -- see `duels_value`'s crate docs, "Generation 3", and
+/// `crates/duels-value/weights/generations.json`'s `tier1-arm-c-prime`
+/// entry. Kept reachable and frozen the same way [`WEIGHTS_V1`]/
+/// [`WEIGHTS_V2`] are, and additionally joins the frozen reference panel at
+/// `nodes:2000` (the new "cumulative gain since the immediate predecessor"
+/// cell, the role [`WEIGHTS_V2`]'s equal-budget cell already plays for the
+/// generation before it) -- see
+/// `crates/duels-arena/examples/reference_panel.rs`.
+pub const WEIGHTS_V3: &[u8] = include_bytes!("../../../duels-value/weights/v3.bin");
+
 /// Unpromoted candidate `duels-value` weights from the roadmap's Tier 1-D/E
 /// experiment (`docs/roadmap.md`, "Tier 1 design"): three generations trained
 /// from matched-conditions ~100k-game corpora to isolate the exploration/
@@ -778,6 +789,43 @@ pub const WEIGHTS_ARM_C_PRIME: &[u8] =
 /// `crates/duels-value/weights/generations.json`, id `tier1-arm-d-prime`.
 pub const WEIGHTS_ARM_D_PRIME: &[u8] =
     include_bytes!("../../../duels-value/weights/arm-d-prime-candidate.bin");
+
+/// Generation 3: docs/roadmap.md's "run it again from `v3`" follow-up to Tier
+/// 1 -- a fresh ~100k-game corpus generated with the live champion (`v3`,
+/// bare `mcts-value`) as the generator, same exploration+specialist-mixing
+/// config that produced the winning `tier1-arm-bc-explore` corpus
+/// (`--sample-plies 14 --tau 1.0 --specialist-frac 0.25`), on a disjoint seed
+/// range (`2,400,001..=2,500,000`; see
+/// `crates/duels-value/weights/generations.json`, id `tier1-gen3`).
+/// Replay-verified cleanly and sealed to `/Volumes/storage/duels/` before
+/// training, per this project's standing corpus-loss-prevention discipline.
+///
+/// Two siblings trained from the *same* corpus, window=1 (this generation's
+/// corpus alone, not combined with `tier1-arm-bc-explore`): `gen3-l05` at
+/// `--value-target-lambda 0.5` (this project's post-Tier-1 baseline, per
+/// `v3`'s own promotion) and `gen3-l10` at `--value-target-lambda 1.0` (a
+/// control sibling, to see whether `0.5`'s advantage holds on a fresh corpus
+/// or was somewhat corpus-specific -- it does: `gen3-l10` did not clear the
+/// gating bar against `v3`, `gen3-l05` did, and `gen3-l05` beats `gen3-l10`
+/// directly by +35.4 Elo from the identical corpus).
+///
+/// **`gen3-l05` was held, not promoted.** It beats `v3` head-to-head, real
+/// and reproduced (+17.2 Elo pooled, `AcceptH1`) -- but reads *weaker* than
+/// `v3`'s own numbers against two of the three non-ancestor frozen panel
+/// members, a statistically real regression an independent gate-design
+/// review flagged as disqualifying on its own, regardless of the clean
+/// head-to-head win. `v3.bin` stays `duels-value`'s `DEFAULT_WEIGHTS`.
+/// `gen3-l05` and its `gen3-l10` (`--value-target-lambda 1.0`) control
+/// sibling both stay reachable (`mcts-value:weights=gen3-l05`/`weights=gen3
+/// -l10`) as a fully measured, archived, held result -- not a promotion,
+/// but not a discarded one either. See `duels_value`'s crate docs,
+/// "Generation 3", for the full write-up.
+pub const WEIGHTS_GEN3_L05: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
+/// See [`WEIGHTS_GEN3_L05`]'s docs. The `--value-target-lambda 1.0` control
+/// sibling, same corpus.
+pub const WEIGHTS_GEN3_L10: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
