@@ -133,14 +133,19 @@ fn main() {
             "reference_panel: run docs/roadmap.md's Tier 1-G frozen reference panel\n\n\
              cargo run --release -p duels-arena --example reference_panel -- \\\n    \
              --candidate <SPEC> [--candidate-budget nodes:2000] --seed <N> \\\n    \
-             --label <NAME> [--out-dir <DIR>] \\\n    \
+             --label <NAME> [--out-dir <DIR>] [--games-scale <F>] \\\n    \
              [--sprt-elo0 <F>] [--sprt-elo1 <F>] [--alpha <F>] [--beta <F>]\n\n\
              Runs the candidate against all four fixed panel members\n\
              (frozen v2@nodes:32000/nodes:2000, mcts-eval@nodes:8000,\n\
              mcts-uct@nodes:8000) and writes one aggregate summary.\n\
              This is 'G' only -- the head-to-head against the immediately\n\
              previous generation, with the mechanism gate, is still run\n\
-             separately via `duels-arena experiment`."
+             separately via `duels-arena experiment`.\n\n\
+             --games-scale (default 1.0) multiplies every panel member's game\n\
+             count, rounded up and floored at 2 -- for a cheap smoke run of\n\
+             the panel machinery itself (e.g. an autonomous loop's own\n\
+             pipeline test). Never treat a scaled-down run's SPRT/Elo verdicts\n\
+             as a real reading; they exist to prove the wiring works."
         );
         return;
     }
@@ -166,6 +171,11 @@ fn main() {
         alpha: flags.get("alpha").map_or(0.05, |v| v.parse().unwrap()),
         beta: flags.get("beta").map_or(0.05, |v| v.parse().unwrap()),
     };
+    let games_scale: f64 = flags.get("games-scale").map_or(1.0, |v| v.parse().unwrap());
+    assert!(
+        games_scale > 0.0 && games_scale.is_finite(),
+        "--games-scale must be a positive, finite number"
+    );
 
     println!("reference_panel \"{label}\": {candidate} at {candidate_budget:?}");
 
@@ -178,7 +188,8 @@ fn main() {
     // Each panel member gets its own disjoint seed block so cells never
     // share a seed with each other -- `seed_base + member_index * 100_000`
     // leaves comfortable room under any per-member game count used here.
-    for (i, &(member, opponent, opponent_budget, games)) in PANEL.iter().enumerate() {
+    for (i, &(member, opponent, opponent_budget, base_games)) in PANEL.iter().enumerate() {
+        let games = ((base_games as f64 * games_scale).ceil() as u32).max(2);
         let base_seed = seed + (i as u64) * 100_000;
         let num_pairs = (games.div_ceil(2)).max(1);
         let seeds: Vec<u64> = (0..num_pairs as u64).map(|s| base_seed + s).collect();
