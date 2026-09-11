@@ -211,6 +211,13 @@ mod tests {
                 crate::WEIGHTS_ARM_D_PRIME,
                 "211x128x4/6ec85ab3",
             ),
+            ("gen3-l05", crate::WEIGHTS_GEN3_L05, "211x128x4/7b93dbf0"),
+            ("gen3-l10", crate::WEIGHTS_GEN3_L10, "211x128x4/5afaaed3"),
+            (
+                "gen3-l05-fixedrecipe",
+                crate::WEIGHTS_GEN3_L05_FIXEDRECIPE,
+                "211x128x4/d1627cfa",
+            ),
         ];
         for (name, bytes, want) in frozen {
             let got = duels_value::weights_id(bytes);
