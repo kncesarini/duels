@@ -794,9 +794,11 @@ pub const WEIGHTS_ARM_D_PRIME: &[u8] =
 /// never actually annealing below ~1.17e-3) -- see [`WEIGHTS_GEN3_L05_FIXEDRECIPE`]
 /// for the same corpus retrained with the fixed recipe, the direct isolation
 /// this crate's docs call for.
-pub const WEIGHTS_GEN3_L05: &[u8] = include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
+pub const WEIGHTS_GEN3_L05: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l05-candidate.bin");
 /// See [`WEIGHTS_GEN3_L05`]'s docs.
-pub const WEIGHTS_GEN3_L10: &[u8] = include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
+pub const WEIGHTS_GEN3_L10: &[u8] =
+    include_bytes!("../../../duels-value/weights/gen3-l10-candidate.bin");
 
 /// The recipe-calibration-day retrain (docs/roadmap.md's "Autonomous
 /// self-play loop design", "Recommended next step"): **the identical
@@ -829,10 +831,12 @@ pub const WEIGHTS_GEN3_L05_FIXEDRECIPE: &[u8] =
 /// search's less noisy `q_root` (the mechanism the project owner's idea
 /// rests on, since `v3`/`gen3-l05-fixedrecipe` blend the training target
 /// toward `q_root` at `lambda=0.5`) actually shows up in arena strength.
-pub const WEIGHTS_NB2000: &[u8] = include_bytes!("../../../duels-value/weights/nb2000-candidate.bin");
+pub const WEIGHTS_NB2000: &[u8] =
+    include_bytes!("../../../duels-value/weights/nb2000-candidate.bin");
 /// See [`WEIGHTS_NB2000`]'s docs -- the `nodes:8000` half of the same paired
 /// ablation.
-pub const WEIGHTS_NB8000: &[u8] = include_bytes!("../../../duels-value/weights/nb8000-candidate.bin");
+pub const WEIGHTS_NB8000: &[u8] =
+    include_bytes!("../../../duels-value/weights/nb8000-candidate.bin");
 
 /// Monte Carlo Tree Search with explicit chance nodes, scoring each leaf with
 /// [`duels_value`]'s learned outcome model and no playout at all.
