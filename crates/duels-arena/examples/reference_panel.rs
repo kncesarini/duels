@@ -64,8 +64,18 @@ fn parse_flags(args: &[String]) -> HashMap<&str, &str> {
 
 /// One fixed panel member: `(label, agent spec, budget, games)`.
 const PANEL: &[(&str, &str, Budget, u32)] = &[
-    ("v2-nodes32000", "mcts-value:weights=v2", Budget::Nodes(32000), 800),
-    ("v2-nodes2000", "mcts-value:weights=v2", Budget::Nodes(2000), 1000),
+    (
+        "v2-nodes32000",
+        "mcts-value:weights=v2",
+        Budget::Nodes(32000),
+        800,
+    ),
+    (
+        "v2-nodes2000",
+        "mcts-value:weights=v2",
+        Budget::Nodes(2000),
+        1000,
+    ),
     ("mcts-eval-nodes8000", "mcts-eval", Budget::Nodes(8000), 800),
     ("mcts-uct-nodes8000", "mcts-uct", Budget::Nodes(8000), 800),
 ];
@@ -126,9 +136,12 @@ fn main() {
     let label = flags
         .get("label")
         .unwrap_or_else(|| panic!("--label is required (used for the output directory)"));
-    let out_dir =
-        PathBuf::from(flags.get("out-dir").unwrap_or(&"arena/results/reference-panel"))
-            .join(label);
+    let out_dir = PathBuf::from(
+        flags
+            .get("out-dir")
+            .unwrap_or(&"arena/results/reference-panel"),
+    )
+    .join(label);
 
     let sprt_params = SprtParams {
         elo0: flags.get("sprt-elo0").map_or(0.0, |v| v.parse().unwrap()),
@@ -162,9 +175,14 @@ fn main() {
             base_seed + num_pairs as u64
         );
 
-        let records =
-            play_paired_match_at_budgets(candidate, opponent, &seeds, candidate_budget, opponent_budget)
-                .unwrap_or_else(|e| panic!("{member}: {e}"));
+        let records = play_paired_match_at_budgets(
+            candidate,
+            opponent,
+            &seeds,
+            candidate_budget,
+            opponent_budget,
+        )
+        .unwrap_or_else(|e| panic!("{member}: {e}"));
         let t = tally(&records);
         let elo = fit_elo(t.a_wins, t.b_wins, t.draws);
         let sprt_result = sprt(t.a_wins, t.b_wins, t.draws, &sprt_params);
@@ -227,7 +245,10 @@ fn main() {
 /// RFC3339 timestamp with no extra dependency -- matches the precision
 /// `duels-arena experiment`'s own summaries use, without pulling in `chrono`
 /// for one field.
-#[allow(clippy::disallowed_methods, reason = "a report timestamp for a battery driver binary, never read by any game logic -- see clippy.toml")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a report timestamp for a battery driver binary, never read by any game logic -- see clippy.toml"
+)]
 fn humantime_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
