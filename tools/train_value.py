@@ -64,8 +64,14 @@ LOSS = 3
 # ---------------------------------------------------------------------------
 
 
-def load_matrix(path):
-    """Memory-map a feature matrix, returning (seed, label, search_value, x).
+def load_matrix(path, max_rows=0):
+    """Read a feature matrix, returning (seed, label, search_value, x).
+
+    `max_rows` (0 = all) is read here, at the `fromfile(count=...)` level,
+    not by slicing after an unconditional full read -- otherwise `--max-rows`
+    stops doing what its own `--help` text promises (a cheap smoke run) the
+    moment the full read is no longer lazy. See the "One sequential
+    `fromfile` read" note below for why it isn't lazy any more.
 
     Reads both matrix format versions `examples/feature_dump.rs` has ever
     written: **version 1** (`u32` seed; no `ply` column — every matrix that
@@ -75,6 +81,20 @@ def load_matrix(path):
     that file's module docs, "Specialist rows: `search_value` is `NaN`").
     Existing v1 corpora must keep training exactly as before, which is why
     this stays a version dispatch rather than a single reshaped dtype.
+
+    **One sequential `fromfile` read, not `mmap`.** This used to
+    `np.memmap` the file and let `main`'s unconditional `np.asarray(m["x"])`
+    page it in on demand. That is the wrong access pattern for a matrix that
+    lives on a network filesystem (this project's `/Volumes/storage/duels/`
+    archive, in particular): pulling one *field* out of an interleaved
+    `(seed, label, sv, ply, x)` record forces the kernel to fault in
+    thousands of small, non-contiguous ranges (one per row) instead of
+    reading the file in the large sequential runs NFS read-ahead is good at
+    -- measured over the archive mount, over 10x slower than a plain
+    sequential read of the same bytes. `main` already materialises every
+    row unconditionally (there is no lazy/partial read to preserve), so a
+    single upfront sequential `fromfile` costs the same total I/O and is
+    simply the fast order to do it in.
     """
     with open(path, "rb") as f:
         head = f.read(HEADER_BYTES)
@@ -98,9 +118,12 @@ def load_matrix(path):
         )
     else:
         raise SystemExit(f"{path} is version {version}, this tool reads 1 or 2")
-    m = np.memmap(path, dtype=dt, mode="r", offset=HEADER_BYTES)
-    if len(m) != rows:
-        raise SystemExit(f"{path} header claims {rows} rows, file holds {len(m)}")
+    read_rows = min(rows, max_rows) if max_rows else rows
+    with open(path, "rb") as f:
+        f.seek(HEADER_BYTES)
+        m = np.fromfile(f, dtype=dt, count=read_rows)
+    if len(m) != read_rows:
+        raise SystemExit(f"{path} header claims {rows} rows, file holds only {len(m)}")
     print(f"matrix   {path}")
     print(f"         {rows:,} rows from {games:,} games, {n_in} features, {n_out} outcomes")
     print(f"         matrix format v{version}")
@@ -445,9 +468,7 @@ def main():
     if not (0.0 <= args.value_target_lambda <= 1.0):
         raise SystemExit("--value-target-lambda must be in [0, 1]")
 
-    m, n_in, n_out, games = load_matrix(args.matrix)
-    if args.max_rows:
-        m = m[: args.max_rows]
+    m, n_in, n_out, games = load_matrix(args.matrix, max_rows=args.max_rows)
 
     seeds = np.asarray(m["seed"])
     labels = np.asarray(m["label"]).astype(np.int64)
