@@ -728,6 +728,13 @@
 //! with shared weights) remains the real answer to that defect; this retrain
 //! did not touch the output head's shape.
 //!
+//! **The `c` re-sweep this project's history says to run after any leaf/value
+//! change**: `duels_agent_mcts_value::Config::exploration` (the UCB1
+//! constant) at `0.10`, `0.20` and `0.25` against the shipped default `0.15`,
+//! 1,000 games each at `nodes:2000`. All three read **Inconclusive** (`+2.4`,
+//! `+0.7`, `+1.0` Elo, every CI crossing zero) -- `0.15` is still fine for
+//! `v3`; no change made.
+//!
 //! # Usage
 //!
 //! ```

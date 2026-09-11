@@ -219,6 +219,16 @@
         ],
         "archive_dir": "generations/tier1-battery-results/arm-c2-*"
       },
+      "c_sweep": {
+        "note": "docs/conventions.md's documented history: a leaf/value change without a c re-derivation has cost real Elo before. 3 candidate values, 1,000 games each at nodes:2000, vs the shipped default c=0.15.",
+        "cells": [
+          { "c": 0.10, "elo": 2.4, "elo_ci": [-19.1, 24.0], "sprt": "Inconclusive" },
+          { "c": 0.20, "elo": 0.7, "elo_ci": [-20.8, 22.2], "sprt": "Inconclusive" },
+          { "c": 0.25, "elo": 1.0, "elo_ci": [-20.5, 22.6], "sprt": "Inconclusive" }
+        ],
+        "verdict": "no change -- 0.15 stays the default for v3",
+        "archive_dir": "generations/tier1-c-sweep/v3-c-sweep-*"
+      },
       "golden": { "weights_id": "211x128x4/3e1dd480", "pinned_in": "crates/agents/mcts-value/src/golden.rs (regenerated at promotion)" }
     },
     {
