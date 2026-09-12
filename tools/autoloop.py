@@ -295,7 +295,7 @@ def default_state():
         # tier1-arm-c-prime entry (v3's own recorded panel numbers) the first
         # time state.json is created -- see seed_initial_panel_history().
         "panel_history": {},
-        "replay_window": [],  # list of {"generation_id", "corpus_dir", "manifest"}
+        "replay_window": [],  # list of {"generation_id", "local_jsonl", "corpus_jsonl_archive"}
         "next_corpus_seed": CORPUS_SEED_BASE,
         "next_gate_seed": GATE_SEED_BASE,
         "generations": [],  # full per-generation record, promote-or-hold and why
@@ -403,11 +403,14 @@ def step_generate_and_seal_corpus(cfg, bins, state, gen_id):
     sealed_manifest = corpus_dir / f"{gen_id}.jsonl.manifest.json"
     seal_record = archive_gen / "corpus_seal.json"
 
+    local_jsonl = work_gen / f"{gen_id}.jsonl"
+
     if seal_record.exists() and sealed_jsonl.exists():
         log(f"[{gen_id}] corpus already sealed at {sealed_jsonl}, skipping generation")
-        return json.loads(seal_record.read_text())
+        record = json.loads(seal_record.read_text())
+        record["local_jsonl"] = str(local_jsonl) if local_jsonl.exists() else None
+        return record
 
-    local_jsonl = work_gen / f"{gen_id}.jsonl"
     seed0 = state["next_corpus_seed"]
 
     if not local_jsonl.exists():
@@ -452,6 +455,7 @@ def step_generate_and_seal_corpus(cfg, bins, state, gen_id):
         "generation_id": gen_id,
         "corpus_dir": str(corpus_dir),
         "jsonl": str(sealed_jsonl),
+        "local_jsonl": str(local_jsonl),
         "manifest_path": str(sealed_manifest),
         "sha256": checksum,
         "seed_first": manifest["seed_first"],
@@ -477,50 +481,79 @@ def step_generate_and_seal_corpus(cfg, bins, state, gen_id):
 def step_build_training_matrix(cfg, bins, state, gen_id, corpus_record):
     """Feature-dump this generation's corpus (cached), slide the replay
     window, and merge the window's matrices into this generation's training
-    input."""
+    input.
+
+    Everything here runs on **local** disk (`cfg.work_dir`), never
+    `cfg.archive_root` (the NFS mount): a feature matrix is large (~11.5 GB
+    for a 100k-game corpus) and fully regenerable from the sealed corpus, so
+    there is no reason to pay NFS latency reading the corpus, writing the
+    matrix, or copying it into the training work-dir -- measured on this
+    project's first real run, dumping features through the archive mount
+    cost ~100 minutes and copying the result into place another ~35, both
+    pure waste on top of the ~5 minutes local disk actually needs. The one
+    exception is a window entry whose local corpus copy is gone (a resumed
+    run with a cleared --work-dir): that falls back to re-dumping from the
+    permanently-archived corpus, slower but correct.
+    """
     archive_gen, work_gen = gen_dirs(cfg, gen_id)
-    feature_cache = cfg.archive_root / "feature_cache"
+    feature_cache = cfg.work_dir / "feature_cache"
     feature_cache.mkdir(parents=True, exist_ok=True)
 
-    this_matrix = feature_cache / f"{gen_id}.bin"
-    if not this_matrix.exists():
-        log(f"[{gen_id}] dumping features from this generation's corpus...")
-        run(
-            [
-                str(bins.feature_dump),
-                "--corpus",
-                corpus_record["jsonl"],
-                "--out",
-                str(this_matrix),
-            ]
-        )
-    else:
-        log(f"[{gen_id}] feature matrix already cached at {this_matrix}")
+    def ensure_matrix(entry):
+        cached = feature_cache / f"{entry['generation_id']}.bin"
+        if cached.exists():
+            return cached
+        local_source = entry.get("local_jsonl")
+        if local_source and Path(local_source).exists():
+            source, note = local_source, "its local corpus"
+        else:
+            # entry["corpus_jsonl_archive"] is the normal path here; fall
+            # back to the standard sealed-corpus location for a
+            # replay_window entry written before this key existed (a state
+            # migration this project's own "resume cleanly" discipline asks
+            # for, rather than a KeyError on the first run after a fix).
+            archived = entry.get("corpus_jsonl_archive") or str(
+                cfg.archive_root / "corpus" / entry["generation_id"] / f"{entry['generation_id']}.jsonl"
+            )
+            source, note = archived, "the archived corpus (its local copy is gone)"
+        log(f"[{gen_id}] dumping features for {entry['generation_id']} from {note}...")
+        run([str(bins.feature_dump), "--corpus", str(source), "--out", str(cached)])
+        return cached
 
-    window = state["replay_window"] + [
-        {"generation_id": gen_id, "matrix": str(this_matrix)}
-    ]
+    this_entry = {
+        "generation_id": gen_id,
+        "local_jsonl": corpus_record.get("local_jsonl"),
+        "corpus_jsonl_archive": corpus_record["jsonl"],
+    }
+    ensure_matrix(this_entry)
+
+    window = state["replay_window"] + [this_entry]
     window = window[-cfg.replay_window_corpora :]
     state["replay_window"] = window
 
     merged = work_gen / "train_matrix.bin"
     if not merged.exists():
-        inputs = [w["matrix"] for w in window]
-        if len(inputs) == 1:
-            shutil.copy2(inputs[0], merged)
-            shutil.copy2(str(inputs[0]) + ".json", str(merged) + ".json")
+        matrices = [str(ensure_matrix(w)) for w in window]
+        if len(matrices) == 1:
+            shutil.copy2(matrices[0], merged)
+            shutil.copy2(matrices[0] + ".json", str(merged) + ".json")
         else:
-            log(f"[{gen_id}] merging {len(inputs)}-generation replay window into training matrix...")
-            run([cfg.python, str(REPO_ROOT / "tools" / "merge_feature_matrices.py"), "--out", str(merged)] + inputs)
+            log(f"[{gen_id}] merging {len(matrices)}-generation replay window into training matrix...")
+            run(
+                [cfg.python, str(REPO_ROOT / "tools" / "merge_feature_matrices.py"), "--out", str(merged)]
+                + matrices
+            )
     else:
         log(f"[{gen_id}] training matrix already merged at {merged}")
 
     # Feature-cache entries that fell out of the sliding window are no
     # longer referenced by any future generation (window only ever looks
     # back cfg.replay_window_corpora generations) -- delete them to bound
-    # disk usage. The raw corpus itself is never deleted: it stays archived
-    # permanently, per this project's "held generations keep their corpus"
-    # design and its general archive-everything discipline.
+    # local disk usage. The raw corpus itself is never deleted: it stays
+    # archived permanently on cfg.archive_root, per this project's "held
+    # generations keep their corpus" design and its general
+    # archive-everything discipline -- only the regenerable local matrix
+    # cache is pruned.
     kept = {w["generation_id"] for w in window}
     for f in feature_cache.glob("*.bin"):
         if f.stem not in kept:
